@@ -212,7 +212,7 @@ impl DiskGraph {
         if let Some(sg) = self.cache.get_mut(sg_id, &self.subgraph_index) {
             // Remove all edges referencing this vertex
             self.remove_incident_edges(id, sg_id);
-            sg.remove_vertex(id);
+            sg.remove_vertex(id, true);
         }
 
         self.vertex_index.remove(id);
@@ -399,7 +399,7 @@ impl DiskGraph {
 
     fn replay_remove_vertex(&mut self, payload: &RemoveVertexPayload) {
         if let Some(sg) = self.cache.get_mut(payload.subgraph_id, &self.subgraph_index) {
-            sg.remove_vertex(payload.vertex_id);
+            sg.remove_vertex(payload.vertex_id, true);
         }
         self.vertex_index.remove(payload.vertex_id);
     }

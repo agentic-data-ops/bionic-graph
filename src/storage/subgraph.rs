@@ -83,7 +83,22 @@ impl Subgraph {
     }
 
     /// Remove a vertex by ID (also removes its edges).
-    pub fn remove_vertex(&mut self, id: VertexId) {
+    /// When `force` is true, physically removes; otherwise soft-deletes.
+    pub fn remove_vertex(&mut self, id: VertexId, force: bool) {
+        if !force {
+            // Soft delete
+            if let Some(v) = self.vertices.iter_mut().find(|v| v.id == id) {
+                v.soft_delete(true);
+            }
+            // Also soft-delete edges referencing this vertex
+            for e in self.edges.iter_mut() {
+                if e.source == id || e.target == id {
+                    e.soft_delete(true);
+                }
+            }
+            return;
+        }
+        // Hard delete
         self.vertices.retain(|v| v.id != id);
         self.edges.retain(|e| e.source != id && e.target != id);
         self.cross_edges.retain(|e| e.source_vertex != id);
@@ -236,7 +251,7 @@ mod tests {
         let v2 = sg.add_vertex(vec!["b".to_string()]);
         sg.add_edge("rel".to_string(), v1, v2).unwrap();
         sg.add_cross_edge(50, "x".to_string(), v1, 2, 999);
-        sg.remove_vertex(v1);
+        sg.remove_vertex(v1, true);
         assert_eq!(sg.vertices.len(), 1);
         assert_eq!(sg.edges.len(), 0);
         assert_eq!(sg.cross_edges.len(), 0);

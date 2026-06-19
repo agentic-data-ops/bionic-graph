@@ -207,6 +207,42 @@ pub fn execute_query(
                 Ok(current)
             }
 
+            TraversalStep::Compact { before } => {
+                let timestamp = parse_time_value(before)?;
+                log::info!("Compacting history before timestamp {}", timestamp);
+                let data_dir = std::path::Path::new("data");
+                let mut g = graph.lock().unwrap();
+                let stats = crate::storage::compaction::compact_graph(&mut g, data_dir, timestamp, 0);
+                let result = serde_json::json!({
+                    "compacted": {
+                        "vertices_scanned": stats.vertices_scanned,
+                        "vertices_compacted": stats.vertices_compacted,
+                        "records_archived": stats.records_archived,
+                        "records_truncated": stats.records_truncated,
+                        "elapsed_us": stats.elapsed_us,
+                    }
+                });
+                Ok(vec![TraversalResult::ValueResult(result)])
+            }
+
+            TraversalStep::TimeTravel { at } => {
+                let timestamp = parse_time_value(at)?;
+                log::debug!("TimeTravel: filtering at timestamp {}", timestamp);
+                let g = graph.lock().unwrap();
+                let results: Vec<TraversalResult> = input
+                    .into_iter()
+                    .filter_map(|r| match r {
+                        TraversalResult::VertexResult(v) => {
+                            let original = g.get_vertex_including_deleted(v.id)?;
+                            let snapshot = original.at_time(timestamp)?;
+                            Some(vertex_to_result(&g, snapshot.id))
+                        }
+                        _ => Some(r),
+                    })
+                    .collect();
+                Ok(results)
+            }
+
             TraversalStep::Values { key } => {
                 let results: Vec<TraversalResult> = input
                     .into_iter()
@@ -491,6 +527,30 @@ fn run_steps(
                 cur
             }
 
+            TraversalStep::Compact { before } => {
+                let timestamp = parse_time_value(before)?;
+                let mut g = graph.lock().unwrap();
+                let data_dir = std::path::Path::new("data");
+                crate::storage::compaction::compact_graph(&mut g, data_dir, timestamp, 0);
+                current
+            }
+
+            TraversalStep::TimeTravel { at } => {
+                let timestamp = parse_time_value(at)?;
+                let g = graph.lock().unwrap();
+                current = current.into_iter()
+                    .filter_map(|r| match r {
+                        TraversalResult::VertexResult(v) => {
+                            let original = g.get_vertex_including_deleted(v.id)?;
+                            original.at_time(timestamp)?;
+                            Some(TraversalResult::VertexResult(v))
+                        }
+                        _ => Some(r),
+                    })
+                    .collect();
+                current
+            }
+
             TraversalStep::NeuralSearch { .. } => {
                 return Err("neuralSearch is not supported inside repeat".to_string());
             }
@@ -502,6 +562,37 @@ fn run_steps(
     }
 
     Ok(current)
+}
+
+// ─── Time Travel ─────────────────────────────────────────────────
+
+/// Parse the `at` value from a timeTravel step.
+/// Accepts: integer (Unix microseconds) or ISO 8601 string.
+pub fn parse_time_value(at: &serde_json::Value) -> Result<i64, String> {
+    match at {
+        Value::Number(n) => n.as_i64().ok_or_else(|| "Invalid timestamp".to_string()),
+        Value::String(s) => {
+            // Try parsing as integer first
+            if let Ok(ts) = s.parse::<i64>() {
+                return Ok(ts);
+            }
+            // Try ISO 8601: "2024-06-10T12:00:00Z"
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+                return Ok(dt.timestamp_micros());
+            }
+            // Try "2024-06-10T12:00:00" (no timezone — assume UTC)
+            if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
+                return Ok(dt.and_utc().timestamp_micros());
+            }
+            // Try date only "2024-06-10"
+            if let Ok(d) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+                let dt = d.and_hms_opt(0, 0, 0).unwrap();
+                return Ok(dt.and_utc().timestamp_micros());
+            }
+            Err(format!("Cannot parse time '{}'. Use Unix μs or ISO 8601.", s))
+        }
+        _ => Err("timeTravel.at must be a number (Unix μs) or string (ISO 8601)".to_string()),
+    }
 }
 
 // ─── Helper Functions ─────────────────────────────────────────────

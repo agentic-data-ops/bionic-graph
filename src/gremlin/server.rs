@@ -88,6 +88,8 @@ struct CreateNeuronRequest {
 #[derive(Deserialize)]
 struct CreateGraphRequest {
     name: String,
+    #[serde(default)]
+    time_travel: bool,
 }
 
 #[derive(Serialize)]
@@ -125,6 +127,9 @@ pub fn build_router(state: AppState) -> Router {
         // Document extraction
         .route("/extract", post(extract_handler))
 
+        // Compaction
+        .route("/compact", post(compact_handler))
+
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
@@ -148,11 +153,13 @@ async fn create_graph_handler(
     Json(req): Json<CreateGraphRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let mut gm = state.graph_manager.lock().unwrap();
-    gm.create(&req.name).map_err(|e| {
+    gm.create_with_opts(&req.name, req.time_travel).map_err(|e| {
         let err = serde_json::json!({"success": false, "error": e});
         (StatusCode::CONFLICT, Json(err))
     })?;
-    Ok(Json(serde_json::json!({"success": true, "name": req.name})))
+    Ok(Json(serde_json::json!({
+        "success": true, "name": req.name, "time_travel": req.time_travel
+    })))
 }
 
 /// DELETE /graphs/{name} — Delete a graph (cannot delete "default").
@@ -392,6 +399,55 @@ async fn extract_handler(
         }))),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e})))),
     }
+}
+
+// ─── Compaction ─────────────────────────────────────────────────
+
+/// POST /compact — Trigger history compaction on a graph.
+async fn compact_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let graph_name = resolve_graph_name(&headers);
+    let before = body.get("before")
+        .and_then(|v| {
+            v.as_i64().or_else(|| {
+                v.as_str().and_then(|s| crate::gremlin::steps::parse_time_value(
+                    &serde_json::Value::String(s.to_string())
+                ).ok())
+            })
+        })
+        .unwrap_or_else(|| {
+            // Default: compact everything older than 30 days
+            let now = crate::graph::vertex::now_micros();
+            now - 30 * 24 * 3600 * 1_000_000
+        });
+
+    let mut gm = state.graph_manager.lock().unwrap();
+    let handle = gm.get_mut(&graph_name).ok_or_else(|| {
+        (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "graph not found"})))
+    })?;
+
+    let mut g = handle.graph.lock().unwrap();
+    let stats = crate::storage::compaction::compact_graph(
+        &mut g,
+        handle.data_dir(),
+        before,
+        0,
+    );
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "graph": graph_name,
+        "compacted": {
+            "vertices_scanned": stats.vertices_scanned,
+            "vertices_compacted": stats.vertices_compacted,
+            "records_archived": stats.records_archived,
+            "records_truncated": stats.records_truncated,
+            "elapsed_us": stats.elapsed_us,
+        }
+    })))
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────

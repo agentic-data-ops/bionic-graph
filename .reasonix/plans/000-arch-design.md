@@ -577,14 +577,338 @@ src/
 ├── memory_system.rs           # 新增 into_router_with_settings()
 └── main.rs                    # 改用 Settings 加载, clap 作为覆盖
 ```
-│   ├── mod.rs
-│   ├── settings.rs            # Settings 结构体 (5 个子配置)
-│   └── loader.rs              # 加载逻辑 + env 覆盖 + 默认生成
-├── extract/
-│   ├── config.rs              # 新增 from_settings()
-│   └── pipeline.rs            # 新增 extract_content_raw()
-├── gremlin/
-│   └── server.rs              # AppState 加 extraction_config, 新增 /extract 端点
-├── memory_system.rs           # 新增 into_router_with_settings()
-└── main.rs                    # 改用 Settings 加载, clap 作为覆盖
+
+---
+
+## Plan 7: Time Travel — 版本化顶点/边/神经元，支持时间点查询
+
+**状态: ✅ 已完成**
+
+### 概述
+
+为所有数据实体（顶点、边、神经元）增加 MVCC 能力：每次更新保留旧版本快照，支持软删除，查询时可指定时间点回退到历史状态。
+
+### 新增内部属性
+
+每个 Vertex / Edge / Neuron 新增三个内部字段：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `updated_at` | `i64` | 最后更新时间（Unix 微秒） |
+| `version` | `u64` | 版本号，每次修改递增 |
+| `is_deleted` | `bool` | 软删除标记 |
+
+### 版本历史
+
+```rust
+pub struct VersionRecord {
+    pub version: u64,
+    pub updated_at: i64,
+    pub properties: HashMap<String, PropertyValue>,
+    pub labels: Vec<String>,
+}
 ```
+
+每个 Vertex / Edge 维护 `history: Vec<VersionRecord>`，记录每次修改前的属性快照。
+
+### 更新语义
+
+```
+update_properties(vertex, new_props):
+  1. snapshot = { version, updated_at, properties, labels }
+  2. history.push(snapshot)
+  3. version += 1
+  4. updated_at = now()
+  5. properties = new_props
+```
+
+### 删除语义
+
+```
+delete(vertex, force=false):
+  if force: 物理删除（移除顶点及所有关联）
+  if !force: is_deleted = true  （软删除，保留历史）
+```
+
+### 查询语义
+
+```
+get_vertex(id, query_time=None):
+  v = find(id)
+  if v.is_deleted and query_time is None:
+    return None                          ← 默认不返回已删除
+  if query_time is not None:
+    snap = find_version_at(v, query_time) ← 回退到指定时间点的快照
+    if snap.is_deleted_at(query_time): return None
+    return snap
+```
+
+### Gremlin 接口
+
+新增 `timeTravel` 步骤，设置查询时间点，影响后续所有步骤：
+
+```json
+{"step": "timeTravel", "at": 1718000000000}
+```
+
+or 使用 ISO 8601 时间字符串：
+
+```json
+{"step": "timeTravel", "at": "2024-06-10T12:00:00Z"}
+```
+
+实现方式：在 Gremlin pipeline 中维护一个 `query_time: Option<i64>` 上下文变量，传递给 Graph 的查询方法。
+
+### 实现步骤
+
+| # | 内容 | 风险 | 文件 |
+|---|------|------|------|
+| 1 | Vertex/Edge 增加 version/updated_at/is_deleted/history | low | `src/graph/vertex.rs`, `src/graph/edge.rs` |
+| 2 | Graph 方法升级：add/update 自动管理版本，delete 支持软删除 | med | `src/graph/graph.rs` |
+| 3 | Neuron 增加版本字段 | low | `src/neuron/neuron.rs` |
+| 4 | Gremlin: timeTravel step + pipeline query_time 传递 | med | `src/gremlin/query.rs`, `src/gremlin/steps.rs` |
+| 5 | Subgraph 序列化更新 + 时间点过滤查询 | low | `src/storage/subgraph.rs` |
+
+---
+
+## Plan 8: Compaction — 历史版本归档与裁剪
+
+**状态: ✅ 已完成**
+
+### 概述
+
+当前 time travel 实现有两个问题：
+1. **版本膨胀** — 每次更新追加 `VersionRecord`，无上限增长 Vertex/Edge 序列化大小
+2. **无归档** — 旧版本永远留在主数据中，即使不再需要 time travel 到那些时间点
+
+Plan 8 增加 compaction 能力：可配置 `max_history` 裁剪旧版本，并将历史 offload 到独立的版本日志文件。
+
+### 设计
+
+#### 方案 A: max_history 裁剪（简单）
+
+```rust
+// Vertex 新增配置
+pub const MAX_HISTORY: usize = 100;
+
+// Vertex::update_properties 中
+pub fn update_properties(&mut self, new_props: ...) {
+    self._history.push(VersionRecord { ... });
+    // 超出上限时丢弃最旧的版本
+    if self._history.len() > MAX_HISTORY {
+        self._history.remove(0);  // 丢弃最旧的
+    }
+    self._version += 1;
+}
+```
+
+| 优点 | 缺点 |
+|------|------|
+| 实现简单，O(1) 空间保证 | 旧版本永久丢失，无法 time travel 到裁剪前的时间点 |
+| 零额外 I/O | |
+
+#### 方案 B: 历史 offload 到版本日志（推荐）
+
+类似 Iceberg 的 Manifest 设计，将旧版本从 Vertex/Edge 结构体中剥离，存入独立的版本日志文件。
+
+```
+数据目录结构:
+data/
+├── default/
+│   ├── graph.bin                    ← 主数据（当前版本 + 最近 N 个历史）
+│   ├── version_log/
+│   │   ├── 0000000001.vlog          ← 版本日志片段 1
+│   │   ├── 0000000002.vlog          ← 版本日志片段 2
+│   │   └── ...
+│   └── version_index.bin            ← VertexId → vlog 偏移索引
+```
+
+每个 `.vlog` 文件：
+
+```
+┌──────────────────────────────────────────────┐
+│  HEADER                                       │
+│  Magic:    "BGVL" (4 bytes)                  │
+│  Version:  2 (u32 LE)                        │
+│  Count:    条目总数 (u32 LE)                  │
+│  Index interval: N (u32 LE)  ← 默认 64       │
+│  Index count: M (u32 LE)                     │
+├──────────────────────────────────────────────┤
+│  SPARSE INDEX                                 │
+│  [0]: entry_idx(u32) + offset(u64) +         │
+│        first_vertex_id(u64)                   │
+│  [1]: entry_idx(u32) + offset(u64) +         │
+│        first_vertex_id(u64)                   │
+│  ...                                          │
+│  [M-1]: ...                                   │
+│  每 N 个条目记录一个索引点                     │
+├──────────────────────────────────────────────┤
+│  ENTRIES                                      │
+│  Entry 0:                                     │
+│    vertex_id: u64                             │
+│    version: u64                               │
+│    payload_len: u32                           │
+│    payload: [bincode VersionRecord]           │
+│  Entry 1: ...                                 │
+│  ...                                          │
+└──────────────────────────────────────────────┘
+```
+
+**稀疏索引查找**:
+
+```
+lookup(vertex_id=42):
+  1. 二分查找 sparse_index，找到 first_vertex_id ≤ 42 的最大索引点
+  2. 跳到对应的 file_offset
+  3. 从该位置开始线性扫描最多 N 个条目
+  → O(log M + N) 而非 O(总条目数)
+```
+
+#### Compaction 策略
+
+| 策略 | 说明 |
+|------|------|
+| **按时间** | 归档指定时间点之前的所有旧版本，如 `compact(before: 2024-01-01)` |
+| **按数量** | 只保留每个 Vertex 最近的 N 个历史版本 |
+| **按文件大小** | vlog 文件超过阈值时分裂 |
+
+```rust
+pub fn compact(before_timestamp: i64) -> CompactionStats {
+    for each vertex:
+        keep = [_history 中 updated_at > before_timestamp 的记录]
+        archive = [_history 中 updated_at <= before_timestamp 的记录]
+        if archive is not empty:
+            write_to_vlog(vertex.id, archive)
+            vertex._history = keep
+
+    rebuild version_index.bin
+    return CompactionStats { archived_records, freed_bytes }
+}
+```
+
+### API 设计
+
+```bash
+# 通过 Gremlin 触发 compaction
+curl -X POST localhost:8080/gremlin \
+  -H 'Content-Type: application/json' \
+  -d '{"steps":[{"step":"compact","before":"2024-06-01T00:00:00Z"}]}'
+
+# 或通过 HTTP 端点
+curl -X POST localhost:8080/compact \
+  -H 'Content-Type: application/json' \
+  -d '{"before":"2024-06-01T00:00:00Z"}'
+```
+
+### 配置项
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `max_history_per_vertex` | `100` | 每个 Vertex 保留的最大历史记录数（方案 A/B 均适用） |
+| `version_log_enabled` | `false` | 是否启用版本日志 offload（方案 B） |
+| `auto_compact_interval_secs` | `86400` | 自动 compaction 间隔（秒，默认每天） |
+
+### 实现步骤
+
+| # | 内容 | 风险 | 文件 |
+|---|------|------|------|
+| 1 | Vertex/Edge 添加 `compact()` 方法：按时间/数量裁剪 `_history` | low | `src/graph/vertex.rs`, `src/graph/edge.rs` |
+| 2 | 版本日志 vlog 格式 + 读写 | med | `src/storage/version_log.rs` |
+| 3 | 全局 `compact()` 编排器：遍历所有 vertex → 裁剪 + offload | med | `src/storage/compaction.rs` |
+| 4 | Gremlin `compact` step + REST 端点 `POST /compact` | low | `src/gremlin/query.rs`, `src/gremlin/server.rs` |
+| 5 | 自动 compaction 后台线程 + `settings.json` 配置 | low | `src/main.rs`, `src/config/settings.rs` |
+
+### vlog 稀疏索引增强
+
+在 vlog header 中增加稀疏索引段，支持二分查找定位特定 vertex 的历史。
+
+**文件格式 (v2)**:
+
+```
+HEADER: Magic(4) + Version(4) + Count(4) + IndexInterval(4) + IndexCount(4)
+INDEX:  [entry_idx(4) + file_offset(8) + first_vertex_id(8)] × IndexCount
+ENTRIES: [vertex_id(8) + version(8) + payload_len(4) + payload] × Count
+```
+
+**查找算法**:
+
+```
+lookup(vertex_id=42):
+  1. 二分查找 sparse_index → 找到 first_vertex_id ≤ 42 的最大索引点
+  2. 跳到 file_offset
+  3. 线性扫描最多 IndexInterval 个条目
+  → O(log N) + O(IndexInterval)
+```
+
+**向后兼容**: v1 格式（无索引）的读取代码保留，读取时自动降级为全扫描。
+
+**文件**: `src/storage/version_log.rs`
+
+---
+
+## Plan 9: 可选 Time Travel — 创建图时可指定是否启用 time travel
+
+**状态: ✅ 已完成**
+
+### 概述
+
+当前所有 Vertex/Edge 默认启用 time travel（强制携带 `_version`/`_updated_at`/`_is_deleted`/`_history`），带来额外的内存和序列化开销。对于不需要 time travel 的场景，应允许禁用此功能以节省资源。
+
+### 设计
+
+#### GraphConfig 配置
+
+```rust
+// src/config/settings.rs
+pub struct GraphConfig {
+    pub time_travel_enabled: bool,   // 默认 false
+    pub max_history_per_vertex: usize, // 默认 100，仅在启用时生效
+}
+```
+
+#### Graph 结构体增加标志位
+
+```rust
+pub struct Graph {
+    pub time_travel_enabled: bool,
+    // ... 原有字段
+}
+```
+
+#### 条件版本管理
+
+```
+当 time_travel_enabled = false 时：
+  - Vertex::update_properties()   → 直接覆盖，不 push history
+  - Vertex::soft_delete()         → 物理删除
+  - Vertex::at_time()             → 返回 None
+  - Edge 同理
+  - Graph::remove_vertex()        → 始终 force=true
+
+当 time_travel_enabled = true 时：
+  - 当前全部行为保持不变
+```
+
+#### GraphManager API 扩展
+
+```rust
+// 创建图时可选是否启用 time travel
+POST /graphs {"name": "mygraph", "time_travel": true}
+
+// 等效于:
+gm.create("mygraph")?.set_time_travel(true);
+```
+
+#### 序列化兼容
+
+- `_version`/`_updated_at`/`_is_deleted` 字段始终存在于 struct 中（简化代码），但 `_history` 在禁用时保持为空 Vec
+- 反序列化旧数据（没有这些字段的）时填充默认值
+
+#### 实现步骤
+
+| # | 内容 | 风险 | 文件 |
+|---|------|------|------|
+| 1 | GraphConfig + Graph 增加 `time_travel_enabled` 标志 | low | `src/config/settings.rs`, `src/graph/graph.rs` |
+| 2 | Vertex/Edge 方法根据标志决定是否记录 history | low | `src/graph/vertex.rs`, `src/graph/edge.rs` |
+| 3 | Graph 根据标志决定 remove_vertex 行为 | low | `src/graph/graph.rs` |
+| 4 | GraphManager.create() + API 接受 `time_travel` 参数 | low | `src/graph_manager.rs`, `src/gremlin/server.rs` |

@@ -28,6 +28,8 @@ pub struct Synapse {
 /// - Spreads activation to post-synaptic neurons on firing
 /// - Enters a refractory period after firing
 /// - Links to one or more knowledge graph vertices for retrieval
+///
+/// Supports time-travel via `version`, `updated_at`, and `is_deleted` fields.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Neuron {
     pub id: NeuronId,
@@ -49,6 +51,11 @@ pub struct Neuron {
     pub vertex_refs: Vec<VertexId>,
     /// Outgoing synapses to other neurons.
     pub synapses: Vec<Synapse>,
+
+    // ─── Version fields (time-travel support) ─────────────────────
+    pub _version: u64,
+    pub _updated_at: i64,
+    pub _is_deleted: bool,
 }
 
 impl Neuron {
@@ -65,6 +72,9 @@ impl Neuron {
             refractory_remaining: 0,
             vertex_refs: Vec::new(),
             synapses: Vec::new(),
+            _version: 1,
+            _updated_at: crate::graph::vertex::now_micros(),
+            _is_deleted: false,
         }
     }
 
@@ -155,6 +165,20 @@ impl Neuron {
         if self.refractory_remaining == 0 {
             self.activation = (self.activation + amount).min(1.0);
         }
+    }
+
+    /// Soft-delete this neuron.
+    pub fn soft_delete(&mut self) {
+        self._is_deleted = true;
+        self._version += 1;
+        self._updated_at = crate::graph::vertex::now_micros();
+    }
+
+    /// Restore a soft-deleted neuron.
+    pub fn restore(&mut self) {
+        self._is_deleted = false;
+        self._version += 1;
+        self._updated_at = crate::graph::vertex::now_micros();
     }
 
     /// Whether the neuron is currently in its refractory period.

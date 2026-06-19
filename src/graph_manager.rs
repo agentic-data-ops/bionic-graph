@@ -15,6 +15,13 @@ pub struct GraphHandle {
     pub data_dir: PathBuf,
 }
 
+impl GraphHandle {
+    /// Get the full path to the data directory for this graph.
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+}
+
 /// Manages multiple named knowledge graphs, each persisted to
 /// `data_root/{graph_name}/`.
 pub struct GraphManager {
@@ -74,6 +81,11 @@ impl GraphManager {
 
     /// Create a new named graph.
     pub fn create(&mut self, name: &str) -> Result<GraphHandle, String> {
+        self.create_with_opts(name, false)
+    }
+
+    /// Create a new named graph with time-travel option.
+    pub fn create_with_opts(&mut self, name: &str, time_travel: bool) -> Result<GraphHandle, String> {
         if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains('.') {
             return Err(format!("Invalid graph name: '{}'", name));
         }
@@ -84,7 +96,7 @@ impl GraphManager {
         if path.exists() {
             return Err(format!("Directory already exists: {:?}", path));
         }
-        let handle = Self::create_graph_internal(name, &path)?;
+        let handle = Self::create_graph_internal(name, &path, time_travel)?;
         self.graphs.insert(name.to_string(), handle.clone());
         Ok(handle)
     }
@@ -169,10 +181,17 @@ impl GraphManager {
         })
     }
 
-    fn create_graph_internal(name: &str, data_dir: &Path) -> Result<GraphHandle, String> {
+    fn create_graph_internal(name: &str, data_dir: &Path, time_travel: bool) -> Result<GraphHandle, String> {
         std::fs::create_dir_all(data_dir)
             .map_err(|e| format!("Cannot create graph dir: {}", e))?;
-        Self::open_graph(name, data_dir)
+        let mut handle = Self::open_graph(name, data_dir)?;
+        // Set time_travel on the underlying Graph
+        if time_travel {
+            if let Ok(mut g) = handle.graph.lock() {
+                g.time_travel_enabled = true;
+            }
+        }
+        Ok(handle)
     }
 
     /// Save all graphs.

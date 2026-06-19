@@ -1,9 +1,11 @@
+pub mod compaction;
 pub mod disk_graph;
 pub mod index;
 pub mod partition;
 pub mod redo_log;
 pub mod subgraph;
 pub mod subgraph_cache;
+pub mod version_log;
 
 pub use disk_graph::DiskGraph;
 pub use index::*;

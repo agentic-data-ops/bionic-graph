@@ -32,6 +32,10 @@ pub struct Graph {
 
     next_vertex_id: VertexId,
     next_edge_id: EdgeId,
+
+    /// When true, vertices/edges track version history for time-travel.
+    /// When false (default), updates overwrite directly and deletes are physical.
+    pub time_travel_enabled: bool,
 }
 
 impl Default for Graph {
@@ -51,7 +55,19 @@ impl Graph {
             vertex_labels: HashMap::new(),
             next_vertex_id: 1,
             next_edge_id: 1,
+            time_travel_enabled: false,
         }
+    }
+
+    /// Enable time-travel (version history, soft-delete, at_time queries).
+    pub fn with_time_travel(mut self) -> Self {
+        self.time_travel_enabled = true;
+        self
+    }
+
+    /// Check if time-travel is enabled.
+    pub fn is_time_travel_enabled(&self) -> bool {
+        self.time_travel_enabled
     }
 
     // ─── Vertex Operations ─────────────────────────────────────────
@@ -88,14 +104,27 @@ impl Graph {
     }
 
     /// Remove a vertex and all its incident edges.
-    pub fn remove_vertex(&mut self, id: VertexId) -> Result<(), GraphError> {
-        let vertex = self
-            .vertices
-            .remove(&id)
-            .ok_or(GraphError::VertexNotFound(id))?;
+    ///
+    /// When `force` is `false`, attempts soft-delete if time-travel is enabled.
+    /// When `force` is `true`, physically removes the vertex and all edges.
+    pub fn remove_vertex(&mut self, id: VertexId, force: bool) -> Result<(), GraphError> {
+        // If time-travel is enabled and not forced, soft delete
+        if !force && self.time_travel_enabled {
+            // Soft delete with history
+            if let Some(v) = self.vertices.get_mut(&id) {
+                v.soft_delete(true);
+                return Ok(());
+            }
+            return Err(GraphError::VertexNotFound(id));
+        }
+
+        // Hard delete
+        let v = self.vertices.get(&id).ok_or(GraphError::VertexNotFound(id))?
+            .clone();
+        self.vertices.remove(&id);
 
         // Remove label index entries
-        for label in &vertex.labels {
+        for label in &v.labels {
             if let Some(set) = self.vertex_labels.get_mut(label) {
                 set.remove(&id);
             }
@@ -120,14 +149,27 @@ impl Graph {
         Ok(())
     }
 
-    /// Get a vertex by ID.
+    /// Get a vertex by ID. Returns `None` if soft-deleted (and time-travel enabled).
     pub fn get_vertex(&self, id: VertexId) -> Option<&Vertex> {
-        self.vertices.get(&id)
+        self.vertices.get(&id).and_then(|v| {
+            if self.time_travel_enabled && v._is_deleted { None } else { Some(v) }
+        })
     }
 
-    /// Get a mutable reference to a vertex.
+    /// Get vertex as it existed at `timestamp_us` (time-travel).
+    /// Returns `None` if the vertex didn't exist or was already deleted at that time.
+    pub fn get_vertex_at_time(&self, id: VertexId, timestamp_us: i64) -> Option<Vertex> {
+        self.vertices.get(&id)?.at_time(timestamp_us)
+    }
+
+    /// Get a mutable reference to a vertex (includes soft-deleted).
     pub fn get_vertex_mut(&mut self, id: VertexId) -> Option<&mut Vertex> {
         self.vertices.get_mut(&id)
+    }
+
+    /// Get vertex regardless of deletion status (for admin/restore operations).
+    pub fn get_vertex_including_deleted(&self, id: VertexId) -> Option<&Vertex> {
+        self.vertices.get(&id)
     }
 
     /// Return all vertex IDs in the graph.
@@ -252,6 +294,7 @@ impl Graph {
     }
 
     /// Get neighbor vertex IDs reachable via outgoing edges (with optional label filter).
+    /// Filters out soft-deleted vertices and edges.
     pub fn out_neighbors(&self, vertex_id: VertexId, edge_label: Option<&str>) -> Vec<VertexId> {
         self.outgoing_edges(vertex_id)
             .iter()
@@ -262,7 +305,14 @@ impl Graph {
                         return None;
                     }
                 }
-                Some(edge.target)
+                if self.time_travel_enabled && edge._is_deleted {
+                    return None;
+                }
+                let target = edge.target;
+                if self.time_travel_enabled && self.vertices.get(&target).map_or(true, |v| v._is_deleted) {
+                    return None;
+                }
+                Some(target)
             })
             .collect()
     }
@@ -278,7 +328,14 @@ impl Graph {
                         return None;
                     }
                 }
-                Some(edge.source)
+                if self.time_travel_enabled && edge._is_deleted {
+                    return None;
+                }
+                let source = edge.source;
+                if self.time_travel_enabled && self.vertices.get(&source).map_or(true, |v| v._is_deleted) {
+                    return None;
+                }
+                Some(source)
             })
             .collect()
     }
@@ -393,7 +450,7 @@ mod tests {
         let v2 = g.create_vertex(vec!["b".to_string()]);
         g.create_edge("rel".to_string(), v1, v2).unwrap();
         assert_eq!(g.edge_count(), 1);
-        g.remove_vertex(v1).unwrap();
+        g.remove_vertex(v1, true).unwrap();
         assert_eq!(g.vertex_count(), 1);
         assert_eq!(g.edge_count(), 0);
     }

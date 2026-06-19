@@ -103,6 +103,26 @@ pub enum TraversalStep {
         times: usize,
         steps: Vec<TraversalStep>,
     },
+
+    /// Set a query time point for time-travel (affects subsequent steps).
+    /// `at` can be a Unix timestamp in microseconds (integer) or an
+    /// ISO 8601 string like "2024-06-10T12:00:00Z".
+    ///
+    /// Example: {"step": "timeTravel", "at": 1718000000000}
+    #[serde(rename = "timeTravel")]
+    TimeTravel {
+        at: serde_json::Value,
+    },
+
+    /// Compact old history records to version log files.
+    /// `before` specifies the cutoff timestamp — records older than this
+    /// are moved from Vertex._history into .vlog files.
+    ///
+    /// Example: {"step": "compact", "before": 1718000000000}
+    #[serde(rename = "compact")]
+    Compact {
+        before: serde_json::Value,
+    },
 }
 
 /// A full Gremlin query consisting of a pipeline of traversal steps.
