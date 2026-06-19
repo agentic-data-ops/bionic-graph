@@ -107,10 +107,10 @@ impl Edge {
                         source: self.source,
                         target: self.target,
                         properties: record.properties.clone(),
-                        version: record.version,
-                        updated_at: record.updated_at,
-                        is_deleted: false,
-                        history: Vec::new(),
+                        _version: record.version,
+                        _updated_at: record.updated_at,
+                        _is_deleted: false,
+                        _history: Vec::new(),
                     });
                 }
             }
@@ -126,10 +126,10 @@ impl Edge {
                         source: self.source,
                         target: self.target,
                         properties: record.properties.clone(),
-                        version: record.version,
-                        updated_at: record.updated_at,
-                        is_deleted: false,
-                        history: Vec::new(),
+                        _version: record.version,
+                        _updated_at: record.updated_at,
+                        _is_deleted: false,
+                        _history: Vec::new(),
                     });
                 }
             }

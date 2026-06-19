@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use axum::{
     extract::{Path, State},
@@ -15,10 +16,10 @@ use crate::graph::Graph;
 use crate::graph_manager::GraphManager;
 use crate::neuron::NeuralNetwork;
 
-use crate::extract::{extract_content_raw, ExtractionConfig};
+use crate::extract::{extract_content_raw_with_nn, ExtractionConfig};
 
 use super::query::{GremlinQuery, QueryResponse};
-use super::steps::execute_query;
+use super::steps::{execute_query, execute_query_with_llm};
 
 // ─── AppState ────────────────────────────────────────────────────
 
@@ -213,7 +214,7 @@ async fn gremlin_handler(
     let gm = state.graph_manager.lock().unwrap();
     match gm.get(&graph_name) {
         Some(handle) => {
-            let result = execute_query(&handle.graph, &handle.neural_network, &query);
+            let result = execute_query_with_llm(&handle.graph, &handle.neural_network, &query, state.extraction_config.as_ref());
             Json(result)
         }
         None => Json(QueryResponse {
@@ -237,13 +238,21 @@ async fn add_vertex_handler(
     let handle = gm.get_mut(&graph_name).ok_or_else(|| {
         (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "graph not found"})))
     })?;
+    let labels = req.labels;
     let mut g = handle.graph.lock().unwrap();
     let props: std::collections::HashMap<String, crate::graph::PropertyValue> = req
         .properties.into_iter().map(|(k, v)| (k, json_to_property(&v))).collect();
-    let id = g.create_vertex(req.labels);
+    let id = g.create_vertex(labels.clone());
     if let Some(v) = g.get_vertex_mut(id) {
         v.properties = props;
     }
+    // Auto-create a neuron for this vertex
+    let nn_label = labels.first().cloned().unwrap_or_else(|| "entity".to_string());
+    let neuron = crate::neuron::neuron::Neuron::for_vertex(
+        (handle.neural_network.lock().unwrap().neuron_count() as u64) + 1,
+        &nn_label, id,
+    ).with_keywords(labels);
+    handle.neural_network.lock().unwrap().add_neuron(neuron);
     Ok(Json(AddVertexResponse { id }))
 }
 
@@ -258,13 +267,23 @@ async fn add_edge_handler(
     let handle = gm.get_mut(&graph_name).ok_or_else(|| {
         (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "graph not found"})))
     })?;
+    let label = req.label.clone();
     let mut g = handle.graph.lock().unwrap();
-    let id = g.create_edge(req.label, req.source, req.target).map_err(|e| {
+    let id = g.create_edge(label.clone(), req.source, req.target).map_err(|e| {
         (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()})))
     })?;
     if let Some(e) = g.get_edge_mut(id) {
         e.properties = req.properties.into_iter().map(|(k, v)| (k, json_to_property(&v))).collect();
     }
+    drop(g);
+    // Auto-create a neuron for this edge
+    let mut nn = handle.neural_network.lock().unwrap();
+    let nid = (nn.neuron_count() as u64) + 1;
+    let neuron = crate::neuron::neuron::Neuron::for_edge(nid, &label, id)
+        .with_keywords(vec![label.clone()]);
+    nn.add_neuron(neuron);
+    // Auto-create neural synapses between neurons referencing the two vertices
+    nn.auto_synapse(req.source, req.target);
     Ok(Json(AddEdgeResponse { id }))
 }
 
@@ -342,7 +361,7 @@ async fn search_handler(
     match gm.get(&graph_name) {
         Some(handle) => {
             let gremlin_query = GremlinQuery::new(vec![
-                super::query::TraversalStep::NeuralSearch {
+                super::query::TraversalStep::Search {
                     keywords: query_text.split_whitespace().map(|s| s.to_string()).collect(),
                 },
             ]);
@@ -364,7 +383,7 @@ async fn extract_handler(
     body: String,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let config = state.extraction_config.as_ref().ok_or_else(|| {
-        (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "Extraction not configured. Set BGRAPH_EXTRACT_API_KEY."})))
+        (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "Extraction not configured. Set BGRAPH_LLM_API_KEY."})))
     })?;
     let graph_name = resolve_graph_name(&headers);
 
@@ -385,8 +404,11 @@ async fn extract_handler(
         })?
     };
 
-    match extract_content_raw(config, &content, &format!("{}.md", graph_name), &handle.graph).await {
-        Ok(stats) => Ok(Json(serde_json::json!({
+    // Enforce a per-request timeout so a hanging LLM call doesn't block forever
+    let source_name = format!("{}.md", graph_name);
+    let extraction_future = extract_content_raw_with_nn(config, &content, &source_name, &handle.graph, &handle.neural_network);
+    match tokio::time::timeout(Duration::from_secs(600), extraction_future).await {
+        Ok(Ok(stats)) => Ok(Json(serde_json::json!({
             "success": true, "graph": graph_name,
             "stats": {
                 "total_sections": stats.total_sections,
@@ -397,7 +419,10 @@ async fn extract_handler(
                 "total_completion_tokens": stats.total_completion_tokens,
             }
         }))),
-        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e})))),
+        Ok(Err(e)) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e})))),
+        Err(_) => Err((StatusCode::GATEWAY_TIMEOUT, Json(serde_json::json!({
+            "error": "Extraction timed out after 600s. The document may be too large or the LLM is unresponsive."
+        })))),
     }
 }
 

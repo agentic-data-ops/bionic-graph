@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::index::SubgraphIndex;
-use super::subgraph::{Subgraph, SubgraphId, SubgraphMeta};
+use super::subgraph::{Subgraph, SubgraphId};
+use crate::storage::SubgraphMeta;
 
 /// Default maximum number of subgraphs to keep in memory.
 pub const DEFAULT_CACHE_CAPACITY: usize = 1000;
@@ -51,7 +52,7 @@ pub struct SubgraphCache {
 }
 
 /// Cache statistics.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct CacheStats {
     pub hits: AtomicU64,
     pub misses: AtomicU64,
@@ -89,13 +90,15 @@ impl SubgraphCache {
         id: SubgraphId,
         subgraph_index: &SubgraphIndex,
     ) -> Option<&Subgraph> {
+        let was_cached = self.entries.contains_key(&id);
         self.load_if_missing(id, subgraph_index);
-        let result = self.entries.get(&id).map(|e| &e.subgraph);
-        if result.is_some() {
+        if self.entries.contains_key(&id) {
             self.promote(id);
-            self.stats.hits.fetch_add(1, Ordering::Relaxed);
+            if was_cached {
+                self.stats.hits.fetch_add(1, Ordering::Relaxed);
+            }
         }
-        result
+        self.entries.get(&id).map(|e| &e.subgraph)
     }
 
     /// Get a subgraph (mutable). Marks it dirty so it'll be written back on eviction.
@@ -104,16 +107,18 @@ impl SubgraphCache {
         id: SubgraphId,
         subgraph_index: &SubgraphIndex,
     ) -> Option<&mut Subgraph> {
+        let was_cached = self.entries.contains_key(&id);
         self.load_if_missing(id, subgraph_index);
-        let result = self.entries.get_mut(&id).map(|e| {
+        if self.entries.contains_key(&id) {
+            self.promote(id);
+            if was_cached {
+                self.stats.hits.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        self.entries.get_mut(&id).map(|e| {
             e.dirty = true;
             &mut e.subgraph
-        });
-        if result.is_some() {
-            self.promote(id);
-            self.stats.hits.fetch_add(1, Ordering::Relaxed);
-        }
-        result
+        })
     }
 
     /// Insert a subgraph directly into the cache (for newly created subgraphs).

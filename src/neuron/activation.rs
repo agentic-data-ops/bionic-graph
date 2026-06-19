@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::graph::VertexId;
+use serde::{Deserialize, Serialize};
+
+use crate::graph::{EdgeId, VertexId};
 
 use super::neuron::{Neuron, NeuronId, Synapse};
 
@@ -16,7 +18,7 @@ pub struct TickResult {
 }
 
 /// Configuration for the spreading activation algorithm.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActivationConfig {
     /// How many ticks to run per query.
     pub max_ticks: usize,
@@ -100,7 +102,7 @@ pub fn tick(
     };
 
     TickResult {
-        fired,
+        fired: fired.clone(),
         avg_activation,
         has_activity: !fired.is_empty(),
     }
@@ -119,7 +121,7 @@ pub fn search(
     synapses: &HashMap<NeuronId, Vec<Synapse>>,
     config: &ActivationConfig,
     query_tokens: &[&str],
-) -> (Vec<(VertexId, u32)>, Vec<NeuronId>, Vec<NeuronId>, usize) {
+) -> (Vec<(VertexId, u32)>, Vec<(EdgeId, u32)>, Vec<NeuronId>, Vec<NeuronId>, usize) {
     // Step 1: Activate input neurons by keyword matching
     for neuron in neurons.values_mut() {
         let score = neuron.match_keywords(query_tokens);
@@ -140,6 +142,7 @@ pub fn search(
 
     // Step 3: Collect results
     let mut vertex_score: HashMap<VertexId, u32> = HashMap::new();
+    let mut edge_score: HashMap<EdgeId, u32> = HashMap::new();
     let mut fired_ids = Vec::new();
     let mut hot_ids = Vec::new();
 
@@ -147,10 +150,16 @@ pub fn search(
         if neuron.activation >= config.hot_threshold {
             hot_ids.push(neuron.id);
         }
-        // Check if this neuron fired during any tick (activation was at peak)
-        // We approximate: if neuron is hot OR has vertex_refs, include it
+        // Collect vertex refs
         for &vref in &neuron.vertex_refs {
             *vertex_score.entry(vref).or_insert(0) += 1;
+        }
+        // Collect edge entities
+        if let Some(ref et) = neuron.entity_type {
+            use crate::neuron::neuron::EntityType;
+            if let EntityType::Edge(eid) = et {
+                *edge_score.entry(*eid).or_insert(0) += 1;
+            }
         }
     }
 
@@ -166,8 +175,11 @@ pub fn search(
     // Sort vertices by score descending
     let mut ranked_vertices: Vec<(VertexId, u32)> = vertex_score.into_iter().collect();
     ranked_vertices.sort_by(|a, b| b.1.cmp(&a.1));
+    // Sort edges by score descending
+    let mut ranked_edges: Vec<(EdgeId, u32)> = edge_score.into_iter().collect();
+    ranked_edges.sort_by(|a, b| b.1.cmp(&a.1));
 
-    (ranked_vertices, fired_ids, hot_ids, ticks_run)
+    (ranked_vertices, ranked_edges, fired_ids, hot_ids, ticks_run)
 }
 
 /// Reset all neurons to resting state (zero activation, no refractory).
@@ -261,7 +273,7 @@ mod tests {
             auto_stabilize: true,
         };
 
-        let (vertices, fired, hot, ticks) = search(&mut neurons, &synapses, &config, &["ai"]);
+        let (vertices, _edges, fired, hot, ticks) = search(&mut neurons, &synapses, &config, &["ai"]);
         assert!(vertices.len() >= 2, "Should find vertices via AI neuron");
         assert!(ticks > 0, "Should run at least one tick");
         println!("Fired: {:?}, Hot: {:?}, Ticks: {}", fired, hot, ticks);

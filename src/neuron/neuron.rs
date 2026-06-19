@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::graph::VertexId;
+use crate::graph::{EdgeId, VertexId};
 
 /// Unique identifier for a neuron.
 pub type NeuronId = u64;
@@ -17,6 +17,15 @@ pub struct Synapse {
     pub strength: f32,
     /// Hebbian learning rate — how much strength changes per co-firing event.
     pub plasticity: f32,
+}
+
+/// What graph entity this neuron represents.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum EntityType {
+    /// This neuron indexes a single vertex.
+    Vertex(VertexId),
+    /// This neuron indexes a single edge.
+    Edge(EdgeId),
 }
 
 /// A single neuron in the bio-inspired activation-spreading network.
@@ -49,6 +58,8 @@ pub struct Neuron {
     pub refractory_remaining: usize,
     /// Knowledge graph vertices indexed by this neuron.
     pub vertex_refs: Vec<VertexId>,
+    /// The graph entity this neuron represents (vertex or edge), if any.
+    pub entity_type: Option<EntityType>,
     /// Outgoing synapses to other neurons.
     pub synapses: Vec<Synapse>,
 
@@ -71,11 +82,27 @@ impl Neuron {
             refractory_ticks: 3,
             refractory_remaining: 0,
             vertex_refs: Vec::new(),
+            entity_type: None,
             synapses: Vec::new(),
             _version: 1,
             _updated_at: crate::graph::vertex::now_micros(),
             _is_deleted: false,
         }
+    }
+
+    /// Create a neuron representing a single vertex.
+    pub fn for_vertex(id: NeuronId, label: impl Into<String>, vid: VertexId) -> Self {
+        let mut n = Self::new(id, label);
+        n.vertex_refs.push(vid);
+        n.entity_type = Some(EntityType::Vertex(vid));
+        n
+    }
+
+    /// Create a neuron representing a single edge.
+    pub fn for_edge(id: NeuronId, label: impl Into<String>, eid: EdgeId) -> Self {
+        let mut n = Self::new(id, label);
+        n.entity_type = Some(EntityType::Edge(eid));
+        n
     }
 
     /// Set the keywords that trigger this neuron.

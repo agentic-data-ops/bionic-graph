@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::graph::VertexId;
+use crate::graph::{EdgeId, VertexId};
 
 use super::activation::{self, ActivationConfig, TickResult};
 use super::learning::{self, FiringHistory, LearningConfig};
@@ -113,6 +113,28 @@ impl NeuralNetwork {
         }
     }
 
+    /// Auto-create synapses between neurons that reference two vertices.
+    /// For every neuron whose vertex_refs contains `source`, creates a synapse
+    /// to every neuron whose vertex_refs contains `target` (if not already present).
+    pub fn auto_synapse(&mut self, source: VertexId, target: VertexId) {
+        let src_ids: Vec<NeuronId> = self.neurons.iter()
+            .filter(|(_, n)| n.vertex_refs.contains(&source))
+            .map(|(&id, _)| id).collect();
+        let tgt_ids: Vec<NeuronId> = self.neurons.iter()
+            .filter(|(_, n)| n.vertex_refs.contains(&target))
+            .map(|(&id, _)| id).collect();
+        for &pre in &src_ids {
+            for &post in &tgt_ids {
+                if pre == post { continue; }
+                let exists = self.synapses.get(&pre)
+                    .map_or(false, |s| s.iter().any(|syn| syn.post_neuron_id == post));
+                if !exists {
+                    let _ = self.add_synapse(pre, post, 0.5, 0.1);
+                }
+            }
+        }
+    }
+
     // ─── Query ────────────────────────────────────────────────────
 
     /// Search the neural index with query keywords.
@@ -121,7 +143,7 @@ impl NeuralNetwork {
     pub fn search(
         &mut self,
         query: &str,
-    ) -> (Vec<(VertexId, u32)>, Vec<NeuronId>, Vec<NeuronId>, usize) {
+    ) -> (Vec<(VertexId, u32)>, Vec<(EdgeId, u32)>, Vec<NeuronId>, Vec<NeuronId>, usize) {
         // Tokenize query
         let tokens: Vec<&str> = query
             .split_whitespace()
@@ -130,7 +152,7 @@ impl NeuralNetwork {
             .collect();
 
         if tokens.is_empty() {
-            return (Vec::new(), Vec::new(), Vec::new(), 0);
+            return (Vec::new(), Vec::new(), Vec::new(), Vec::new(), 0);
         }
 
         let result = activation::search(
@@ -142,7 +164,7 @@ impl NeuralNetwork {
 
         // Run Hebbian learning
         let mut history = FiringHistory::new(self.learning_config.co_fire_window);
-        history.record_tick(&result.1);
+        history.record_tick(&result.2);
         learning::hebbian_update(
             &self.neurons,
             &mut self.synapses,
@@ -150,8 +172,8 @@ impl NeuralNetwork {
             &self.learning_config,
         );
 
-        self.total_ticks += result.3 as u64;
-        if !result.1.is_empty() {
+        self.total_ticks += result.4 as u64;
+        if !result.2.is_empty() {
             self.dirty = true;
         }
 

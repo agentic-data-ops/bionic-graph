@@ -15,17 +15,15 @@ Bionic-Graph is a **low-cost AI memory system** that combines a knowledge graph 
 ```
 ┌──────────────────────────────────────────────────────────┐
 │                   Gremlin API (REST)                      │
-│  V() / E() / has() / hasText() / out(depth) / in()       │
-│  both() / repeat() / limit() / neuralSearch()             │
-│  timeTravel() / compact() / extract() / graphs()          │
+│  V() / E() / has() / hasNot() / hasKey() / hasValue()    │
+│  hasText() / out(depth) / in() / both() / repeat()       │
+│  outE() / inE() / bothE() / timeTravel() / compact()     │
+│  keywordSearch() / semanticSearch() / extract()           │
 ├──────────────────────────────────────────────────────────┤
 │              Neural Index (spreading activation)          │
-│  keyword → neuron activation → spread → vertex find      │
+│  keyword → neuron activation → spread → entity find      │
+│  EntityType(Vertex|Edge)  |  auto-synapse on edge add    │
 │  Hebbian learning  |  auto-persist to disk               │
-├──────────────────────────────────────────────────────────┤
-│              Knowledge Graph (adjacency list)             │
-│  Vertex / Edge / Property  |  BFS / DFS traversal        │
-│  Time-travel: versioned history, soft-delete, at_time()  │
 ├──────────────────────────────────────────────────────────┤
 │              Storage Engine (disk-backed)                 │
 │  Subgraph partitioning  |  LRU cache  |  WAL + redo      │
@@ -39,8 +37,8 @@ Bionic-Graph is a **low-cost AI memory system** that combines a knowledge graph 
 | Layer | Module | What it does |
 |-------|--------|-------------|
 | **Graph** | `src/graph/` | Directed property graph with dual adjacency lists. MVCC versioning (`_version`, `_updated_at`, `_is_deleted`, `_history`). Soft-delete. Time-travel `at_time()`. Optional time-travel per graph. |
-| **Neural Index** | `src/neuron/` | Spreading activation network — each neuron represents a concept, fires when activation exceeds a threshold, spreads via synapses. Hebbian learning. No matrix multiply — just f32 add/compare. |
-| **Gremlin API** | `src/gremlin/` | JSON pipeline over HTTP. Steps: V, E, has, hasLabel, hasText, out(depth), in, both, values, limit, count, dedup, repeat, timeTravel, compact, plus custom `neuralSearch`. |
+| **Neural Index** | `src/neuron/` | Spreading activation network — each neuron represents a concept or graph entity (`EntityType::Vertex`/`Edge`), fires when activation exceeds a threshold, spreads via synapses. Hebbian learning. Auto-synapse on edge creation. |
+| **Gremlin API** | `src/gremlin/` | JSON pipeline over HTTP. 16 steps: V, E, has, hasNot, hasKey, hasValue, hasLabel, hasText, out(depth), in, both, outE, inE, bothE, values, limit, count, dedup, repeat, timeTravel, compact, keywordSearch, semanticSearch. |
 | **Storage** | `src/storage/` | Subgraph partitioning + LRU cache. WAL (CRC32, checkpoint, crash recovery). Version log (.vlog) with sparse index for archived history. Compaction orchestrator. |
 | **Extraction** | `src/extract/` | Markdown → section splitting → LLM (OpenAI-compatible) → entities/relations → graph insert. Configurable context window. |
 | **Graph Manager** | `src/graph_manager.rs` | Multiple named graphs, each persisted to `data/{name}/`. Manage via REST API. Optional time-travel per graph. |
@@ -117,7 +115,7 @@ Auto-created at `~/.config/bionic-graph/settings.json` if not present:
 | `host` | `"127.0.0.1"` | Bind address |
 | `port` | `8080` | TCP port |
 
-#### `extraction`
+#### `extraction` (also used by `semanticSearch`)
 
 | Field | Default | Description |
 |-------|---------|-------------|
@@ -125,6 +123,8 @@ Auto-created at `~/.config/bionic-graph/settings.json` if not present:
 | `model` | `"deepseek-v4-flash"` | Model name |
 | `context_window` | `65536` | Token limit |
 | `max_output_tokens` | `8192` | Response token limit |
+
+Required: set `BGRAPH_LLM_API_KEY` env var (or legacy `BGRAPH_EXTRACT_API_KEY`).
 
 #### `storage`
 
@@ -160,9 +160,9 @@ Auto-created at `~/.config/bionic-graph/settings.json` if not present:
 | `BGRAPH_HOST` | `server.host` |
 | `BGRAPH_PORT` | `server.port` |
 | `BGRAPH_DATA_DIR` | `storage.data_dir` |
-| `BGRAPH_EXTRACT_API_KEY` | API key |
-| `BGRAPH_EXTRACT_BASE_URL` | `extraction.api_base_url` |
-| `BGRAPH_EXTRACT_MODEL` | `extraction.model` |
+| `BGRAPH_LLM_API_KEY` | API key (also `BGRAPH_EXTRACT_API_KEY` for compat) |
+| `BGRAPH_LLM_BASE_URL` | `extraction.api_base_url` |
+| `BGRAPH_LLM_MODEL` | `extraction.model` |
 
 ### Use the API
 
@@ -201,13 +201,21 @@ curl localhost:8080/health
 #### Neural search + traversal
 
 ```bash
+# keywordSearch: neural index search (returns vertices + edges)
 curl -X POST localhost:8080/gremlin \
   -H 'Content-Type: application/json' \
   -d '{"steps":[
-    {"step":"neuralSearch","keywords":["AI","engineer"]},
+    {"step":"keywordSearch","keywords":["AI","engineer"]},
     {"step":"out","label":"works_at","depth":2},
     {"step":"hasText","key":"name","pattern":"ali"},
     {"step":"limit","count":10}
+  ]}'
+
+# semanticSearch: LLM extracts keywords, then keywordSearch + LLM result filtering
+curl -X POST localhost:8080/gremlin \
+  -H 'Content-Type: application/json' \
+  -d '{"steps":[
+    {"step":"semanticSearch","query":"Find engineers who work on AI projects"}
   ]}'
 ```
 
@@ -248,25 +256,56 @@ curl -X POST localhost:8080/gremlin \
 
 #### Document extraction
 
+Extracts entities, relations, section hierarchy, and paragraphs from Markdown:
+
 ```bash
+# Set your LLM API key first
+export BGRAPH_LLM_API_KEY=sk-...
+
+# Extract from a Markdown file
 curl -X POST localhost:8080/extract \
   -H 'Content-Type: text/markdown' \
   --data-binary @README.md
 ```
 
+The extraction pipeline:
+1. Splits the document into **sections** by headings (inserted as `section` vertices)
+2. Splits each section's content into **paragraphs** (inserted as `paragraph` vertices)
+3. Calls the LLM to extract **entities** and **relations** (inserted as vertices + edges)
+4. Creates **`mentioned_in`** edges linking entities to their source section
+5. Maintains section hierarchy via **`has_subsection`** edges
+6. Auto-creates **neural synapses** between related entities via `auto_synapse`
+
+Response example:
+```json
+{"graph":"default","stats":{
+  "new_vertices":137, "new_edges":238,
+  "processed_sections":21, "total_sections":21
+}}
+```
+
+> Requires `BGRAPH_LLM_API_KEY` env var (or `BGRAPH_EXTRACT_API_KEY` for backward compat).
+
 #### Supported Gremlin steps
 
 | Step | Parameters | Description |
 |------|-----------|-------------|
-| `neuralSearch` | `keywords: [string]` | 🔥 Find vertices via neural index |
+| `keywordSearch` | `keywords: [string]` | 🔥 Neural index search (vertices + edges) |
+| `semanticSearch` | `query: string` | 🔥 LLM → keywordSearch → LLM filter |
 | `V` | `ids?: [number]` | All or specific vertices |
 | `E` | `ids?: [number]` | All or specific edges |
 | `has` | `key, value` | Exact property filter |
+| `hasNot` | `key, value` | Negated property filter |
+| `hasKey` | `key` | Filter by property existence |
+| `hasValue` | `value` | Filter by any property value |
 | `hasLabel` | `labels: [string]` | Label filter |
 | `hasText` | `key, pattern` | Case-insensitive substring match |
 | `out` | `label?, depth?` | Outgoing edges (depth=N for BFS) |
 | `in` | `label?, depth?` | Incoming edges |
 | `both` | `label?, depth?` | Both directions |
+| `outE` | `label?` | Outgoing edges as EdgeResult |
+| `inE` | `label?` | Incoming edges as EdgeResult |
+| `bothE` | `label?` | Both-direction edges as EdgeResult |
 | `values` | `key` | Extract property values |
 | `limit` | `count` | Cap results |
 | `count` | — | Count results |
@@ -279,7 +318,7 @@ curl -X POST localhost:8080/extract \
 
 ```bash
 cargo run --example demo
-cargo test
+cargo test   # 151 unit tests
 ```
 
 ---

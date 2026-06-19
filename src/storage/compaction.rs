@@ -104,8 +104,8 @@ mod tests {
 
         let dir = tempdir().unwrap();
         // Compact everything before a far-future timestamp
-        let stats = compact_graph(&mut graph, dir.path(), 9999999999999_i64, 1);
-        assert!(stats.records_archived >= 5, "Should archive old records");
+        let stats = compact_graph(&mut graph, dir.path(), 9_999_999_999_999_999_i64, 1);
+        assert!(stats.records_archived >= 5, "Should archive old records, got {}", stats.records_archived);
         assert!(stats.vlog.is_some(), "Should have written vlog");
 
         // Check vlog was created

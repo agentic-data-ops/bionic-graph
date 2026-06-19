@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
+use crate::extract::ExtractionConfig;
 use crate::graph::{Graph, VertexId, PropertyValue};
-use crate::graph::traversal::Bfs;
 use crate::neuron::NeuralNetwork;
 
 use super::query::{
@@ -19,6 +19,16 @@ pub fn execute_query(
     graph: &Arc<Mutex<Graph>>,
     neural_network: &Arc<Mutex<NeuralNetwork>>,
     query: &GremlinQuery,
+) -> QueryResponse {
+    execute_query_with_llm(graph, neural_network, query, None)
+}
+
+/// Execute a Gremlin query with optional LLM config for semantic search.
+pub fn execute_query_with_llm(
+    graph: &Arc<Mutex<Graph>>,
+    neural_network: &Arc<Mutex<NeuralNetwork>>,
+    query: &GremlinQuery,
+    llm_config: Option<&ExtractionConfig>,
 ) -> QueryResponse {
     // The current stream of results — starts empty (needs a source step)
     let mut current: Result<Vec<TraversalResult>, String> = Ok(Vec::new());
@@ -40,26 +50,81 @@ pub fn execute_query(
         };
 
         current = match step {
-            TraversalStep::NeuralSearch { keywords } => {
+            TraversalStep::Search { keywords } => {
                 let mut nn = neural_network.lock().unwrap();
                 let query_str = keywords.join(" ");
-                let (ranked_vertices, fired, _hot, ticks) = nn.search(&query_str);
+                let (ranked_vertices, ranked_edges, fired, _hot, ticks) = nn.search(&query_str);
                 ticks_used = Some(ticks);
                 neurons_fired = Some(fired);
 
-                // Convert ranked vertices to TraversalResults
-                let results: Vec<TraversalResult> = ranked_vertices
+                let mut results: Vec<TraversalResult> = ranked_vertices
                     .into_iter()
                     .map(|(vid, _score)| TraversalResult::VertexResult(VertexResult {
                         element_type: "vertex".to_string(),
                         id: vid,
-                        labels: Vec::new(), // Will be filled below
+                        labels: Vec::new(),
                         properties: std::collections::HashMap::new(),
                     }))
                     .collect();
 
-                // Fill in vertex details from graph
+                // Add edge results from search
+                let g = graph.lock().unwrap();
+                for (eid, _score) in ranked_edges {
+                    if let Some(e) = g.get_edge(eid) {
+                        results.push(edge_to_result(e));
+                    }
+                }
+                drop(g);
+
                 fill_vertex_details(&graph.lock().unwrap(), results)
+            }
+
+            TraversalStep::SemanticSearch { query } => {
+                let keywords = extract_search_keywords(llm_config, query);
+                let mut nn = neural_network.lock().unwrap();
+                let query_str = keywords.join(" ");
+                let (ranked_vertices, ranked_edges, fired, _hot, ticks) = nn.search(&query_str);
+                ticks_used = Some(ticks);
+                neurons_fired = Some(fired);
+
+                // Convert ranked vertices to TraversalResults
+                let mut results: Vec<TraversalResult> = ranked_vertices
+                    .into_iter()
+                    .map(|(vid, _score)| TraversalResult::VertexResult(VertexResult {
+                        element_type: "vertex".to_string(),
+                        id: vid,
+                        labels: Vec::new(),
+                        properties: std::collections::HashMap::new(),
+                    }))
+                    .collect();
+
+                // Add edge results from search
+                let g = graph.lock().unwrap();
+                for (eid, _score) in ranked_edges {
+                    if let Some(e) = g.get_edge(eid) {
+                        results.push(edge_to_result(e));
+                    }
+                }
+                drop(g);
+
+                // Fill in vertex details from graph
+                let filled = match fill_vertex_details(&graph.lock().unwrap(), results) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        return QueryResponse {
+                            success: false, data: Vec::new(), error: Some(e),
+                            ticks_used: None, neurons_fired: None,
+                        };
+                    }
+                };
+
+                // Post-filter: LLM prunes results not semantically relevant
+                let final_results = if let Some(config) = llm_config {
+                    semantic_filter_results(config, query, &filled)
+                } else {
+                    Ok(filled)
+                };
+                final_results
             }
 
             TraversalStep::V { ids } => {
@@ -103,6 +168,41 @@ pub fn execute_query(
             TraversalStep::Has { key, value } => {
                 let g = graph.lock().unwrap();
                 let results = filter_by_property(&g, input, key, value);
+                Ok(results)
+            }
+
+            TraversalStep::HasNot { key, value } => {
+                let g = graph.lock().unwrap();
+                let results = filter_by_property_not(&g, input, key, value);
+                Ok(results)
+            }
+
+            TraversalStep::HasKey { key } => {
+                let g = graph.lock().unwrap();
+                let results: Vec<TraversalResult> = input
+                    .into_iter()
+                    .filter(|r| match r {
+                        TraversalResult::VertexResult(v) => v.properties.contains_key(key),
+                        TraversalResult::EdgeResult(e) => e.properties.contains_key(key),
+                        _ => false,
+                    })
+                    .collect();
+                Ok(results)
+            }
+
+            TraversalStep::HasValue { value } => {
+                let results: Vec<TraversalResult> = input
+                    .into_iter()
+                    .filter(|r| match r {
+                        TraversalResult::VertexResult(v) => {
+                            v.properties.values().any(|pv| pv == value)
+                        }
+                        TraversalResult::EdgeResult(e) => {
+                            e.properties.values().any(|pv| pv == value)
+                        }
+                        _ => false,
+                    })
+                    .collect();
                 Ok(results)
             }
 
@@ -171,6 +271,68 @@ pub fn execute_query(
                 }
             }
 
+            TraversalStep::OutE { label } => {
+                let g = graph.lock().unwrap();
+                let results: Vec<TraversalResult> = input
+                    .into_iter()
+                    .flat_map(|r| match r {
+                        TraversalResult::VertexResult(v) => {
+                            let eids = g.outgoing_edges(v.id);
+                            let out: Vec<TraversalResult> = eids.iter()
+                                .filter_map(|eid| g.get_edge(*eid))
+                                .filter(|e| label.as_deref().map_or(true, |l| e.label == l))
+                                .map(|e| edge_to_result(e))
+                                .collect();
+                            out
+                        }
+                        other => vec![other],
+                    })
+                    .collect();
+                Ok(results)
+            }
+
+            TraversalStep::InE { label } => {
+                let g = graph.lock().unwrap();
+                let results: Vec<TraversalResult> = input
+                    .into_iter()
+                    .flat_map(|r| match r {
+                        TraversalResult::VertexResult(v) => {
+                            let eids = g.incoming_edges(v.id);
+                            let out: Vec<TraversalResult> = eids.iter()
+                                .filter_map(|eid| g.get_edge(*eid))
+                                .filter(|e| label.as_deref().map_or(true, |l| e.label == l))
+                                .map(|e| edge_to_result(e))
+                                .collect();
+                            out
+                        }
+                        other => vec![other],
+                    })
+                    .collect();
+                Ok(results)
+            }
+
+            TraversalStep::BothE { label } => {
+                let g = graph.lock().unwrap();
+                let results: Vec<TraversalResult> = input
+                    .into_iter()
+                    .flat_map(|r| match r {
+                        TraversalResult::VertexResult(v) => {
+                            let eids: Vec<_> = g.outgoing_edges(v.id).into_iter()
+                                .chain(g.incoming_edges(v.id).into_iter())
+                                .collect();
+                            let out: Vec<TraversalResult> = eids.iter()
+                                .filter_map(|eid| g.get_edge(*eid))
+                                .filter(|e| label.as_deref().map_or(true, |l| e.label == l))
+                                .map(|e| edge_to_result(e))
+                                .collect();
+                            out
+                        }
+                        other => vec![other],
+                    })
+                    .collect();
+                Ok(results)
+            }
+
             TraversalStep::HasText { key, pattern } => {
                 let pattern_lower = pattern.to_lowercase();
                 let results: Vec<TraversalResult> = input
@@ -199,7 +361,15 @@ pub fn execute_query(
             TraversalStep::Repeat { times, steps } => {
                 let mut current = input;
                 for _ in 0..*times {
-                    current = run_steps(&current, steps, graph, neural_network)?;
+                    current = match run_steps(&current, steps, graph, neural_network) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return QueryResponse {
+                                success: false, data: Vec::new(), error: Some(e),
+                                ticks_used: None, neurons_fired: None,
+                            };
+                        }
+                    };
                     if current.is_empty() {
                         break;
                     }
@@ -208,7 +378,15 @@ pub fn execute_query(
             }
 
             TraversalStep::Compact { before } => {
-                let timestamp = parse_time_value(before)?;
+                let timestamp = match parse_time_value(before) {
+                    Ok(ts) => ts,
+                    Err(e) => {
+                        return QueryResponse {
+                            success: false, data: Vec::new(), error: Some(e),
+                            ticks_used: None, neurons_fired: None,
+                        };
+                    }
+                };
                 log::info!("Compacting history before timestamp {}", timestamp);
                 let data_dir = std::path::Path::new("data");
                 let mut g = graph.lock().unwrap();
@@ -226,7 +404,15 @@ pub fn execute_query(
             }
 
             TraversalStep::TimeTravel { at } => {
-                let timestamp = parse_time_value(at)?;
+                let timestamp = match parse_time_value(at) {
+                    Ok(ts) => ts,
+                    Err(e) => {
+                        return QueryResponse {
+                            success: false, data: Vec::new(), error: Some(e),
+                            ticks_used: None, neurons_fired: None,
+                        };
+                    }
+                };
                 log::debug!("TimeTravel: filtering at timestamp {}", timestamp);
                 let g = graph.lock().unwrap();
                 let results: Vec<TraversalResult> = input
@@ -235,7 +421,7 @@ pub fn execute_query(
                         TraversalResult::VertexResult(v) => {
                             let original = g.get_vertex_including_deleted(v.id)?;
                             let snapshot = original.at_time(timestamp)?;
-                            Some(vertex_to_result(&g, snapshot.id))
+                            Some(vertex_from_snapshot(&snapshot))
                         }
                         _ => Some(r),
                     })
@@ -453,9 +639,96 @@ fn run_steps(
                 }
             }
 
+            TraversalStep::OutE { label } => {
+                let g = graph.lock().unwrap();
+                let eids: Vec<_> = current.iter()
+                    .flat_map(|r| match r {
+                        TraversalResult::VertexResult(v) => {
+                            let mut e = g.outgoing_edges(v.id);
+                            if let Some(ref lbl) = label {
+                                e.retain(|eid| g.get_edge(*eid).map_or(false, |e| e.label == *lbl));
+                            }
+                            e
+                        }
+                        _ => vec![],
+                    })
+                    .collect();
+                eids.iter()
+                    .filter_map(|eid| g.get_edge(*eid))
+                    .map(|e| edge_to_result(e))
+                    .collect::<Vec<_>>()
+            }
+
+            TraversalStep::InE { label } => {
+                let g = graph.lock().unwrap();
+                let eids: Vec<_> = current.iter()
+                    .flat_map(|r| match r {
+                        TraversalResult::VertexResult(v) => {
+                            let mut e = g.incoming_edges(v.id);
+                            if let Some(ref lbl) = label {
+                                e.retain(|eid| g.get_edge(*eid).map_or(false, |e| e.label == *lbl));
+                            }
+                            e
+                        }
+                        _ => vec![],
+                    })
+                    .collect();
+                eids.iter()
+                    .filter_map(|eid| g.get_edge(*eid))
+                    .map(|e| edge_to_result(e))
+                    .collect::<Vec<_>>()
+            }
+
+            TraversalStep::BothE { label } => {
+                let g = graph.lock().unwrap();
+                let eids: Vec<_> = current.iter()
+                    .flat_map(|r| match r {
+                        TraversalResult::VertexResult(v) => {
+                            let mut e: Vec<_> = g.outgoing_edges(v.id).into_iter()
+                                .chain(g.incoming_edges(v.id).into_iter())
+                                .collect();
+                            if let Some(ref lbl) = label {
+                                e.retain(|eid| g.get_edge(*eid).map_or(false, |e| e.label == *lbl));
+                            }
+                            e
+                        }
+                        _ => vec![],
+                    })
+                    .collect();
+                eids.iter()
+                    .filter_map(|eid| g.get_edge(*eid))
+                    .map(|e| edge_to_result(e))
+                    .collect::<Vec<_>>()
+            }
+
             TraversalStep::Has { key, value } => {
                 let g = graph.lock().unwrap();
                 filter_by_property(&g, current, key, value)
+            }
+
+            TraversalStep::HasNot { key, value } => {
+                let g = graph.lock().unwrap();
+                filter_by_property_not(&g, current, key, value)
+            }
+
+            TraversalStep::HasKey { key } => {
+                current.into_iter()
+                    .filter(|r| match r {
+                        TraversalResult::VertexResult(v) => v.properties.contains_key(key),
+                        TraversalResult::EdgeResult(e) => e.properties.contains_key(key),
+                        _ => false,
+                    })
+                    .collect::<Vec<_>>()
+            }
+
+            TraversalStep::HasValue { value } => {
+                current.into_iter()
+                    .filter(|r| match r {
+                        TraversalResult::VertexResult(v) => v.properties.values().any(|pv| pv == value),
+                        TraversalResult::EdgeResult(e) => e.properties.values().any(|pv| pv == value),
+                        _ => false,
+                    })
+                    .collect::<Vec<_>>()
             }
 
             TraversalStep::HasLabel { labels } => {
@@ -551,8 +824,12 @@ fn run_steps(
                 current
             }
 
-            TraversalStep::NeuralSearch { .. } => {
-                return Err("neuralSearch is not supported inside repeat".to_string());
+            TraversalStep::Search { .. } => {
+                return Err("keywordSearch is not supported inside repeat".to_string());
+            }
+
+            TraversalStep::SemanticSearch { .. } => {
+                return Err("semanticSearch is not supported inside repeat".to_string());
             }
 
             TraversalStep::E { .. } => {
@@ -568,6 +845,78 @@ fn run_steps(
 
 /// Parse the `at` value from a timeTravel step.
 /// Accepts: integer (Unix microseconds) or ISO 8601 string.
+/// Extract search keywords from a natural language query using LLM.
+/// Falls back to simple whitespace splitting if LLM is unavailable.
+fn extract_search_keywords(llm_config: Option<&ExtractionConfig>, query: &str) -> Vec<String> {
+    if let Some(config) = llm_config {
+        let system_prompt = "Extract 3-5 key search keywords (English/Pinyin) from this query. Return ONLY a JSON array of strings, no other text.";
+        let user_msg = format!("Query: {}", query);
+        match tokio::runtime::Handle::current().block_on(
+            crate::extract::llm_client::chat_completion_with_retry(config, system_prompt, &user_msg)
+        ) {
+            Ok(result) => {
+                let trimmed = result.content.trim();
+                if trimmed.starts_with('[') {
+                    serde_json::from_str::<Vec<String>>(trimmed).unwrap_or_else(|_| {
+                        query.split_whitespace().map(|s| s.to_string()).collect()
+                    })
+                } else {
+                    query.split_whitespace().map(|s| s.to_string()).collect()
+                }
+            }
+            Err(_) => query.split_whitespace().map(|s| s.to_string()).collect(),
+        }
+    } else {
+        query.split_whitespace().map(|s| s.to_string()).collect()
+    }
+}
+
+/// After keywordSearch, ask the LLM to prune results not semantically relevant.
+fn semantic_filter_results(
+    config: &ExtractionConfig,
+    query: &str,
+    results: &[TraversalResult],
+) -> Result<Vec<TraversalResult>, String> {
+    if results.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Build a compact summary of the search results
+    let mut summary = String::new();
+    for (i, r) in results.iter().enumerate() {
+        if let TraversalResult::VertexResult(v) = r {
+            let name = v.properties.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+            let labels = v.labels.join(", ");
+            summary.push_str(&format!("{}. {} [{}]\n", i + 1, name, labels));
+        }
+    }
+
+    let system_prompt = "You are a semantic relevance filter. Given a user query and a list of search results, return ONLY the indices (comma-separated, 1-based) of results that are semantically relevant to the query. If none are relevant, return \"NONE\". No other text.";
+    let user_msg = format!("Query: {}\n\nSearch results:\n{}", query, summary);
+
+    match tokio::runtime::Handle::current().block_on(
+        crate::extract::llm_client::chat_completion_with_retry(config, system_prompt, &user_msg)
+    ) {
+        Ok(reply) => {
+            let text = reply.content.trim();
+            if text == "NONE" {
+                return Ok(Vec::new());
+            }
+            let indices: Vec<usize> = text.split(',')
+                .filter_map(|s| s.trim().parse::<usize>().ok())
+                .filter(|&i| i > 0 && i <= results.len())
+                .map(|i| i - 1)
+                .collect();
+            if indices.is_empty() {
+                // Fall back to returning all results
+                return Ok(results.to_vec());
+            }
+            Ok(indices.into_iter().map(|i| results[i].clone()).collect())
+        }
+        Err(_) => Ok(results.to_vec()), // LLM failed, keep all results
+    }
+}
+
 pub fn parse_time_value(at: &serde_json::Value) -> Result<i64, String> {
     match at {
         Value::Number(n) => n.as_i64().ok_or_else(|| "Invalid timestamp".to_string()),
@@ -630,6 +979,22 @@ fn edge_to_result(e: &crate::graph::Edge) -> TraversalResult {
     })
 }
 
+/// Create a VertexResult from a Vertex snapshot (used by TimeTravel).
+fn vertex_from_snapshot(v: &crate::graph::Vertex) -> TraversalResult {
+    let props: std::collections::HashMap<String, Value> = v
+        .properties
+        .iter()
+        .map(|(k, pv)| (k.clone(), property_to_json(pv)))
+        .collect();
+
+    TraversalResult::VertexResult(VertexResult {
+        element_type: "vertex".to_string(),
+        id: v.id,
+        labels: v.labels.clone(),
+        properties: props,
+    })
+}
+
 fn property_to_json(pv: &PropertyValue) -> Value {
     match pv {
         PropertyValue::String(s) => Value::String(s.clone()),
@@ -651,7 +1016,7 @@ fn fill_vertex_details(g: &Graph, results: Vec<TraversalResult>) -> Result<Vec<T
     let filled: Vec<TraversalResult> = results
         .into_iter()
         .map(|r| match r {
-            TraversalResult::VertexResult(v) => {
+            TraversalResult::VertexResult(ref v) => {
                 if let Some(vertex) = g.get_vertex(v.id) {
                     let props: std::collections::HashMap<String, Value> = vertex
                         .properties
@@ -661,10 +1026,10 @@ fn fill_vertex_details(g: &Graph, results: Vec<TraversalResult>) -> Result<Vec<T
                     TraversalResult::VertexResult(VertexResult {
                         labels: vertex.labels.clone(),
                         properties: props,
-                        ..v
+                        ..v.clone()
                     })
                 } else {
-                    r
+                    TraversalResult::VertexResult(v.clone())
                 }
             }
             _ => r,
@@ -690,4 +1055,549 @@ fn filter_by_property(
             props.get(key).map_or(false, |pv| pv == value)
         })
         .collect()
+}
+
+/// Filter results where a property does NOT match the given value.
+fn filter_by_property_not(
+    g: &Graph,
+    input: Vec<TraversalResult>,
+    key: &str,
+    value: &Value,
+) -> Vec<TraversalResult> {
+    input
+        .into_iter()
+        .filter(|r| {
+            let props = match r {
+                TraversalResult::VertexResult(ref v) => &v.properties,
+                TraversalResult::EdgeResult(ref e) => &e.properties,
+                _ => return false,
+            };
+            props.get(key).map_or(true, |pv| pv != value)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::{Graph, PropertyValue};
+    use crate::neuron::{NeuralNetwork, Neuron};
+
+    fn setup_graph() -> Arc<Mutex<Graph>> {
+        let mut g = Graph::new();
+        let alice = g.create_vertex(vec!["person".into(), "engineer".into()]);
+        let bob = g.create_vertex(vec!["person".into(), "scientist".into()]);
+        let carol = g.create_vertex(vec!["person".into(), "designer".into()]);
+        let project = g.create_vertex(vec!["project".into()]);
+
+        // Set properties
+        for (vid, name, age) in &[(alice, "Alice", 30), (bob, "Bob", 25), (carol, "Carol", 28)] {
+            if let Some(v) = g.get_vertex_mut(*vid) {
+                v.properties.insert("name".into(), PropertyValue::String(name.to_string()));
+                v.properties.insert("age".into(), PropertyValue::Integer(*age));
+            }
+        }
+        if let Some(v) = g.get_vertex_mut(project) {
+            v.properties.insert("name".into(), PropertyValue::String("BionicGraph".into()));
+        }
+
+        // Add edges: Alice --knows--> Bob, Alice --knows--> Carol
+        g.create_edge("knows".into(), alice, bob).unwrap();
+        g.create_edge("knows".into(), alice, carol).unwrap();
+        // Carol --works_at--> project
+        g.create_edge("works_at".into(), carol, project).unwrap();
+
+        Arc::new(Mutex::new(g))
+    }
+
+    fn setup_neural_network() -> Arc<Mutex<NeuralNetwork>> {
+        let mut nn = NeuralNetwork::new();
+        let n = Neuron::new(1, "person")
+            .with_keywords(vec!["person".to_string(), "engineer".to_string()]);
+        nn.add_neuron(n);
+        Arc::new(Mutex::new(nn))
+    }
+
+    fn run_query(graph: &Arc<Mutex<Graph>>, nn: &Arc<Mutex<NeuralNetwork>>, steps: Vec<TraversalStep>) -> QueryResponse {
+        let query = GremlinQuery::new(steps);
+        execute_query(graph, nn, &query)
+    }
+
+    // ─── V / has / values 基础管道 ───────────────────────────
+
+    #[test]
+    fn test_v_all_vertices() {
+        let g = setup_graph();
+        let nn = setup_neural_network();
+        let resp = run_query(&g, &nn, vec![TraversalStep::V { ids: vec![] }]);
+        assert!(resp.success, "V() should succeed");
+        assert_eq!(resp.data.len(), 4, "Should return all 4 vertices");
+        // All should be vertex results
+        for r in &resp.data {
+            match r {
+                TraversalResult::VertexResult(_) => {}
+                _ => panic!("Expected VertexResult"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_v_specific_ids() {
+        let g = setup_graph();
+        let nn = setup_neural_network();
+        // First find IDs by running V() 
+        let all = run_query(&g, &nn, vec![TraversalStep::V { ids: vec![] }]);
+        let ids: Vec<u64> = all.data.iter().filter_map(|r| {
+            if let TraversalResult::VertexResult(v) = r { Some(v.id) } else { None }
+        }).collect();
+        assert_eq!(ids.len(), 4);
+
+        // Query specific vertices
+        let resp = run_query(&g, &nn, vec![TraversalStep::V { ids: vec![ids[0], ids[1]] }]);
+        assert_eq!(resp.data.len(), 2);
+    }
+
+    #[test]
+    fn test_has_filter() {
+        let g = setup_graph();
+        let nn = setup_neural_network();
+        let resp = run_query(&g, &nn, vec![
+            TraversalStep::V { ids: vec![] },
+            TraversalStep::Has { key: "name".into(), value: serde_json::json!("Alice") },
+        ]);
+        assert_eq!(resp.data.len(), 1);
+        if let TraversalResult::VertexResult(v) = &resp.data[0] {
+            assert_eq!(v.properties["name"], "Alice");
+        } else {
+            panic!("Expected VertexResult");
+        }
+    }
+
+    #[test]
+    fn test_has_with_integer_value() {
+        let g = setup_graph();
+        let nn = setup_neural_network();
+        let resp = run_query(&g, &nn, vec![
+            TraversalStep::V { ids: vec![] },
+            TraversalStep::Has { key: "age".into(), value: serde_json::json!(30) },
+        ]);
+        assert_eq!(resp.data.len(), 1);
+    }
+
+    #[test]
+    fn test_has_label() {
+        let g = setup_graph();
+        let nn = setup_neural_network();
+        let resp = run_query(&g, &nn, vec![
+            TraversalStep::V { ids: vec![] },
+            TraversalStep::HasLabel { labels: vec!["project".into()] },
+        ]);
+        assert_eq!(resp.data.len(), 1);
+        if let TraversalResult::VertexResult(v) = &resp.data[0] {
+            assert_eq!(v.labels[0], "project");
+        }
+    }
+
+    #[test]
+    fn test_values_step() {
+        let g = setup_graph();
+        let nn = setup_neural_network();
+        let resp = run_query(&g, &nn, vec![
+            TraversalStep::V { ids: vec![] },
+            TraversalStep::Values { key: "name".into() },
+        ]);
+        assert!(resp.success);
+        // Should return 4 name values
+        assert_eq!(resp.data.len(), 4);
+    }
+
+    // ─── out / in / both 遍历 ─────────────────────────────────
+
+    #[test]
+    fn test_out_traverse() {
+        let g = setup_graph();
+        let nn = setup_neural_network();
+        // Get all V, then out("knows")
+        let resp = run_query(&g, &nn, vec![
+            TraversalStep::V { ids: vec![] },
+            TraversalStep::Out { label: Some("knows".into()), depth: None },
+        ]);
+        assert!(resp.success);
+        // Alice knows Bob and Carol → should find Bob and Carol
+        assert_eq!(resp.data.len(), 2, "Should find 2 'knows' neighbors");
+    }
+
+    #[test]
+    fn test_out_with_depth() {
+        let g = setup_graph();
+        let nn = setup_neural_network();
+        // Start from Alice, out("knows", depth=2):
+        // Alice → knows → Bob, Carol
+        // Carol → works_at → project
+        let resp = run_query(&g, &nn, vec![
+            TraversalStep::V { ids: vec![] },
+            TraversalStep::Has { key: "name".into(), value: serde_json::json!("Alice") },
+            TraversalStep::Out { label: None, depth: Some(2) },
+        ]);
+        assert!(resp.success);
+        assert_eq!(resp.data.len(), 3, "Depth-2 from Alice: Bob + Carol + project");
+    }
+
+    #[test]
+    fn test_in_traverse() {
+        let g = setup_graph();
+        let nn = setup_neural_network();
+        // project has 1 incoming edge from Carol
+        let resp = run_query(&g, &nn, vec![
+            TraversalStep::V { ids: vec![] },
+            TraversalStep::HasLabel { labels: vec!["project".into()] },
+            TraversalStep::In { label: None, depth: None },
+        ]);
+        assert!(resp.success);
+        assert_eq!(resp.data.len(), 1, "project should have 1 incoming neighbor (Carol)");
+    }
+
+    // ─── 计数与去重 ──────────────────────────────────────────
+
+    #[test]
+    fn test_count() {
+        let g = setup_graph();
+        let nn = setup_neural_network();
+        let resp = run_query(&g, &nn, vec![
+            TraversalStep::V { ids: vec![] },
+            TraversalStep::Count,
+        ]);
+        assert!(resp.success);
+        assert_eq!(resp.data.len(), 1);
+        match &resp.data[0] {
+            TraversalResult::CountResult(n) => assert_eq!(*n, 4),
+            _ => panic!("Expected CountResult"),
+        }
+    }
+
+    #[test]
+    fn test_limit() {
+        let g = setup_graph();
+        let nn = setup_neural_network();
+        let resp = run_query(&g, &nn, vec![
+            TraversalStep::V { ids: vec![] },
+            TraversalStep::Limit { count: 2 },
+        ]);
+        assert!(resp.success);
+        assert_eq!(resp.data.len(), 2);
+    }
+
+    // ─── repeat ──────────────────────────────────────────────
+
+    #[test]
+    fn test_repeat_traverse() {
+        let g = setup_graph();
+        let nn = setup_neural_network();
+        // V → has(name="Alice") → repeat(times=2) { out() } 
+        let resp = run_query(&g, &nn, vec![
+            TraversalStep::V { ids: vec![] },
+            TraversalStep::Has { key: "name".into(), value: serde_json::json!("Alice") },
+            TraversalStep::Repeat {
+                times: 2,
+                steps: vec![
+                    TraversalStep::Out { label: None, depth: None },
+                ],
+            },
+        ]);
+        assert!(resp.success);
+        // Alice→ knows → Bob,Carol; Carol→ works_at → project
+        // After 2 iterations we reach project
+        assert!(resp.data.len() >= 1, "Should reach project after 2 hops");
+    }
+
+    // ─── hasText ─────────────────────────────────────────────
+
+    #[test]
+    fn test_has_text() {
+        let g = setup_graph();
+        let nn = setup_neural_network();
+        let resp = run_query(&g, &nn, vec![
+            TraversalStep::V { ids: vec![] },
+            TraversalStep::HasText { key: "name".into(), pattern: "Ali".into() },
+        ]);
+        assert!(resp.success);
+        assert_eq!(resp.data.len(), 1, "Only Alice matches 'Ali'");
+    }
+
+    #[test]
+    fn test_has_text_case_insensitive() {
+        let g = setup_graph();
+        let nn = setup_neural_network();
+        let resp = run_query(&g, &nn, vec![
+            TraversalStep::V { ids: vec![] },
+            TraversalStep::HasText { key: "name".into(), pattern: "ali".into() },
+        ]);
+        assert!(resp.success);
+        assert_eq!(resp.data.len(), 1, "Should be case-insensitive");
+    }
+
+    // ─── dedup ───────────────────────────────────────────────
+
+    #[test]
+    fn test_dedup() {
+        let g = setup_graph();
+        let nn = setup_neural_network();
+        // both() from Alice → should return Bob (out) + Carol (out) (no incoming here)
+        let resp = run_query(&g, &nn, vec![
+            TraversalStep::V { ids: vec![] },
+            TraversalStep::Has { key: "name".into(), value: serde_json::json!("Alice") },
+            TraversalStep::Both { label: None, depth: None },
+        ]);
+        assert!(resp.success);
+        // Alice has 2 outgoing edges to Bob and Carol
+        assert_eq!(resp.data.len(), 2);
+    }
+
+    // ─── 错误处理 ────────────────────────────────────────────
+
+    #[test]
+    fn test_empty_query_returns_empty() {
+        let g = setup_graph();
+        let nn = setup_neural_network();
+        let resp = run_query(&g, &nn, vec![]);
+        // Empty pipeline returns success with no data
+        assert!(resp.success);
+        assert!(resp.data.is_empty());
+    }
+
+    #[test]
+    fn test_query_without_source_step_returns_empty() {
+        let g = setup_graph();
+        let nn = setup_neural_network();
+        // No V or E step first — pipeline starts empty
+        let resp = run_query(&g, &nn, vec![
+            TraversalStep::Limit { count: 5 },
+        ]);
+        // Pipeline succeeds but produces no data
+        assert!(resp.success);
+        assert!(resp.data.is_empty());
+    }
+
+    #[test]
+    fn test_search_step() {
+        let g = setup_graph();
+        let nn = setup_neural_network();
+        let resp = run_query(&g, &nn, vec![
+            TraversalStep::Search { keywords: vec!["person".into()] },
+        ]);
+        // Search through neural network — may return results or empty
+        assert!(resp.success, "Search should succeed");
+        // The neural network has a "person" neuron linked to no vertices yet
+        // So it may return empty — that's fine, just check no crash
+    }
+
+    // ─── E (edges) 步骤 ──────────────────────────────────────
+
+    #[test]
+    fn test_e_all_edges() {
+        let g = setup_graph();
+        let nn = setup_neural_network();
+        let resp = run_query(&g, &nn, vec![
+            TraversalStep::E { ids: vec![] },
+        ]);
+        assert!(resp.success);
+        // We created 3 edges: knows(2) + works_at(1)
+        assert_eq!(resp.data.len(), 3);
+        for r in &resp.data {
+            match r {
+                TraversalResult::EdgeResult(_) => {}
+                _ => panic!("Expected EdgeResult"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_e_specific_ids() {
+        let g = setup_graph();
+        let nn = setup_neural_network();
+        // Get all edge IDs first
+        let all = run_query(&g, &nn, vec![TraversalStep::E { ids: vec![] }]);
+        let eids: Vec<u64> = all.data.iter().filter_map(|r| {
+            if let TraversalResult::EdgeResult(e) = r { Some(e.id) } else { None }
+        }).collect();
+        assert_eq!(eids.len(), 3);
+
+        // Filter by specific edge ID
+        let resp = run_query(&g, &nn, vec![
+            TraversalStep::E { ids: vec![eids[0]] },
+        ]);
+        assert_eq!(resp.data.len(), 1);
+    }
+
+    // ─── TimeTravel 步骤 ─────────────────────────────────────
+    //
+    // 注意: TimeTravel 的当前实现有 bug — `vertex_to_result` 用 `snapshot.id`
+    // 重新从 graph 读取当前状态，而不是使用 snapshot 的属性。所以 timeTravel
+    // 步骤不会返回历史属性值，但会正确过滤（软删除的顶点可以在历史中被看到）。
+    // 这里只测试步骤不崩溃且能返回结果。
+
+    #[test]
+    fn test_time_travel_returns_historical_state() {
+        // Create a time_travel-enabled graph
+        let g = Arc::new(Mutex::new(Graph::new().with_time_travel()));
+        let nn = Arc::new(Mutex::new(NeuralNetwork::new()));
+
+        let vid;
+        let t0;
+        let t1;
+        {
+            let mut graph = g.lock().unwrap();
+            vid = graph.create_vertex(vec!["test".into()]);
+
+            // Set initial value via update_properties (pushes to history)
+            let mut init = std::collections::HashMap::new();
+            init.insert("name".into(), PropertyValue::String("original".into()));
+            graph.get_vertex_mut(vid).unwrap().update_properties(init, true);
+
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            t0 = crate::graph::vertex::now_micros();
+
+            // First update — pushes "original" to history, sets "updated"
+            let mut props = std::collections::HashMap::new();
+            props.insert("name".into(), PropertyValue::String("updated".into()));
+            graph.get_vertex_mut(vid).unwrap().update_properties(props, true);
+
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            t1 = crate::graph::vertex::now_micros();
+
+            // Second update — pushes "updated" to history, sets "final"
+            let mut props = std::collections::HashMap::new();
+            props.insert("name".into(), PropertyValue::String("final".into()));
+            graph.get_vertex_mut(vid).unwrap().update_properties(props, true);
+        }
+
+        // Query at t0 (before first update) — should see "original"
+        let resp = run_query(&g, &nn, vec![
+            TraversalStep::V { ids: vec![vid] },
+            TraversalStep::TimeTravel { at: serde_json::json!(t0) },
+            TraversalStep::Values { key: "name".into() },
+        ]);
+        assert!(resp.success, "TimeTravel should succeed at t0");
+        assert!(!resp.data.is_empty(), "Should find vertex at t0");
+        if let TraversalResult::ValueResult(val) = &resp.data[0] {
+            assert_eq!(*val, serde_json::json!("original"),
+                "Should see 'original' at t0");
+        }
+
+        // Query at t1 (between updates) — should see "updated"
+        let resp = run_query(&g, &nn, vec![
+            TraversalStep::V { ids: vec![vid] },
+            TraversalStep::TimeTravel { at: serde_json::json!(t1) },
+            TraversalStep::Values { key: "name".into() },
+        ]);
+        assert!(resp.success, "TimeTravel should succeed at t1");
+        assert!(!resp.data.is_empty(), "Should find vertex at t1");
+        if let TraversalResult::ValueResult(val) = &resp.data[0] {
+            assert_eq!(*val, serde_json::json!("updated"),
+                "Should see 'updated' at t1");
+        }
+
+        // Query WITHOUT timeTravel — returns current "final"
+        let resp = run_query(&g, &nn, vec![
+            TraversalStep::V { ids: vec![vid] },
+            TraversalStep::Values { key: "name".into() },
+        ]);
+        assert!(resp.success);
+        if let TraversalResult::ValueResult(val) = &resp.data[0] {
+            assert_eq!(*val, serde_json::json!("final"),
+                "Current state should be 'final'");
+        }
+    }
+
+    // ─── HasNot / HasKey / HasValue 执行测试 ──────────────────
+
+    #[test]
+    fn test_has_not_filter() {
+        let g = setup_graph();
+        let nn = setup_neural_network();
+        // hasNot(age=25) should return vertices where age != 25: Alice(30) and Carol(28)
+        let resp = run_query(&g, &nn, vec![
+            TraversalStep::V { ids: vec![] },
+            TraversalStep::HasNot { key: "age".into(), value: serde_json::json!(25) },
+        ]);
+        assert!(resp.success);
+        // Bob(25) is excluded. Alice(30), Carol(28), and project (no age) pass.
+        assert_eq!(resp.data.len(), 3, "Should exclude only Bob");
+    }
+
+    #[test]
+    fn test_has_key_filter() {
+        let g = setup_graph();
+        let nn = setup_neural_network();
+        // hasKey("age") should return vertices that have an "age" property
+        let resp = run_query(&g, &nn, vec![
+            TraversalStep::V { ids: vec![] },
+            TraversalStep::HasKey { key: "age".into() },
+        ]);
+        assert!(resp.success);
+        assert_eq!(resp.data.len(), 3, "Only person vertices have age property");
+    }
+
+    #[test]
+    fn test_has_value_filter() {
+        let g = setup_graph();
+        let nn = setup_neural_network();
+        // hasValue("Bob") should find vertices with any property = "Bob"
+        let resp = run_query(&g, &nn, vec![
+            TraversalStep::V { ids: vec![] },
+            TraversalStep::HasValue { value: serde_json::json!("Bob") },
+        ]);
+        assert!(resp.success);
+        assert_eq!(resp.data.len(), 1, "Only Bob has name = Bob");
+    }
+
+    // ─── OutE / InE / BothE 执行测试 ─────────────────────────
+
+    #[test]
+    fn test_out_e_from_vertex() {
+        let g = setup_graph();
+        let nn = setup_neural_network();
+        // Get all V, then outE("knows") from Alice
+        let resp = run_query(&g, &nn, vec![
+            TraversalStep::V { ids: vec![] },
+            TraversalStep::Has { key: "name".into(), value: serde_json::json!("Alice") },
+            TraversalStep::OutE { label: Some("knows".into()) },
+        ]);
+        assert!(resp.success);
+        assert_eq!(resp.data.len(), 2, "Alice has 2 outgoing knows edges");
+        for r in &resp.data {
+            match r {
+                TraversalResult::EdgeResult(e) => assert_eq!(e.label, "knows"),
+                _ => panic!("Expected EdgeResult"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_in_e_to_vertex() {
+        let g = setup_graph();
+        let nn = setup_neural_network();
+        // inE to project (Carol works_at project)
+        let resp = run_query(&g, &nn, vec![
+            TraversalStep::V { ids: vec![] },
+            TraversalStep::HasLabel { labels: vec!["project".into()] },
+            TraversalStep::InE { label: None },
+        ]);
+        assert!(resp.success);
+        assert_eq!(resp.data.len(), 1, "project has 1 incoming edge from Carol");
+    }
+
+    #[test]
+    fn test_both_e_from_vertex() {
+        let g = setup_graph();
+        let nn = setup_neural_network();
+        // bothE from Alice: outgoing(2) + incoming(0) = 2
+        let resp = run_query(&g, &nn, vec![
+            TraversalStep::V { ids: vec![] },
+            TraversalStep::Has { key: "name".into(), value: serde_json::json!("Alice") },
+            TraversalStep::BothE { label: None },
+        ]);
+        assert!(resp.success);
+        assert_eq!(resp.data.len(), 2, "Alice has 2 total incident edges");
+    }
 }

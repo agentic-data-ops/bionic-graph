@@ -2,7 +2,10 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::config::Settings;
-use crate::graph::{Graph, Vertex, VertexId, PropertyValue};
+use std::path::PathBuf;
+
+use crate::graph::{Graph, VertexId};
+use crate::graph::graph::GraphError;
 use crate::graph_manager::GraphManager;
 use crate::gremlin::{
     build_router, execute_query, AppState, GremlinQuery, QueryResponse,
@@ -71,19 +74,33 @@ impl MemorySystem {
 
     // ─── Graph Operations ─────────────────────────────────────────
 
-    /// Add a vertex to the graph.
+    /// Add a vertex to the graph. Also creates a neuron for it.
     pub fn add_vertex(&self, labels: Vec<String>) -> VertexId {
-        self.graph.lock().unwrap().create_vertex(labels)
+        let vid = self.graph.lock().unwrap().create_vertex(labels.clone());
+        let mut nn = self.neural_network.lock().unwrap();
+        let nid = (nn.neuron_count() as u64) + 1;
+        let label = labels.first().cloned().unwrap_or_else(|| "entity".to_string());
+        let neuron = crate::neuron::neuron::Neuron::for_vertex(nid, &label, vid)
+            .with_keywords(labels.clone());
+        nn.add_neuron(neuron);
+        vid
     }
 
-    /// Add an edge between two vertices.
+    /// Add an edge between two vertices. Also creates a neuron + synapses.
     pub fn add_edge(
         &self,
         label: String,
         source: VertexId,
         target: VertexId,
-    ) -> Result<u64, crate::graph::GraphError> {
-        self.graph.lock().unwrap().create_edge(label, source, target)
+    ) -> Result<u64, crate::graph::graph::GraphError> {
+        let eid = self.graph.lock().unwrap().create_edge(label.clone(), source, target)?;
+        let mut nn = self.neural_network.lock().unwrap();
+        let nid = (nn.neuron_count() as u64) + 1;
+        let neuron = crate::neuron::neuron::Neuron::for_edge(nid, &label, eid)
+            .with_keywords(vec![label.clone()]);
+        nn.add_neuron(neuron);
+        nn.auto_synapse(source, target);
+        Ok(eid)
     }
 
     /// Get a vertex by ID.
@@ -178,7 +195,7 @@ impl MemorySystem {
     /// Search the neural index and return ranked graph vertices.
     pub fn search(&self, query: &str) -> QueryResponse {
         let gremlin_query = GremlinQuery::new(vec![
-            crate::gremlin::query::TraversalStep::NeuralSearch {
+            crate::gremlin::query::TraversalStep::Search {
                 keywords: query
                     .split_whitespace()
                     .map(|s| s.to_string())
@@ -214,9 +231,9 @@ impl MemorySystem {
     /// Build the REST API router (single graph, backward compat).
     pub fn into_router(self) -> axum::Router {
         Self::into_router_with_settings_v2(
-            self.graph,
-            self.neural_network,
-            self.data_dir,
+            self.graph.clone(),
+            self.neural_network.clone(),
+            self.data_dir.clone(),
             None,
         )
     }
@@ -225,9 +242,9 @@ impl MemorySystem {
     pub fn into_router_with_settings(self, settings: Settings) -> axum::Router {
         let ext_cfg = crate::extract::ExtractionConfig::from_settings(&settings);
         Self::into_router_with_settings_v2(
-            self.graph,
-            self.neural_network,
-            self.data_dir,
+            self.graph.clone(),
+            self.neural_network.clone(),
+            self.data_dir.clone(),
             Some(ext_cfg),
         )
     }

@@ -107,7 +107,7 @@ fn main() {
 
     // ── 第3步：神经网络搜索 ─────────────────────────
     println!("🔍 Step 3: Neural search — query: 'ai engineering'");
-    let (vertices, fired, _hot, ticks) = nn.search("ai engineering");
+    let (vertices, _edges, fired, _hot, ticks) = nn.search("ai engineering");
     println!("   Fired {} neurons across {} ticks", fired.len(), ticks);
     println!("   Found {} vertices via spreading activation:", vertices.len());
     for (vid, score) in &vertices {
@@ -150,7 +150,7 @@ fn main() {
     
     // 模拟多次共同激活
     for _ in 0..5 {
-        let (_v, fired, _hot, _) = nn.search("ai engineering");
+        let (_v, _e, fired, _hot, _) = nn.search("ai engineering");
         // Hebbian learning happens inside search()
         println!("   Co-firing: {:?} → synapse strengthens", fired);
     }
@@ -170,10 +170,10 @@ fn main() {
     println!("║  Example query:                          ║");
     println!("║    curl -X POST localhost:8080/gremlin    ║");
     println!("║      -H 'Content-Type: application/json' ║");
-    println!("║      -d '{\"steps\":[                    ║");
-    println!("║        {\"step\":\"neuralSearch\",       ║");
-    println!("║         \"keywords\":[\"ai\"]},           ║");
-    println!("║        {\"step\":\"out\",                  ║");
-    println!("║         \"label\":\"works_at\"}]}'        ║");
+    println!("║      -d '{{\"steps\":[                    ║");
+    println!("║        {{\"step\":\"search\",              ║");
+    println!("║         \"keywords\":[\"ai\"]}},           ║");
+    println!("║        {{\"step\":\"out\",                  ║");
+    println!("║         \"label\":\"works_at\"}}]}}'        ║");
     println!("╚══════════════════════════════════════════╝");
 }

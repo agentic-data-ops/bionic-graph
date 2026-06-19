@@ -9,7 +9,7 @@ pub struct ExtractionConfig {
     /// OpenAI-compatible API endpoint (e.g. "https://api.deepseek.com/v1").
     pub api_base_url: String,
 
-    /// API key. Best loaded from env var e.g. `BGRAPH_EXTRACT_API_KEY`.
+    /// API key. Best loaded from env var e.g. `BGRAPH_LLM_API_KEY`.
     pub api_key: String,
 
     /// Model identifier (default: "deepseek-v4-flash").
@@ -59,7 +59,9 @@ impl Default for ExtractionConfig {
 impl ExtractionConfig {
     /// Create from `crate::config::Settings` (loaded from settings.json).
     pub fn from_settings(s: &crate::config::Settings) -> Self {
-        let api_key = std::env::var("BGRAPH_EXTRACT_API_KEY").unwrap_or_default();
+        let api_key = std::env::var("BGRAPH_LLM_API_KEY")
+            .or_else(|_| std::env::var("BGRAPH_EXTRACT_API_KEY"))
+            .unwrap_or_default();
 
         Self {
             api_base_url: s.extraction.api_base_url.clone(),
@@ -76,12 +78,13 @@ impl ExtractionConfig {
 
     /// Create a new config with the required API key.
     ///
-    /// By default reads from the `BGRAPH_EXTRACT_API_KEY` environment variable.
+    /// By default reads from the `BGRAPH_LLM_API_KEY` environment variable.
     /// All other fields use defaults (deepseek-v4-flash tuned).
     pub fn from_env() -> Result<Self, String> {
-        let api_key = std::env::var("BGRAPH_EXTRACT_API_KEY")
+        let api_key = std::env::var("BGRAPH_LLM_API_KEY")
+            .or_else(|_| std::env::var("BGRAPH_EXTRACT_API_KEY"))
             .map_err(|_| {
-                "No API key found. Set BGRAPH_EXTRACT_API_KEY env var.".to_string()
+                "No API key found. Set BGRAPH_LLM_API_KEY env var.".to_string()
             })?;
 
         Ok(Self {

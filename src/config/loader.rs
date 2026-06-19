@@ -16,7 +16,7 @@ pub fn config_file_path() -> PathBuf {
 /// Load settings from the config file, or create and save defaults.
 ///
 /// Priority (highest wins):
-/// 1. Environment variables (`BGRAPH_HOST`, `BGRAPH_PORT`, `BGRAPH_EXTRACT_API_KEY`, etc.)
+/// 1. Environment variables (`BGRAPH_HOST`, `BGRAPH_PORT`, `BGRAPH_LLM_API_KEY`, etc.)
 /// 2. `~/.config/bionic-graph/settings.json`
 /// 3. Built-in defaults
 pub fn load_or_create_settings() -> Settings {
@@ -78,13 +78,13 @@ fn apply_env_overrides(settings: &mut Settings) {
     }
 
     // Extraction
-    if std::env::var("BGRAPH_EXTRACT_API_KEY").is_ok() {
-        log::info!("BGRAPH_EXTRACT_API_KEY set via environment");
+    if std::env::var("BGRAPH_LLM_API_KEY").is_ok() || std::env::var("BGRAPH_EXTRACT_API_KEY").is_ok() {
+        log::info!("BGRAPH_LLM_API_KEY set via environment");
     }
-    if let Ok(val) = std::env::var("BGRAPH_EXTRACT_BASE_URL") {
+    if let Ok(val) = std::env::var("BGRAPH_LLM_BASE_URL").or_else(|_| std::env::var("BGRAPH_EXTRACT_BASE_URL")) {
         settings.extraction.api_base_url = val;
     }
-    if let Ok(val) = std::env::var("BGRAPH_EXTRACT_MODEL") {
+    if let Ok(val) = std::env::var("BGRAPH_LLM_MODEL").or_else(|_| std::env::var("BGRAPH_EXTRACT_MODEL")) {
         settings.extraction.model = val;
     }
 

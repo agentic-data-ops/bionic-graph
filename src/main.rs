@@ -1,9 +1,9 @@
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use clap::Parser;
 use bionic_graph::config::load_or_create_settings;
 use bionic_graph::graph_manager::GraphManager;
-use bionic_graph::gremlin::AppState;
 use bionic_graph::memory_system::MemorySystem;
 
 /// Bionic-Graph: Ultral fast graph indexed with bionic neural net.

@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::graph::{GraphError, Vertex, VertexId, PropertyValue};
+use crate::graph::graph::GraphError;
+use crate::graph::{Vertex, VertexId, PropertyValue};
 
 use super::index::{IndexBundle, LabelIndex, SubgraphIndex, VertexIndex};
 use super::partition::{self, PartitionConfig};
@@ -208,10 +209,11 @@ impl DiskGraph {
             }))
             .map_err(|_| GraphError::VertexNotFound(id))?;
 
+        // Remove all edges referencing this vertex
+        self.remove_incident_edges(id, sg_id);
+
         // Apply to cache
         if let Some(sg) = self.cache.get_mut(sg_id, &self.subgraph_index) {
-            // Remove all edges referencing this vertex
-            self.remove_incident_edges(id, sg_id);
             sg.remove_vertex(id, true);
         }
 

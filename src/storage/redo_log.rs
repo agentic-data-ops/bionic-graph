@@ -217,7 +217,8 @@ impl RedoLog {
     /// Returns the list of entries to replay (in order).
     pub fn recover(&mut self) -> std::io::Result<Vec<LogEntry>> {
         let mut all_entries = Vec::new();
-        let mut last_checkpoint_pos = 0usize;
+        // None = no checkpoint found in this file (e.g., after rotation)
+        let mut last_checkpoint_pos: Option<usize> = None;
 
         // Read all existing entries from the log
         if let Some(ref mut file) = self.file {
@@ -264,7 +265,12 @@ impl RedoLog {
                 };
 
                 if entry_type == ENTRY_CHECKPOINT {
-                    last_checkpoint_pos = all_entries.len();
+                    last_checkpoint_pos = Some(all_entries.len());
+
+                    // Update last_checkpoint_seq from the checkpoint payload
+                    if let Ok(ckpt) = bincode::deserialize::<CheckpointPayload>(&entry.data) {
+                        self.last_checkpoint_seq = ckpt.seq_at_checkpoint;
+                    }
                 }
 
                 all_entries.push(entry);
@@ -278,35 +284,33 @@ impl RedoLog {
             }
         }
 
-        // Keep only entries AFTER the last checkpoint
-        if last_checkpoint_pos < all_entries.len() {
-            let to_replay = all_entries[last_checkpoint_pos + 1..].to_vec();
-
-            // Update last_checkpoint_seq from the checkpoint entry
-            if last_checkpoint_pos < all_entries.len() {
-                let ckpt_entry = &all_entries[last_checkpoint_pos];
-                if let Ok(ckpt) = bincode::deserialize::<CheckpointPayload>(&ckpt_entry.data) {
-                    self.last_checkpoint_seq = ckpt.seq_at_checkpoint;
-                }
-            }
-
-            log::info!(
-                "Redo log recovery: {} entries total, {} after last checkpoint, replaying",
-                all_entries.len(),
-                to_replay.len()
-            );
-
-            Ok(to_replay)
-        } else {
-            // No entries after checkpoint, or no checkpoint at all
-            if all_entries.is_empty() {
-                log::info!("Redo log is empty, no recovery needed");
-                Ok(Vec::new())
-            } else {
+        match last_checkpoint_pos {
+            // Checkpoint found: replay only entries after it
+            Some(ckpt_pos) if ckpt_pos + 1 < all_entries.len() => {
+                let to_replay = all_entries[ckpt_pos + 1..].to_vec();
                 log::info!(
-                    "Redo log: {} entries, all before last checkpoint, nothing to replay",
+                    "Redo log recovery: {} entries total, {} after last checkpoint, replaying",
+                    all_entries.len(),
+                    to_replay.len()
+                );
+                Ok(to_replay)
+            }
+            // Checkpoint found and it's the last entry: nothing to replay
+            Some(_) => {
+                log::info!("Redo log: all entries before last checkpoint, nothing to replay");
+                Ok(Vec::new())
+            }
+            // No checkpoint found: replay all entries (previous checkpoint rotated)
+            None if !all_entries.is_empty() => {
+                log::info!(
+                    "Redo log: no checkpoint in this file, replaying all {} entries",
                     all_entries.len()
                 );
+                Ok(all_entries)
+            }
+            // Empty log
+            None => {
+                log::info!("Redo log is empty, no recovery needed");
                 Ok(Vec::new())
             }
         }
@@ -675,10 +679,13 @@ mod tests {
             log.checkpoint().unwrap();
         }
 
-        // After checkpoint + drop, the log should still contain data
-        assert!(path.exists(), "Log file should exist after checkpoint");
-        let metadata = std::fs::metadata(&path).unwrap();
-        assert!(metadata.len() > 0, "Log file should have content");
+        // After checkpoint + drop, data is in the rotated .done file
+        // The main log file may be empty after rotation
+        let done_name = format!("redo.{:020}.done", 1);
+        let done_path = dir.path().join(&done_name);
+        assert!(done_path.exists(), "Done file should exist after checkpoint rotation");
+        let metadata = std::fs::metadata(&done_path).unwrap();
+        assert!(metadata.len() > 0, "Done file should have content");
     }
 
     #[test]

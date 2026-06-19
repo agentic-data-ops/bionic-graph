@@ -14,9 +14,10 @@ pub const SYSTEM_PROMPT: &str = r#"You are a precise knowledge extraction engine
 
 1. **Entities**: Extract named concepts, technologies, people, organizations, projects, APIs, protocols, data formats — anything with a distinct identity mentioned in the text.
 2. **Relationships**: Extract meaningful connections between entities. Use clear, concise predicate labels (e.g. "depends_on", "implements", "extends", "uses", "part_of", "developed_by").
-3. **IDs**: Use PascalCase identifiers for entity IDs, e.g. "DeepSeekV4Flash", "KnowledgeGraph", "GremlinQuery".
-4. **Labels**: Each entity needs at least one label (type). Examples: ["technology"], ["concept", "protocol"], ["organization"].
+3. **IDs**: Use the entity's original name directly as the ID — Chinese names stay in Chinese (e.g. "乔峰", "段誉", not "QiaoFeng", "DuanYu"). For English names, keep the original spelling. Be consistent: the same entity always uses the exact same ID across all sections.
+4. **Labels**: Each entity needs at least one label (type). Examples: ["technology"], ["concept"], ["protocol"], ["organization"], ["person"].
 5. **Properties**: Include relevant details as key-value pairs. Standard keys: "description", "mentioned_in", "version", "url".
+6. **No duplicates**: If a named entity was already extracted in a previous section, reuse its exact ID. Do NOT create a new entity with a different ID for the same thing.
 
 ## Output Format
 
@@ -84,7 +85,7 @@ struct LlmEntity {
     #[serde(default)]
     labels: Option<Vec<String>>,
     #[serde(default)]
-    properties: Option<HashMap<String, String>>,
+    properties: Option<HashMap<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,7 +97,7 @@ struct LlmRelation {
     #[serde(default)]
     label: Option<String>,
     #[serde(default)]
-    properties: Option<HashMap<String, String>>,
+    properties: Option<HashMap<String, serde_json::Value>>,
 }
 
 /// Parse the LLM response text into a SectionExtraction.
@@ -124,7 +125,8 @@ pub fn parse_response(heading: &str, response_text: &str) -> Result<SectionExtra
             Some(ExtractedEntity {
                 id,
                 labels,
-                properties: e.properties.unwrap_or_default(),
+                properties: e.properties.unwrap_or_default()
+                    .into_iter().map(|(k, v)| (k, json_val_to_string(v))).collect(),
             })
         })
         .collect();
@@ -141,7 +143,8 @@ pub fn parse_response(heading: &str, response_text: &str) -> Result<SectionExtra
                 source,
                 target,
                 label,
-                properties: r.properties.unwrap_or_default(),
+                properties: r.properties.unwrap_or_default()
+                    .into_iter().map(|(k, v)| (k, json_val_to_string(v))).collect(),
             })
         })
         .collect();
@@ -152,6 +155,17 @@ pub fn parse_response(heading: &str, response_text: &str) -> Result<SectionExtra
         entities,
         relations,
     })
+}
+
+/// Convert a serde_json::Value to a String for property storage.
+fn json_val_to_string(v: serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => s,
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Null => String::new(),
+        other => other.to_string(),
+    }
 }
 
 /// Strip markdown code fences and other common LLM wrapping artifacts.

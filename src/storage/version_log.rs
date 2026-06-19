@@ -30,7 +30,7 @@ pub struct VlogIndexEntry {
 }
 
 /// Statistics from a version log write operation.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct VlogStats {
     pub entries_written: usize,
     pub file_size_bytes: u64,
@@ -96,20 +96,25 @@ pub fn write_vlog(
     let data_offset = (header_size + index_size) as u64;
 
     // Fix up file offsets in the index
+    // Pre-collect end boundaries for each index entry
+    let boundaries: Vec<usize> = sparse_index
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            if i + 1 < sparse_index.len() {
+                sparse_index[i + 1].entry_idx as usize
+            } else {
+                entries.len()
+            }
+        })
+        .collect();
+
     let mut running_offset = data_offset;
     for (i, idx_entry) in sparse_index.iter_mut().enumerate() {
         idx_entry.file_offset = running_offset;
-        // Each entry is 8 + 8 + 4 + variable. We advance by the size of entries
-        // in this index block. Since we don't know individual entry sizes here,
-        // we use a simpler approach: compute from entry_idx * avg_entry_size
-        // Actually, let's compute precisely from entry positions
-        let start_entry = idx_entry.entry_idx as usize;
-        let end_entry = if i + 1 < sparse_index.len() {
-            sparse_index[i + 1].entry_idx as usize
-        } else {
-            entries.len()
-        };
+        let end_entry = boundaries[i];
         // Advance running_offset by the serialized size of entries [start_entry..end_entry)
+        let start_entry = idx_entry.entry_idx as usize;
         for e_idx in start_entry..end_entry {
             let est_entry_size = 8 + 8 + 4 + estimate_record_size(&entries[e_idx].record);
             running_offset += est_entry_size as u64;
@@ -394,7 +399,7 @@ mod tests {
     fn make_record(version: u64) -> VersionRecord {
         VersionRecord {
             version,
-            updated_at: version * 1000,
+            updated_at: (version as i64) * 1000,
             labels: vec!["test".to_string()],
             properties: HashMap::new(),
         }
@@ -512,7 +517,7 @@ mod tests {
         for i in 0..5 {
             write_vlog(dir.path(), &[
                 VlogEntry { vertex_id: i, version: 1, record: make_record(1) },
-            ], i).unwrap();
+            ], i as u32).unwrap();
         }
         assert_eq!(list_vlog_files(dir.path()).unwrap().len(), 5);
         let deleted = delete_vlog_files(dir.path(), 2).unwrap();

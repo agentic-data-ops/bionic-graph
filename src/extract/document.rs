@@ -167,8 +167,9 @@ fn split_by_subheadings(section: &Section) -> Vec<Section> {
             if depth > section.depth {
                 // Save previous
                 if !current_heading.is_empty() {
+                    let h = current_heading.clone();
                     sub_sections.push(Section {
-                        heading: current_heading,
+                        heading: h,
                         depth: current_depth,
                         content: current_content.trim().to_string(),
                         heading_chain: {
@@ -194,8 +195,9 @@ fn split_by_subheadings(section: &Section) -> Vec<Section> {
 
     // Last sub-section
     if has_sub && !current_heading.is_empty() {
+        let h = current_heading.clone();
         sub_sections.push(Section {
-            heading: current_heading,
+            heading: h,
             depth: current_depth,
             content: current_content.trim().to_string(),
             heading_chain: {
@@ -265,11 +267,12 @@ Content of section 2.
 Sub content.";
 
         let sections = split_sections(md).unwrap();
-        // preamble + Title + Section 1 + Section 2 + Subsection 2.1
-        assert_eq!(sections.len(), 5);
+        // Title + Section 1 + Section 2 + Subsection 2.1
+        // (empty preamble is filtered out)
+        assert_eq!(sections.len(), 4);
 
-        // Check heading chain of Subsection 2.1
-        let sub = &sections[4];
+        // Check heading chain of Subsection 2.1 (now index 3)
+        let sub = &sections[3];
         assert_eq!(sub.heading, "Subsection 2.1");
         assert!(sub.heading_chain.contains(&"Section 2".to_string()));
     }
@@ -304,6 +307,6 @@ Sub content.";
         };
         let split = ensure_fits_budget(&section, 10);
         assert_eq!(split.len(), 1);
-        assert!(split[0].content.contains("[TRUNCATED]"));
+        assert!(split[0].content.contains("[TRUNCATED:"));
     }
 }

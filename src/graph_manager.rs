@@ -65,7 +65,7 @@ impl GraphManager {
         // If no graphs found, create default
         if graphs.is_empty() {
             let default_path = data_root.join("default");
-            let handle = Self::create_graph_internal("default", &default_path)?;
+            let handle = Self::create_graph_internal("default", &default_path, false)?;
             graphs.insert("default".to_string(), handle);
             log::info!("Created default graph at {:?}", default_path);
         }

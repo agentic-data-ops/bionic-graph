@@ -912,3 +912,170 @@ gm.create("mygraph")?.set_time_travel(true);
 | 2 | Vertex/Edge 方法根据标志决定是否记录 history | low | `src/graph/vertex.rs`, `src/graph/edge.rs` |
 | 3 | Graph 根据标志决定 remove_vertex 行为 | low | `src/graph/graph.rs` |
 | 4 | GraphManager.create() + API 接受 `time_travel` 参数 | low | `src/graph_manager.rs`, `src/gremlin/server.rs` |
+
+---
+
+---
+
+## Plan 10: 批量编译修复 + 首次运行测试
+
+**状态: ✅ 已完成**
+
+### 概述
+
+首次成功编译并运行完整测试套件。修复了代码库中累积的 40 个编译错误，发现并修复了 8 个测试逻辑缺陷。
+
+### 修复的编译错误
+
+| 类别 | 数量 | 示例 |
+|------|------|------|
+| 函数重复定义 | 2 | `insert_entity`/`insert_relation` 各出现两次 |
+| 导入路径错误 | 7 | `GraphError`/`PathBuf`/`SubgraphMeta` 路径错误 |
+| 字段名前缀缺失 | 8 | `edge.rs` 中 `version` → `_version` |
+| 缺少参数 | 1 | `create_graph_internal` 缺 `time_travel` 参数 |
+| `?` 操作符不可用 | 3 | `execute_query` 返回 `QueryResponse` 非 `Result` |
+| 缺少 `Serialize`/`Deserialize` derive | 4 | `ActivationConfig`/`LearningConfig` |
+| 所有权/借用错误 | 6 | `split_by_subheadings`、`MemorySystem` Drop |
+| println 转义 | 5 | `demo.rs` 中 `{`/`}` 未双写 |
+| **测试逻辑缺陷** | **8** | 时间单位错误（微秒 vs 秒）、断言不匹配、日志恢复逻辑等 |
+
+### 首次运行测试结果
+
+```
+94 tests → 94 passed (修复后)
+139 tests → 139 passed (补 Gremlin 测试后)
+151 tests → 151 passed (最终)
+```
+
+---
+
+## Plan 11: Gremlin 步骤增强 + 按边过滤
+
+**状态: ✅ 已完成**
+
+### 概述
+
+为 Gremlin 接口新增 6 个步骤，补齐按边过滤能力。
+
+### 新增步骤
+
+| 步骤 | JSON 示例 | 功能 |
+|------|-----------|------|
+| `hasNot` | `{"step":"hasNot","key":"age","value":30}` | 排除属性匹配的顶点/边 |
+| `hasKey` | `{"step":"hasKey","key":"name"}` | 仅保留有该属性的顶点/边 |
+| `hasValue` | `{"step":"hasValue","value":"Alice"}` | 保留任意属性等于该值的顶点/边 |
+| `outE` | `{"step":"outE","label":"knows"}` | 从当前顶点遍历出边（返回 EdgeResult） |
+| `inE` | `{"step":"inE","label":"knows"}` | 从当前顶点遍历入边 |
+| `bothE` | `{"step":"bothE"}` | 从当前顶点遍历所有边 |
+
+### 影响文件
+
+| 文件 | 改动 |
+|------|------|
+| `src/gremlin/query.rs` | 新增 6 个 TraversalStep 变体 + serde rename |
+| `src/gremlin/steps.rs` | `execute_query` + `run_steps` 各添加 6 个 match arm |
+| 测试 | JSON roundtrip + 执行测试共 12 个 |
+
+---
+
+## Plan 12: 文档提取缺陷修复
+
+**状态: ✅ 已完成**
+
+### 修复列表
+
+| Bug | 修复 | 文件 |
+|-----|------|------|
+| 关系未创建边 | `entity_id_to_vid`映射 + `create_edge` | `src/extract/pipeline.rs` |
+| LLM 超时挂死 | `tokio::time::timeout(600s)` → 504 | `src/gremlin/server.rs` |
+| 布尔值 `true` 导致 JSON 解析崩溃 | `HashMap<String, serde_json::Value>` + `json_val_to_string()` | `src/extract/extraction.rs` |
+| 实体 ID 中文/拼音不一致 | 系统 Prompt 规则改为使用原文 | `src/extract/extraction.rs` |
+
+---
+
+## Plan 13: 章节/段落结构入图
+
+**状态: ✅ 已完成**
+
+### 新增顶点类型
+
+| 标签 | 说明 | 属性 |
+|------|------|------|
+| `section` | 文档章节（heading） | `heading`, `depth`, `heading_chain` |
+| `paragraph` | 章节内的一段文字 | `content`, `index` |
+
+### 新增边类型
+
+| 标签 | 源→目标 | 说明 |
+|------|---------|------|
+| `has_subsection` | section → section | 父章节→子章节 |
+| `belongs_to` | paragraph → section | 段落归属于章节 |
+| `mentioned_in` | entity → section | 实体出现在哪个章节 |
+
+### 影响文件
+
+- `src/extract/pipeline.rs` — `insert_section_hierarchy()` + `insert_paragraphs_for_section()` + 循环中 `mentioned_in` 边创建
+
+---
+
+## Plan 14: 神经网络自动同步
+
+**状态: ✅ 已完成**
+
+### 新增类型
+
+```rust
+pub enum EntityType {
+    Vertex(VertexId),  // 神经元代表一个顶点
+    Edge(EdgeId),      // 神经元代表一条边
+}
+```
+
+### 新增 Neuron 方法
+
+| 方法 | 用途 |
+|------|------|
+| `Neuron::for_vertex(id, label, vid)` | 创建代表顶点的神经元 |
+| `Neuron::for_edge(id, label, eid)` | 创建代表边的神经元 |
+| `NeuralNetwork::auto_synapse(source, target)` | 自动在关联顶点的神经元间创建突触 |
+
+### 自动同步点
+
+| 操作 | 自动行为 |
+|------|----------|
+| `MemorySystem::add_vertex` | 创建顶点 + 创建关联神经元 |
+| `MemorySystem::add_edge` | 创建边 + 创建关联神经元 + 自动创建突触 |
+| `POST /edges` HTTP API | 同上 |
+| 文档提取管道创建关系边 | 触发 `auto_synapse` |
+
+---
+
+## Plan 15: keywordSearch + semanticSearch + 全局 LLM 配置
+
+**状态: ✅ 已完成**
+
+### 环境变量重命名
+
+`BGRAPH_EXTRACT_API_KEY` → `BGRAPH_LLM_API_KEY`（向后兼容旧变量）
+
+### 步骤重命名
+
+| 旧名 | 新名 |
+|------|------|
+| `{"step":"search"}` | `{"step":"keywordSearch"}` |
+
+### semanticSearch 三步流程
+
+```
+用户输入: "乔峰会哪些武功？"
+  │
+  ├── Step 1: LLM 提取关键词 → ["乔峰", "武功"]
+  │
+  ├── Step 2: keywordSearch（神经网络搜索）→ 返回顶点+边
+  │
+  └── Step 3: LLM 语义裁剪 → 仅保留语义相关结果
+```
+
+### 搜索结果支持边
+
+`NeuralNetwork::search()` 返回值从 4 元组扩展为 5 元组，新增 `Vec<(EdgeId, u32)>`，`keywordSearch` 和 `semanticSearch` 都返回顶点 + 边。文件：`src/neuron/activation.rs`、`src/neuron/network.rs`、`src/gremlin/steps.rs`
