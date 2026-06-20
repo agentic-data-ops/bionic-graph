@@ -340,7 +340,7 @@ async fn extract_sections_core(
                     }
                 }
 
-                // Insert relations as edges
+                // Insert relations as edges (and create searchable edge neurons)
                 {
                     let eid_to_vid = entity_id_to_vid.lock().unwrap();
                     let mut seen_rels = seen_relation_keys.lock().unwrap();
@@ -357,15 +357,27 @@ async fn extract_sections_core(
                                 eid_to_vid.get(&relation.target),
                             ) {
                                 if let Ok(mut g) = graph.lock() {
-                                    if g.create_edge(relation.label.clone(), src_vid, tgt_vid).is_ok() {
+                                    if let Ok(eid) = g.create_edge(relation.label.clone(), src_vid, tgt_vid) {
                                         s.new_edges += 1;
-                                    }
-                                    drop(g);
-                                    if let Some(ref nn) = neural {
-                                        if let Ok(mut nn) = nn.lock() {
-                                            nn.auto_synapse(src_vid, tgt_vid);
+
+                                        // Create a searchable neuron for this edge
+                                        if let Some(ref nn) = neural {
+                                            if let Ok(mut nn) = nn.lock() {
+                                                let nid = (nn.neuron_count() as u64) + 1;
+                                                let mut neuron = crate::neuron::Neuron::for_edge(nid, &relation.label, eid);
+                                                // Keywords: relation label + source name + target name
+                                                let mut keywords = vec![
+                                                    relation.label.clone(),
+                                                    relation.source.clone(),
+                                                    relation.target.clone(),
+                                                ];
+                                                neuron.keywords = keywords;
+                                                nn.add_neuron(neuron);
+                                                nn.auto_synapse(src_vid, tgt_vid);
+                                            }
                                         }
                                     }
+                                    drop(g);
                                 }
                             } else {
                                 log::debug!(
