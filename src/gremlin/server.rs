@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use axum::{
@@ -10,13 +11,115 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
+use uuid::Uuid;
 
 use crate::graph_manager::GraphManager;
 
 use crate::extract::{ExtractionConfig, ExtractionTaskManager};
 
-use super::query::{GremlinQuery, QueryResponse};
+use super::query::{GremlinQuery, QueryResponse, TraversalResult};
 use super::steps::{execute_query, execute_query_with_llm};
+
+// ─── Search Task Manager ─────────────────────────────────────────
+
+/// Status of an async search task.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchTaskStatus {
+    Pending,
+    Running,
+    Completed,
+    Failed,
+}
+
+/// A step in the search pipeline.
+#[derive(Debug, Clone, Serialize)]
+pub struct SearchTaskStep {
+    pub name: String,
+    pub status: String, // "pending" | "running" | "done" | "failed"
+}
+
+/// An async semantic search task.
+#[derive(Debug, Clone, Serialize)]
+pub struct SearchTask {
+    pub task_id: String,
+    pub status: SearchTaskStatus,
+    pub steps: Vec<SearchTaskStep>,
+    pub current_step: usize,
+    pub results: Option<QueryResponse>,
+    pub error: Option<String>,
+    pub created_at: String,
+    pub completed_at: Option<String>,
+}
+
+/// Manages async search tasks.
+#[derive(Clone)]
+pub struct SearchTaskManager {
+    tasks: Arc<Mutex<HashMap<String, SearchTask>>>,
+}
+
+impl SearchTaskManager {
+    pub fn new() -> Self {
+        Self { tasks: Arc::new(Mutex::new(HashMap::new())) }
+    }
+
+    pub fn create_task(&self) -> String {
+        let task_id = Uuid::new_v4().to_string();
+        let task = SearchTask {
+            task_id: task_id.clone(),
+            status: SearchTaskStatus::Pending,
+            steps: vec![
+                SearchTaskStep { name: "Extracting keywords from query".to_string(), status: "pending".to_string() },
+                SearchTaskStep { name: "Searching knowledge graph".to_string(), status: "pending".to_string() },
+                SearchTaskStep { name: "Filtering results by relevance".to_string(), status: "pending".to_string() },
+            ],
+            current_step: 0,
+            results: None,
+            error: None,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            completed_at: None,
+        };
+        self.tasks.lock().unwrap().insert(task_id.clone(), task);
+        task_id
+    }
+
+    pub fn set_step(&self, task_id: &str, step_idx: usize, status: &str) {
+        if let Some(task) = self.tasks.lock().unwrap().get_mut(task_id) {
+            if let Some(step) = task.steps.get_mut(step_idx) {
+                step.status = status.to_string();
+            }
+            task.current_step = step_idx;
+            task.status = SearchTaskStatus::Running;
+        }
+    }
+
+    pub fn complete(&self, task_id: &str, results: QueryResponse) {
+        if let Some(task) = self.tasks.lock().unwrap().get_mut(task_id) {
+            task.status = SearchTaskStatus::Completed;
+            task.results = Some(results);
+            task.completed_at = Some(chrono::Utc::now().to_rfc3339());
+            if let Some(step) = task.steps.last_mut() {
+                step.status = "done".to_string();
+            }
+        }
+    }
+
+    pub fn fail(&self, task_id: &str, error: String) {
+        if let Some(task) = self.tasks.lock().unwrap().get_mut(task_id) {
+            task.status = SearchTaskStatus::Failed;
+            task.error = Some(error);
+            task.completed_at = Some(chrono::Utc::now().to_rfc3339());
+        }
+    }
+
+    pub fn get_task(&self, task_id: &str) -> Option<SearchTask> {
+        self.tasks.lock().unwrap().get(task_id).cloned()
+    }
+}
+
+impl Default for SearchTaskManager {
+    fn default() -> Self { Self::new() }
+}
 
 // ─── AppState ────────────────────────────────────────────────────
 
@@ -26,6 +129,7 @@ pub struct AppState {
     pub graph_manager: Arc<Mutex<GraphManager>>,
     pub extraction_config: Option<ExtractionConfig>,
     pub task_manager: ExtractionTaskManager,
+    pub search_task_manager: SearchTaskManager,
 }
 
 /// Default graph name used when no X-Graph-Name header is present.
@@ -122,6 +226,8 @@ pub fn build_router(state: AppState) -> Router {
 
         // Neural search
         .route("/search", post(search_handler))
+        .route("/search/semantic", post(semantic_search_handler))
+        .route("/search/task/:task_id", get(search_task_handler))
 
         // Document extraction (async task API)
         .route("/extract", post(extract_handler_async))
@@ -514,6 +620,157 @@ async fn extract_tasks_handler(
         "tasks": tasks,
         "count": tasks.len()
     }))
+}
+
+// ─── Async Semantic Search ────────────────────────────────────────
+
+/// POST /search/semantic — Submit a semantic search as an async task.
+async fn semantic_search_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let graph_name = resolve_graph_name(&headers);
+    let query = body.get("query").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if query.trim().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Empty query"}))));
+    }
+
+    // Extract graph handles
+    let (graph, neural, config) = {
+        let gm = state.graph_manager.lock().unwrap();
+        match gm.get(&graph_name) {
+            Some(handle) => (handle.graph.clone(), handle.neural_network.clone(), state.extraction_config.clone()),
+            None => return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Graph not found"})))),
+        }
+    };
+
+    let task_id = state.search_task_manager.create_task();
+    let task_id_clone = task_id.clone();
+    let mgr = state.search_task_manager.clone();
+
+    tokio::spawn(async move {
+        let tid = task_id_clone;
+
+        // Step 1: Extract keywords
+        mgr.set_step(&tid, 0, "running");
+        let keywords = if let Some(ref config) = config {
+            let system_prompt = "Extract 3-5 key search keywords from this query. Keep names in their original language (e.g. Chinese names stay in Chinese). Return ONLY a JSON array of strings, no other text.";
+            let user_msg = format!("Query: {}", query);
+            match crate::extract::llm_client::chat_completion_with_retry(config, system_prompt, &user_msg).await {
+                Ok(result) => {
+                    let trimmed = result.content.trim();
+                    if trimmed.starts_with('[') {
+                        serde_json::from_str::<Vec<String>>(trimmed).unwrap_or_else(|_| {
+                            query.split_whitespace().map(|s| s.to_string()).collect()
+                        })
+                    } else {
+                        query.split_whitespace().map(|s| s.to_string()).collect()
+                    }
+                }
+                Err(_) => query.split_whitespace().map(|s| s.to_string()).collect(),
+            }
+        } else {
+            query.split_whitespace().map(|s| s.to_string()).collect()
+        };
+        mgr.set_step(&tid, 0, "done");
+
+        // Step 2: Neural search
+        mgr.set_step(&tid, 1, "running");
+        let query_str = keywords.join(" ");
+        let (ranked_vertices, ranked_edges, _fired, _hot, _ticks) = {
+            let mut nn = neural.lock().unwrap();
+            nn.search(&query_str)
+        };
+        let mut results: Vec<TraversalResult> = ranked_vertices.into_iter().take(100)
+            .map(|(vid, _)| TraversalResult::VertexResult(super::query::VertexResult {
+                element_type: "vertex".to_string(), id: vid,
+                labels: Vec::new(), properties: std::collections::HashMap::new(),
+            })).collect();
+        {
+            let g = graph.lock().unwrap();
+            for (eid, _) in ranked_edges {
+                if let Some(e) = g.get_edge(eid) {
+                    results.push(crate::gremlin::steps::edge_to_result(e));
+                }
+            }
+        }
+        // Fill vertex details
+        let results = match super::steps::fill_vertex_details(&graph.lock().unwrap(), results) {
+            Ok(r) => r,
+            Err(e) => { mgr.fail(&tid, e); return; }
+        };
+        mgr.set_step(&tid, 1, "done");
+
+        // Step 3: Semantic filter (async — limit to first 30 results)
+        mgr.set_step(&tid, 2, "running");
+        let filter_input: Vec<_> = results.into_iter().take(30).collect();
+        let final_results = if let Some(ref config) = config {
+            // Build a summary of the search results
+            let mut summary = String::new();
+            for (i, r) in filter_input.iter().enumerate() {
+                match r {
+                    TraversalResult::VertexResult(v) => {
+                        let name = v.properties.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                        let labels = v.labels.join(", ");
+                        summary.push_str(&format!("{}. V:{} [{}]\n", i + 1, name, labels));
+                    }
+                    TraversalResult::EdgeResult(e) => {
+                        summary.push_str(&format!("{}. EDGE:{} ({})\n", i + 1, e.label, e.id));
+                    }
+                    _ => {}
+                }
+            }
+            let system_prompt = "You are a semantic relevance filter. Given a user query and a list of search results, return ONLY the indices (comma-separated, 1-based) of results that are semantically relevant to the query. If none are relevant, return \"NONE\". No other text.";
+            let user_msg = format!("Query: {}\n\nSearch results:\n{}", query, summary);
+            match crate::extract::llm_client::chat_completion_with_retry(config, system_prompt, &user_msg).await {
+                Ok(reply) => {
+                    let text = reply.content.trim();
+                    if text == "NONE" {
+                        Vec::new()
+                    } else {
+                        let indices: Vec<usize> = text.split(',')
+                            .filter_map(|s| s.trim().parse::<usize>().ok())
+                            .filter(|&i| i > 0 && i <= filter_input.len())
+                            .map(|i| i - 1)
+                            .collect();
+                        if indices.is_empty() {
+                            filter_input
+                        } else {
+                            indices.into_iter().map(|i| filter_input[i].clone()).collect()
+                        }
+                    }
+                }
+                Err(_) => filter_input,
+            }
+        } else {
+            filter_input
+        };
+        mgr.set_step(&tid, 2, "done");
+
+        // Complete
+        let response = QueryResponse {
+            success: true,
+            data: final_results,
+            error: None,
+            ticks_used: Some(0),
+            neurons_fired: Some(vec![]),
+        };
+        mgr.complete(&tid, response);
+    });
+
+    Ok(Json(serde_json::json!({"task_id": task_id, "status": "pending"})))
+}
+
+/// GET /search/task/{task_id} — Poll the status and results of an async search task.
+async fn search_task_handler(
+    State(state): State<AppState>,
+    Path(task_id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    match state.search_task_manager.get_task(&task_id) {
+        Some(task) => Ok(Json(serde_json::json!(task))),
+        None => Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Task not found"})))),
+    }
 }
 
 // ─── Re-index ────────────────────────────────────────────────────

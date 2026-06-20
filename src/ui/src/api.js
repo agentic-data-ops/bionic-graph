@@ -90,6 +90,26 @@ export async function listExtractTasks() {
   return res.json();
 }
 
+// ─── Async Semantic Search ──────────────────────────────────────
+
+/** Submit a semantic search as an async background task. Returns { task_id, status } */
+export async function semanticSearchAsync(query, graph = 'default') {
+  const res = await fetch(BASE + '/search/semantic', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Graph-Name': graph },
+    body: JSON.stringify({ query }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+/** Get the status and results of an async search task. */
+export async function getSearchTaskStatus(taskId) {
+  const res = await fetch(BASE + `/search/task/${encodeURIComponent(taskId)}`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 export async function traverse(vid, label = null, graph = 'default') {
   const edgeFilter = label ? { label } : {};
   // Fetch both neighboring vertices AND edges in a single merged response

@@ -119,9 +119,10 @@ pub fn execute_query_with_llm(
                     }
                 };
 
-                // Post-filter: LLM prunes results not semantically relevant
+                // Post-filter: LLM prunes results not semantically relevant (limit to 30)
                 let final_results = if let Some(config) = llm_config {
-                    semantic_filter_results(config, query, &filled)
+                    let filter_input: Vec<_> = filled.into_iter().take(30).collect();
+                    semantic_filter_results(config, query, &filter_input)
                 } else {
                     Ok(filled)
                 };
@@ -873,7 +874,7 @@ fn extract_search_keywords(llm_config: Option<&ExtractionConfig>, query: &str) -
 }
 
 /// After keywordSearch, ask the LLM to prune results not semantically relevant.
-fn semantic_filter_results(
+pub(super) fn semantic_filter_results(
     config: &ExtractionConfig,
     query: &str,
     results: &[TraversalResult],
@@ -969,7 +970,7 @@ fn vertex_to_result(g: &Graph, id: VertexId) -> TraversalResult {
     })
 }
 
-fn edge_to_result(e: &crate::graph::Edge) -> TraversalResult {
+pub(super) fn edge_to_result(e: &crate::graph::Edge) -> TraversalResult {
     let props: std::collections::HashMap<String, Value> = e
         .properties
         .iter()
@@ -1019,7 +1020,7 @@ fn property_to_json(pv: &PropertyValue) -> Value {
     }
 }
 
-fn fill_vertex_details(g: &Graph, results: Vec<TraversalResult>) -> Result<Vec<TraversalResult>, String> {
+pub(super) fn fill_vertex_details(g: &Graph, results: Vec<TraversalResult>) -> Result<Vec<TraversalResult>, String> {
     let filled: Vec<TraversalResult> = results
         .into_iter()
         .map(|r| match r {
