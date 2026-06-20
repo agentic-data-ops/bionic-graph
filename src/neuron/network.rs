@@ -144,6 +144,9 @@ impl NeuralNetwork {
         &mut self,
         query: &str,
     ) -> (Vec<(VertexId, u32)>, Vec<(EdgeId, u32)>, Vec<NeuronId>, Vec<NeuronId>, usize) {
+        // Reset all neuron states to ensure deterministic results per query
+        activation::reset(&mut self.neurons);
+
         // Tokenize query
         let tokens: Vec<&str> = query
             .split_whitespace()
