@@ -1123,7 +1123,7 @@ mod tests {
         execute_query(graph, nn, &query)
     }
 
-    // ─── V / has / values 基础管道 ───────────────────────────
+    // ─── V / has / values basic pipeline ────────────────────
 
     #[test]
     fn test_v_all_vertices() {
@@ -1211,7 +1211,7 @@ mod tests {
         assert_eq!(resp.data.len(), 4);
     }
 
-    // ─── out / in / both 遍历 ─────────────────────────────────
+    // ─── out / in / both traversal ──────────────────────────
 
     #[test]
     fn test_out_traverse() {
@@ -1257,7 +1257,7 @@ mod tests {
         assert_eq!(resp.data.len(), 1, "project should have 1 incoming neighbor (Carol)");
     }
 
-    // ─── 计数与去重 ──────────────────────────────────────────
+    // ─── Count / dedup ───────────────────────────────────────
 
     #[test]
     fn test_count() {
@@ -1353,7 +1353,7 @@ mod tests {
         assert_eq!(resp.data.len(), 2);
     }
 
-    // ─── 错误处理 ────────────────────────────────────────────
+    // ─── Error handling ──────────────────────────────────────
 
     #[test]
     fn test_empty_query_returns_empty() {
@@ -1391,7 +1391,7 @@ mod tests {
         // So it may return empty — that's fine, just check no crash
     }
 
-    // ─── E (edges) 步骤 ──────────────────────────────────────
+    // ─── E (edges) step ──────────────────────────────────────
 
     #[test]
     fn test_e_all_edges() {
@@ -1429,12 +1429,10 @@ mod tests {
         assert_eq!(resp.data.len(), 1);
     }
 
-    // ─── TimeTravel 步骤 ─────────────────────────────────────
+    // ─── TimeTravel step ──────────────────────────────────────
     //
-    // 注意: TimeTravel 的当前实现有 bug — `vertex_to_result` 用 `snapshot.id`
-    // 重新从 graph 读取当前状态，而不是使用 snapshot 的属性。所以 timeTravel
-    // 步骤不会返回历史属性值，但会正确过滤（软删除的顶点可以在历史中被看到）。
-    // 这里只测试步骤不崩溃且能返回结果。
+    // NOTE: earlier bug: vertex_to_result(g, snapshot.id) re-read current state.
+    // Fixed by vertex_from_snapshot(&snapshot). Test verifies historical values.
 
     #[test]
     fn test_time_travel_returns_historical_state() {
@@ -1509,7 +1507,7 @@ mod tests {
         }
     }
 
-    // ─── HasNot / HasKey / HasValue 执行测试 ──────────────────
+    // ─── HasNot / HasKey / HasValue execution tests ───────────
 
     #[test]
     fn test_has_not_filter() {
@@ -1551,7 +1549,7 @@ mod tests {
         assert_eq!(resp.data.len(), 1, "Only Bob has name = Bob");
     }
 
-    // ─── OutE / InE / BothE 执行测试 ─────────────────────────
+    // ─── OutE / InE / BothE execution tests ──────────────────
 
     #[test]
     fn test_out_e_from_vertex() {

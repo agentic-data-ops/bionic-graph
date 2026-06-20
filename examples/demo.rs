@@ -1,28 +1,28 @@
-/// Bionic-Graph 完整演示
+/// Bionic-Graph full demo
 ///
-/// 展示：建图 → 构建神经元索引 → 关键词搜索 → 图遍历
+/// Build graph → neural index → keyword search → graph traversal
 ///
-/// 运行: cargo run --example demo
+/// Run: cargo run --example demo
 use bionic_graph::graph::{Graph, PropertyValue, Vertex};
 use bionic_graph::neuron::{NeuralNetwork, Neuron};
 
 fn main() {
     println!("╔══════════════════════════════════════════╗");
     println!("║   Bionic-Graph Demo                      ║");
-    println!("║   知识图谱 + 生物神经元索引               ║");
+    println!("║   Knowledge Graph + Bio-Neural Index        ║");
     println!("╚══════════════════════════════════════════╝");
     println!();
 
-    // ── 第1步：建图 ──────────────────────────────────
+    // ── Step 1: Build graph ─────────────────────────────
     println!("📊 Step 1: Building knowledge graph...");
     let mut graph = Graph::new();
 
-    // 创建人物顶点
+    // Create person vertices
     let alice = graph.create_vertex(vec!["person".to_string(), "engineer".to_string()]);
     let bob = graph.create_vertex(vec!["person".to_string(), "scientist".to_string()]);
     let carol = graph.create_vertex(vec!["person".to_string(), "designer".to_string()]);
 
-    // 设置属性
+    // Set properties
     if let Some(v) = graph.get_vertex_mut(alice) {
         v.properties.insert("name".to_string(), PropertyValue::String("Alice".to_string()));
         v.properties.insert("age".to_string(), PropertyValue::Integer(30));
@@ -36,7 +36,7 @@ fn main() {
         v.properties.insert("age".to_string(), PropertyValue::Integer(28));
     }
 
-    // 创建公司顶点
+    // Create company vertex
     let acme = graph.create_vertex(vec!["company".to_string(), "tech".to_string()]);
     let globex = graph.create_vertex(vec!["company".to_string()]);
     if let Some(v) = graph.get_vertex_mut(acme) {
@@ -48,14 +48,14 @@ fn main() {
         v.properties.insert("industry".to_string(), PropertyValue::String("Robotics".to_string()));
     }
 
-    // 创建项目顶点
+    // Create project vertex
     let project_x = graph.create_vertex(vec!["project".to_string()]);
     if let Some(v) = graph.get_vertex_mut(project_x) {
         v.properties.insert("name".to_string(), PropertyValue::String("Project X".to_string()));
         v.properties.insert("budget".to_string(), PropertyValue::Integer(1_000_000));
     }
 
-    // 添加边
+    // Add edges
     graph.create_edge("works_at".to_string(), alice, acme).unwrap();
     graph.create_edge("works_at".to_string(), bob, acme).unwrap();
     graph.create_edge("works_at".to_string(), carol, globex).unwrap();
@@ -68,11 +68,11 @@ fn main() {
     println!("   ✓ {} edges created", graph.edge_count());
     println!();
 
-    // ── 第2步：构建神经元索引 ────────────────────────
+    // ── Step 2: Build neural index ───────────────────────
     println!("🧠 Step 2: Building neural index...");
     let mut nn = NeuralNetwork::new();
 
-    // 为每个概念创建神经元
+    // Create one neuron per concept
     let n_ai = Neuron::new(1, "Artificial Intelligence")
         .with_keywords(vec!["ai", "artificial intelligence", "machine learning", "deep learning"])
         .with_threshold(0.6);
@@ -96,7 +96,7 @@ fn main() {
     nn.link_vertex(3, acme);
     nn.link_vertex(3, project_x);
 
-    // 添加突触（概念关联）
+    // Add synapses (concept associations)
     nn.add_synapse(1, 3, 0.8, 0.05); // AI → Engineering (strong)
     nn.add_synapse(3, 1, 0.6, 0.05); // Engineering → AI (medium)
     nn.add_synapse(2, 3, 0.5, 0.05); // Robotics → Engineering
@@ -105,7 +105,7 @@ fn main() {
     println!("   ✓ Neurons linked to graph vertices via vertex_refs");
     println!();
 
-    // ── 第3步：神经网络搜索 ─────────────────────────
+    // ── Step 3: Neural search ────────────────────────────
     println!("🔍 Step 3: Neural search — query: 'ai engineering'");
     let (vertices, _edges, fired, _hot, ticks) = nn.search("ai engineering");
     println!("   Fired {} neurons across {} ticks", fired.len(), ticks);
@@ -122,9 +122,9 @@ fn main() {
     }
     println!();
 
-    // ── 第4步：遍历子图 ──────────────────────────────
+    // ── Step 4: Traverse subgraph ────────────────────────
     println!("🔗 Step 4: Traversal from neural results");
-    // 从搜索到的最热顶点出发做 BFS
+    // BFS from the hottest search-result vertex
     if let Some(&(start_vid, _)) = vertices.first() {
         println!("   BFS from hottest vertex {}:", start_vid);
         let bfs = bionic_graph::graph::Bfs::new(&graph, start_vid)
@@ -144,23 +144,23 @@ fn main() {
     }
     println!();
 
-    // ── 第5步：Hebbian 学习演示 ─────────────────────
+    // ── Step 5: Hebbian learning demo ────────────────────
     println!("📝 Step 5: Hebbian learning demonstration");
     println!("   Before: AI→Engineering synapse strength = 0.8");
     
-    // 模拟多次共同激活
+    // Simulate repeated co-firing
     for _ in 0..5 {
         let (_v, _e, fired, _hot, _) = nn.search("ai engineering");
         // Hebbian learning happens inside search()
         println!("   Co-firing: {:?} → synapse strengthens", fired);
     }
     
-    // 查看学习后的连接强度
+    // Check learned synapse strengths
     // (We'd need a get_synapse method; for demo we just show the concept)
     println!("   ✓ Hebbian learning automatically strengthens frequently co-activated paths");
     println!();
 
-    // ── 总结 ─────────────────────────────────────────
+    // ── Summary ──────────────────────────────────────────
     println!("╔══════════════════════════════════════════╗");
     println!("║   Demo Complete                          ║");
     println!("╠══════════════════════════════════════════╣");

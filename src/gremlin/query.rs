@@ -514,7 +514,7 @@ mod tests {
         assert_eq!(deserialized.ticks_used, Some(5));
     }
 
-    // ─── 新增步骤: HasNot / HasKey / HasValue ────────────────
+    // ─── New steps: HasNot / HasKey / HasValue ────────────────
 
     #[test]
     fn test_has_not_step() {
@@ -540,7 +540,7 @@ mod tests {
         );
     }
 
-    // ─── 新增步骤: OutE / InE / BothE ─────────────────────────
+    // ─── New steps: OutE / InE / BothE ────────────────────────
 
     #[test]
     fn test_out_e_step() {

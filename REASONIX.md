@@ -35,18 +35,18 @@
 - **EntityType**: `Neuron` stores `entity_type: Option<EntityType>` identifying the graph entity (Vertex or Edge) it represents.
 
 ## Gremlin Steps (16 total)
-| 步骤 | 说明 |
-|------|------|
-| `keywordSearch` | 神经网络关键词搜索，返回顶点+边 |
-| `semanticSearch` | LLM 提取关键词 → keywordSearch → LLM 语义裁剪 |
-| `V` / `E` | 取全部或指定顶点/边 |
-| `has` / `hasNot` / `hasKey` / `hasValue` / `hasLabel` / `hasText` | 属性过滤 |
-| `out` / `in` / `both` | 顶点遍历（支持 depth） |
-| `outE` / `inE` / `bothE` | 边遍历（返回 EdgeResult） |
-| `values` / `limit` / `count` / `dedup` | 结果处理 |
-| `repeat` | 循环执行子步骤 |
-| `timeTravel` | 时间点查询 |
-| `compact` | 历史版本归档 |
+| Step | Description |
+|------|-------------|
+| `keywordSearch` | Neural index search, returns vertices + edges |
+| `semanticSearch` | LLM keywords → keywordSearch → LLM result filter |
+| `V` / `E` | All or specific vertices / edges |
+| `has` / `hasNot` / `hasKey` / `hasValue` / `hasLabel` / `hasText` | Property filters |
+| `out` / `in` / `both` | Vertex traversal (supports depth) |
+| `outE` / `inE` / `bothE` | Edge traversal (returns EdgeResult) |
+| `values` / `limit` / `count` / `dedup` | Result processing |
+| `repeat` | Loop sub-steps N times |
+| `timeTravel` | Point-in-time query |
+| `compact` | Archive old history to vlog |
 
 ## Watch out for
 - **`edit_file` SEARCH must match byte-for-byte** — the Rust source has no trailing whitespace convention, and SEARCH is whitespace-sensitive.
@@ -56,6 +56,6 @@
 - **`POST /vertices` and `POST /edges` auto-create neurons** — HTTP handlers call `Neuron::for_vertex` / `Neuron::for_edge` + `auto_synapse`.
 
 ## Implemented Plans
-- `001-arch-verify.md` — 全功能验证（151 tests, 0 failed）
-- `002-section-paragraph-graph.md` — 章节/段落结构入图（section/paragraph 顶点 + 分层边）
-- `003-keyword-semantic-search.md` — keywordSearch + semanticSearch + 全局 LLM 配置
+- `001-arch-verify.md` — Full feature verification (151 tests, 0 failed)
+- `002-section-paragraph-graph.md` — Section/paragraph graph structure
+- `003-keyword-semantic-search.md` — keywordSearch + semanticSearch + global LLM config
