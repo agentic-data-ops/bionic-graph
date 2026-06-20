@@ -268,6 +268,11 @@ impl Graph {
         self.edges.len()
     }
 
+    /// Iterate over all edge IDs.
+    pub fn edge_ids(&self) -> impl Iterator<Item = &EdgeId> {
+        self.edges.keys()
+    }
+
     // ─── Traversal Helpers ─────────────────────────────────────────
 
     /// Get outgoing edge IDs from a vertex.

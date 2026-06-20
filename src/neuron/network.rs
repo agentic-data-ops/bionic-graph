@@ -183,6 +183,54 @@ impl NeuralNetwork {
         result
     }
 
+    /// Create neurons for all edges in the graph that don't have one yet.
+    /// Returns the number of edge neurons created.
+    pub fn reindex_edges(&mut self, graph: &crate::graph::Graph) -> usize {
+        let mut count = 0;
+        // Collect existing edge neurons
+        let indexed_edges: std::collections::HashSet<EdgeId> = self.neurons.values()
+            .filter_map(|n| {
+                if let Some(crate::neuron::neuron::EntityType::Edge(eid)) = &n.entity_type {
+                    Some(*eid)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for eid in graph.edge_ids() {
+            if indexed_edges.contains(eid) {
+                continue; // already has a neuron
+            }
+            if let Some(edge) = graph.get_edge(*eid) {
+                let nid = (self.neuron_count() as u64) + 1;
+                let mut neuron = crate::neuron::Neuron::for_edge(nid, &edge.label, *eid);
+                // Build keywords from edge label, and source/target entity names
+                let mut keywords = vec![edge.label.clone()];
+                if let Some(src) = graph.get_vertex(edge.source) {
+                    if let Some(crate::graph::PropertyValue::String(name)) = src.properties.get("name") {
+                        keywords.push(name.clone());
+                    }
+                    if let Some(crate::graph::PropertyValue::String(id)) = src.properties.get("extracted_id") {
+                        keywords.push(id.clone());
+                    }
+                }
+                if let Some(tgt) = graph.get_vertex(edge.target) {
+                    if let Some(crate::graph::PropertyValue::String(name)) = tgt.properties.get("name") {
+                        keywords.push(name.clone());
+                    }
+                    if let Some(crate::graph::PropertyValue::String(id)) = tgt.properties.get("extracted_id") {
+                        keywords.push(id.clone());
+                    }
+                }
+                neuron.keywords = keywords;
+                self.add_neuron(neuron);
+                count += 1;
+            }
+        }
+        count
+    }
+
     /// Run a single tick and return results.
     pub fn tick(&mut self) -> TickResult {
         let result = activation::tick(&mut self.neurons, &self.synapses);

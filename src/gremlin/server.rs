@@ -131,6 +131,9 @@ pub fn build_router(state: AppState) -> Router {
         // Compaction
         .route("/compact", post(compact_handler))
 
+        // Re-index edges into neural network
+        .route("/reindex", post(reindex_handler))
+
         // UI — redirect / → /ui/
         .route("/", get(|| async { axum::response::Redirect::to("/ui/") }))
         .nest_service("/ui", ServeDir::new("src/ui/dist"))
@@ -499,6 +502,33 @@ async fn extract_tasks_handler(
         "tasks": tasks,
         "count": tasks.len()
     }))
+}
+
+// ─── Re-index ────────────────────────────────────────────────────
+
+/// POST /reindex — Create neurons for all edges that don't have one yet.
+/// Returns the count of new edge neurons created.
+async fn reindex_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let graph_name = resolve_graph_name(&headers);
+    let mut gm = state.graph_manager.lock().unwrap();
+    let handle = gm.get_mut(&graph_name).ok_or_else(|| {
+        (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "graph not found"})))
+    })?;
+
+    let count = {
+        let g = handle.graph.lock().unwrap();
+        let mut nn = handle.neural_network.lock().unwrap();
+        nn.reindex_edges(&g)
+    };
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "graph": graph_name,
+        "new_edge_neurons": count,
+    })))
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────
