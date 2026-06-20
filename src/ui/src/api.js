@@ -91,12 +91,27 @@ export async function listExtractTasks() {
 }
 
 export async function traverse(vid, label = null, graph = 'default') {
-  const step = { step: 'out', depth: 1 };
-  if (label) step.label = label;
-  return gremlin([
-    { step: 'V', ids: [vid] },
-    step,
-  ], graph);
+  const edgeFilter = label ? { label } : {};
+  // Fetch both neighboring vertices AND edges in a single merged response
+  const [vertRes, edgeRes] = await Promise.all([
+    gremlin([
+      { step: 'V', ids: [vid] },
+      { step: 'both', depth: 1, ...edgeFilter },
+    ], graph),
+    gremlin([
+      { step: 'V', ids: [vid] },
+      { step: 'bothE', ...edgeFilter },
+    ], graph),
+  ]);
+  // Merge: vertices from vertRes + edges from edgeRes
+  const merged = {
+    success: vertRes.success && edgeRes.success,
+    data: [...(vertRes.data || []), ...(edgeRes.data || [])],
+    error: vertRes.error || edgeRes.error,
+    ticks_used: vertRes.ticks_used,
+    neurons_fired: vertRes.neurons_fired,
+  };
+  return merged;
 }
 
 export async function getVertex(vid, graph = 'default') {
