@@ -140,17 +140,21 @@ pub fn search(
         }
     }
 
-    // Step 3: Collect results
+    // Step 3: Collect results — only from neurons that participated in the query
     let mut vertex_score: HashMap<VertexId, u32> = HashMap::new();
     let mut edge_score: HashMap<EdgeId, u32> = HashMap::new();
     let mut fired_ids = Vec::new();
     let mut hot_ids = Vec::new();
 
     for neuron in neurons.values() {
+        let is_active = neuron.activation > 0.0 || neuron.is_refractory();
+        if !is_active {
+            continue; // Skip neurons that never matched or received activation
+        }
         if neuron.activation >= config.hot_threshold {
             hot_ids.push(neuron.id);
         }
-        // Collect vertex refs
+        // Collect vertex refs — only from active/fired neurons
         for &vref in &neuron.vertex_refs {
             *vertex_score.entry(vref).or_insert(0) += 1;
         }
@@ -163,10 +167,11 @@ pub fn search(
         }
     }
 
-    // Also track which neurons fired (activation was >= threshold this cycle)
-    // We use a simpler approach: if activation > hot_threshold or is_refractory,
-    // it was involved
+    // Track which neurons fired or were involved
     for neuron in neurons.values() {
+        if !(neuron.activation > 0.0 || neuron.is_refractory()) {
+            continue;
+        }
         if neuron.is_refractory() || neuron.activation >= config.hot_threshold {
             fired_ids.push(neuron.id);
         }

@@ -71,14 +71,14 @@ pub fn build_user_message(section: &Section, previous_summary: Option<&str>) -> 
 // ─── Response Parser ─────────────────────────────────────────────
 
 /// Parsed JSON structure from the LLM response.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct LlmExtraction {
     section_summary: Option<String>,
     entities: Option<Vec<LlmEntity>>,
     relations: Option<Vec<LlmRelation>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct LlmEntity {
     #[serde(default)]
     id: Option<String>,
@@ -88,7 +88,7 @@ struct LlmEntity {
     properties: Option<HashMap<String, serde_json::Value>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct LlmRelation {
     #[serde(default)]
     source: Option<String>,
@@ -168,6 +168,116 @@ fn json_val_to_string(v: serde_json::Value) -> String {
     }
 }
 
+// ─── Batch Extraction ────────────────────────────────────────────
+
+/// Build a user message for batch extraction: multiple sections in one LLM call.
+///
+/// Lists each section with its index, heading chain, heading, and content.
+/// The LLM returns a JSON array, one extraction per section (by index).
+pub fn build_batch_user_message(sections: &[(usize, &Section)], previous_summary: Option<&str>) -> String {
+    let context_note = match previous_summary {
+        Some(summary) => format!("[Previous batch context: {}]\n\n", summary),
+        None => String::new(),
+    };
+
+    let mut body = String::new();
+    body.push_str(&context_note);
+    body.push_str("Extract entities and relations from the following document sections.\n\n");
+
+    for (batch_idx, section) in sections {
+        let heading_chain = section.heading_chain.join(" > ");
+        body.push_str(&format!(
+            "### Section {}\n**Heading chain**: {}\n**Heading**: {}\n\n{}\n\n",
+            batch_idx, heading_chain, section.heading, section.content
+        ));
+    }
+
+    body.push_str(
+        "Return a JSON array where each element corresponds to one section, in order:\n\n\
+         [\n  {\n    \"section_summary\": \"one-sentence summary\",\n    \"entities\": [...],\n    \"relations\": [...]\n  },\n  ...\n]\n\n\
+         Follow the same entity/relation extraction rules as instructed.\n\
+         If a section has no extractable content, return {\"section_summary\": \"\", \"entities\": [], \"relations\": []} for that index."
+    );
+
+    body
+}
+
+/// Parse a batch LLM response (JSON array) into per-section `SectionExtraction` results.
+///
+/// Returns a Vec with length equal to `expected_count`. Missing/invalid entries are
+/// replaced with empty extractions.
+pub fn parse_batch_response(
+    response_text: &str,
+    sections: &[(usize, &Section)],
+) -> Result<Vec<SectionExtraction>, String> {
+    let cleaned = clean_json(response_text);
+    let parsed: Vec<LlmExtraction> =
+        serde_json::from_str(&cleaned).map_err(|e| {
+            format!(
+                "Failed to parse batch LLM response as JSON array: {}\nRaw (first 500): {}",
+                e,
+                &cleaned[..cleaned.len().min(500)]
+            )
+        })?;
+
+    let mut results = Vec::with_capacity(sections.len());
+    for (i, (batch_idx, section)) in sections.iter().enumerate() {
+        let entry = parsed.get(i).cloned().unwrap_or(LlmExtraction {
+            section_summary: None,
+            entities: None,
+            relations: None,
+        });
+
+        let entities = entry
+            .entities
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|e| {
+                let id = e.id.filter(|s| !s.is_empty())?;
+                let labels = e.labels.unwrap_or_default();
+                if labels.is_empty() {
+                    return None;
+                }
+                Some(ExtractedEntity {
+                    id,
+                    labels,
+                    properties: e.properties.unwrap_or_default()
+                        .into_iter().map(|(k, v)| (k, json_val_to_string(v))).collect(),
+                })
+            })
+            .collect();
+
+        let relations = entry
+            .relations
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|r| {
+                let source = r.source.filter(|s| !s.is_empty())?;
+                let target = r.target.filter(|s| !s.is_empty())?;
+                let label = r.label.filter(|s| !s.is_empty())?;
+                Some(ExtractedRelation {
+                    source,
+                    target,
+                    label,
+                    properties: r.properties.unwrap_or_default()
+                        .into_iter().map(|(k, v)| (k, json_val_to_string(v))).collect(),
+                })
+            })
+            .collect();
+
+        results.push(SectionExtraction {
+            heading: section.heading.clone(),
+            summary: entry.section_summary.unwrap_or_default(),
+            entities,
+            relations,
+        });
+    }
+
+    Ok(results)
+}
+
+// ─── JSON Helpers ────────────────────────────────────────────────
+
 /// Strip markdown code fences and other common LLM wrapping artifacts.
 fn clean_json(text: &str) -> String {
     let text = text.trim();
@@ -225,6 +335,75 @@ mod tests {
         assert_eq!(result.relations.len(), 1);
         assert_eq!(result.entities[0].id, "BionicGraph");
         assert_eq!(result.relations[0].label, "written_in");
+    }
+
+    #[test]
+    fn test_build_batch_user_message() {
+        let s1 = Section {
+            heading: "Intro".to_string(),
+            depth: 1,
+            content: "First section.".to_string(),
+            heading_chain: vec!["Intro".to_string()],
+            index: 0,
+        };
+        let s2 = Section {
+            heading: "Details".to_string(),
+            depth: 2,
+            content: "Second section.".to_string(),
+            heading_chain: vec!["Intro".to_string(), "Details".to_string()],
+            index: 1,
+        };
+        let sections = vec![(0, &s1), (1, &s2)];
+        let msg = build_batch_user_message(&sections, Some("Prev summary"));
+        assert!(msg.contains("### Section 0"));
+        assert!(msg.contains("### Section 1"));
+        assert!(msg.contains("First section."));
+        assert!(msg.contains("Second section."));
+        assert!(msg.contains("JSON array"));
+    }
+
+    #[test]
+    fn test_parse_batch_response_basic() {
+        let s1 = Section {
+            heading: "A".to_string(), depth: 1, content: "x".to_string(),
+            heading_chain: vec!["A".to_string()], index: 0,
+        };
+        let s2 = Section {
+            heading: "B".to_string(), depth: 1, content: "y".to_string(),
+            heading_chain: vec!["B".to_string()], index: 1,
+        };
+        let sections = vec![(0, &s1), (1, &s2)];
+        let json = r#"[
+            {"section_summary": "Section A", "entities": [{"id": "X", "labels": ["concept"]}], "relations": []},
+            {"section_summary": "Section B", "entities": [], "relations": []}
+        ]"#;
+        let results = parse_batch_response(json, &sections).unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].summary, "Section A");
+        assert_eq!(results[0].entities.len(), 1);
+        assert_eq!(results[0].entities[0].id, "X");
+        assert_eq!(results[1].summary, "Section B");
+        assert!(results[1].entities.is_empty());
+    }
+
+    #[test]
+    fn test_parse_batch_response_fewer_items() {
+        let s1 = Section {
+            heading: "A".to_string(), depth: 1, content: "x".to_string(),
+            heading_chain: vec!["A".to_string()], index: 0,
+        };
+        let s2 = Section {
+            heading: "B".to_string(), depth: 1, content: "y".to_string(),
+            heading_chain: vec!["B".to_string()], index: 1,
+        };
+        let sections = vec![(0, &s1), (1, &s2)];
+        let json = r#"[
+            {"section_summary": "Only A", "entities": [], "relations": []}
+        ]"#;
+        let results = parse_batch_response(json, &sections).unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].summary, "Only A");
+        assert_eq!(results[1].summary, ""); // second is empty default
     }
 
     #[test]

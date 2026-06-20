@@ -1,10 +1,8 @@
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
-    response::IntoResponse,
     routing::{delete, get, post},
     Json, Router,
 };
@@ -13,11 +11,9 @@ use serde_json::Value;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 
-use crate::graph::Graph;
 use crate::graph_manager::GraphManager;
-use crate::neuron::NeuralNetwork;
 
-use crate::extract::{extract_content_raw_with_nn, ExtractionConfig};
+use crate::extract::{ExtractionConfig, ExtractionTaskManager};
 
 use super::query::{GremlinQuery, QueryResponse};
 use super::steps::{execute_query, execute_query_with_llm};
@@ -29,6 +25,7 @@ use super::steps::{execute_query, execute_query_with_llm};
 pub struct AppState {
     pub graph_manager: Arc<Mutex<GraphManager>>,
     pub extraction_config: Option<ExtractionConfig>,
+    pub task_manager: ExtractionTaskManager,
 }
 
 /// Default graph name used when no X-Graph-Name header is present.
@@ -111,7 +108,7 @@ pub fn build_router(state: AppState) -> Router {
         // Graph management
         .route("/graphs", get(list_graphs_handler))
         .route("/graphs", post(create_graph_handler))
-        .route("/graphs/{name}", delete(delete_graph_handler))
+        .route("/graphs/:name", delete(delete_graph_handler))
 
         // Gremlin query
         .route("/gremlin", post(gremlin_handler))
@@ -120,14 +117,16 @@ pub fn build_router(state: AppState) -> Router {
         .route("/vertices", post(add_vertex_handler))
         .route("/edges", post(add_edge_handler))
         .route("/neurons", post(create_neuron_handler))
-        .route("/neurons/{id}/link", post(link_neuron_handler))
-        .route("/neurons/{id}/synapse", post(add_synapse_handler))
+        .route("/neurons/:id/link", post(link_neuron_handler))
+        .route("/neurons/:id/synapse", post(add_synapse_handler))
 
         // Neural search
         .route("/search", post(search_handler))
 
-        // Document extraction
-        .route("/extract", post(extract_handler))
+        // Document extraction (async task API)
+        .route("/extract", post(extract_handler_async))
+        .route("/extract/task/:task_id", get(extract_task_handler))
+        .route("/extract/tasks", get(extract_tasks_handler))
 
         // Compaction
         .route("/compact", post(compact_handler))
@@ -380,9 +379,11 @@ async fn search_handler(
     }
 }
 
-// ─── Extraction ─────────────────────────────────────────────────
+// ─── Extraction (Async Task API) ──────────────────────────────
 
-async fn extract_handler(
+/// POST /extract — Submit a markdown document for async extraction.
+/// Returns immediately with a task_id. Poll GET /extract/task/{id} for progress.
+async fn extract_handler_async(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: String,
@@ -402,33 +403,29 @@ async fn extract_handler(
     }
 
     // Get graph handle and clone the Arc for the async call
-    let handle = {
+    let (handle, source_name) = {
         let gm = state.graph_manager.lock().unwrap();
-        gm.get(&graph_name).cloned().ok_or_else(|| {
+        let h = gm.get(&graph_name).cloned().ok_or_else(|| {
             (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": format!("Graph '{}' not found", graph_name)})))
-        })?
+        })?;
+        let source = format!("{}.md", graph_name);
+        (h, source)
     };
 
-    // Enforce a per-request timeout so a hanging LLM call doesn't block forever
-    let source_name = format!("{}.md", graph_name);
-    let extraction_future = extract_content_raw_with_nn(config, &content, &source_name, &handle.graph, &handle.neural_network);
-    match tokio::time::timeout(Duration::from_secs(600), extraction_future).await {
-        Ok(Ok(stats)) => Ok(Json(serde_json::json!({
-            "success": true, "graph": graph_name,
-            "stats": {
-                "total_sections": stats.total_sections,
-                "processed_sections": stats.processed_sections,
-                "new_vertices": stats.new_vertices,
-                "new_edges": stats.new_edges,
-                "total_prompt_tokens": stats.total_prompt_tokens,
-                "total_completion_tokens": stats.total_completion_tokens,
-            }
-        }))),
-        Ok(Err(e)) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e})))),
-        Err(_) => Err((StatusCode::GATEWAY_TIMEOUT, Json(serde_json::json!({
-            "error": "Extraction timed out after 600s. The document may be too large or the LLM is unresponsive."
-        })))),
-    }
+    // Submit as async background task
+    let task_id = state.task_manager.submit_extraction(
+        config.clone(),
+        content,
+        source_name,
+        handle.graph,
+        handle.neural_network,
+        graph_name.clone(),
+    );
+
+    Ok(Json(serde_json::json!({
+        "task_id": task_id,
+        "status": "pending"
+    })))
 }
 
 // ─── Compaction ─────────────────────────────────────────────────
@@ -478,6 +475,30 @@ async fn compact_handler(
             "elapsed_us": stats.elapsed_us,
         }
     })))
+}
+
+// ─── Extraction Task Handlers ─────────────────────────────────────
+
+/// GET /extract/task/{task_id} — Get the status and results of an extraction task.
+async fn extract_task_handler(
+    State(state): State<AppState>,
+    Path(task_id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    match state.task_manager.get_task(&task_id) {
+        Some(task) => Ok(Json(serde_json::json!(task))),
+        None => Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Task not found"})))),
+    }
+}
+
+/// GET /extract/tasks — List all extraction tasks (newest first).
+async fn extract_tasks_handler(
+    State(state): State<AppState>,
+) -> Json<Value> {
+    let tasks = state.task_manager.list_tasks();
+    Json(serde_json::json!({
+        "tasks": tasks,
+        "count": tasks.len()
+    }))
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────

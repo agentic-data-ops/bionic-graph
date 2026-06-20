@@ -2,8 +2,8 @@ const BASE = '';
 
 async function api(path, opts = {}) {
   const res = await fetch(BASE + path, {
-    headers: { 'Content-Type': 'application/json', ...opts.headers },
     ...opts,
+    headers: { 'Content-Type': 'application/json', ...opts.headers },
   });
   if (!res.ok) {
     const body = await res.text();
@@ -51,12 +51,41 @@ export async function compact(beforeTs, graph = 'default') {
   return gremlin([{ step: 'compact', before: beforeTs }], graph);
 }
 
+// ─── Sync extraction (legacy, still works) ───────────────────────
+
 export async function extractDoc(content, graph = 'default') {
   const res = await fetch(BASE + '/extract', {
     method: 'POST',
     headers: { 'Content-Type': 'text/markdown', 'X-Graph-Name': graph },
     body: content,
   });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+// ─── Async extraction (task-based) ──────────────────────────────
+
+/** Submit a markdown document for async extraction. Returns { task_id, status } */
+export async function extractDocAsync(content, graph = 'default') {
+  const res = await fetch(BASE + '/extract', {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/markdown', 'X-Graph-Name': graph },
+    body: content,
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+/** Get the status and results of an extraction task. */
+export async function getTaskStatus(taskId) {
+  const res = await fetch(BASE + `/extract/task/${encodeURIComponent(taskId)}`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+/** List all extraction tasks (newest first). */
+export async function listExtractTasks() {
+  const res = await fetch(BASE + '/extract/tasks');
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }

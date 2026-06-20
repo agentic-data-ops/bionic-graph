@@ -59,6 +59,7 @@ pub fn execute_query_with_llm(
 
                 let mut results: Vec<TraversalResult> = ranked_vertices
                     .into_iter()
+                    .take(100)
                     .map(|(vid, _score)| TraversalResult::VertexResult(VertexResult {
                         element_type: "vertex".to_string(),
                         id: vid,

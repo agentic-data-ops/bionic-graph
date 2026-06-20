@@ -157,7 +157,9 @@ fn log_info_banner(addr: &SocketAddr) {
     println!("║    POST /vertices — Add vertex                   ║");
     println!("║    POST /edges    — Add edge                     ║");
     println!("║    POST /neurons  — Create neuron                ║");
-    println!("║    POST /extract  — Extract from Markdown doc    ║");
+    println!("║    POST /extract      — Submit document extraction   ║");
+    println!("║    GET  /extract/task/:id — Poll extraction task      ║");
+    println!("║    GET  /extract/tasks   — List all extraction tasks  ║");
     println!("╚══════════════════════════════════════════════════╝");
     println!();
 }

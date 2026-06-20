@@ -38,6 +38,10 @@ pub struct ExtractionConfig {
 
     /// Whether to include the previous section summary as context.
     pub pass_section_context: bool,
+
+    /// Number of sections to extract in a single LLM call (1 = sequential per-section).
+    /// Higher values reduce API calls but use more context per call.
+    pub batch_size: usize,
 }
 
 impl Default for ExtractionConfig {
@@ -47,11 +51,12 @@ impl Default for ExtractionConfig {
             api_key: String::new(),
             model: "deepseek-v4-flash".to_string(),
             context_window: 65536,
-            max_output_tokens: 8192,
+            max_output_tokens: 16384,
             prompt_overhead_tokens: 4096,
             max_retries: 3,
-            concurrent_sections: 1,
+            concurrent_sections: 3,
             pass_section_context: true,
+            batch_size: 5,
         }
     }
 }
@@ -73,6 +78,7 @@ impl ExtractionConfig {
             max_retries: s.extraction.max_retries,
             concurrent_sections: s.extraction.concurrent_sections,
             pass_section_context: s.extraction.pass_section_context,
+            batch_size: s.extraction.batch_size,
         }
     }
 

@@ -32,6 +32,7 @@ pub struct ExtractionConfig {
     pub max_retries: u32,
     pub concurrent_sections: usize,
     pub pass_section_context: bool,
+    pub batch_size: usize,
 }
 
 impl Default for ExtractionConfig {
@@ -40,10 +41,11 @@ impl Default for ExtractionConfig {
             api_base_url: "https://api.deepseek.com/v1".to_string(),
             model: "deepseek-v4-flash".to_string(),
             context_window: 65536,
-            max_output_tokens: 8192,
+            max_output_tokens: 16384,
             max_retries: 3,
             concurrent_sections: 1,
             pass_section_context: true,
+            batch_size: 5,
         }
     }
 }

@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use crate::graph::{Graph, VertexId};
 use crate::graph::graph::GraphError;
 use crate::graph_manager::GraphManager;
+use crate::extract::ExtractionTaskManager;
 use crate::gremlin::{
     build_router, execute_query, AppState, GremlinQuery, QueryResponse,
 };
@@ -224,6 +225,7 @@ impl MemorySystem {
         let state = AppState {
             graph_manager: gm,
             extraction_config: ext_cfg,
+            task_manager: ExtractionTaskManager::new(),
         };
         build_router(state)
     }
@@ -267,6 +269,7 @@ impl MemorySystem {
         let state = AppState {
             graph_manager: Arc::new(Mutex::new(gm)),
             extraction_config: ext_cfg,
+            task_manager: ExtractionTaskManager::new(),
         };
         build_router(state)
     }
