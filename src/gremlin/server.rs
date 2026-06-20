@@ -218,20 +218,26 @@ async fn gremlin_handler(
     Json(query): Json<GremlinQuery>,
 ) -> Json<QueryResponse> {
     let graph_name = resolve_graph_name(&headers);
-    let gm = state.graph_manager.lock().unwrap();
-    match gm.get(&graph_name) {
-        Some(handle) => {
-            let result = execute_query_with_llm(&handle.graph, &handle.neural_network, &query, state.extraction_config.as_ref());
-            Json(result)
+    // Extract handles and drop lock before calling execute_query_with_llm,
+    // since it may use block_on internally for LLM calls.
+    let (g, n, c) = {
+        let gm = state.graph_manager.lock().unwrap();
+        match gm.get(&graph_name) {
+            Some(handle) => (handle.graph.clone(), handle.neural_network.clone(), state.extraction_config.clone()),
+            None => return Json(QueryResponse {
+                success: false, data: vec![], error: Some(format!("Graph '{}' not found", graph_name)),
+                ticks_used: None, neurons_fired: None,
+            }),
         }
-        None => Json(QueryResponse {
-            success: false,
-            data: vec![],
-            error: Some(format!("Graph '{}' not found", graph_name)),
-            ticks_used: None,
-            neurons_fired: None,
-        }),
-    }
+    };
+    // Run query on a blocking thread to avoid block_on within tokio runtime
+    let result = tokio::task::spawn_blocking(move || {
+        execute_query_with_llm(&g, &n, &query, c.as_ref())
+    }).await.unwrap_or_else(|_| QueryResponse {
+        success: false, data: vec![], error: Some("Query execution panicked".to_string()),
+        ticks_used: None, neurons_fired: None,
+    });
+    Json(result)
 }
 
 /// POST /vertices — Add a vertex.
@@ -364,22 +370,28 @@ async fn search_handler(
     let graph_name = resolve_graph_name(&headers);
     let query_text = body.get("query").and_then(|v| v.as_str()).unwrap_or("");
 
-    let gm = state.graph_manager.lock().unwrap();
-    match gm.get(&graph_name) {
-        Some(handle) => {
-            let gremlin_query = GremlinQuery::new(vec![
-                super::query::TraversalStep::Search {
-                    keywords: query_text.split_whitespace().map(|s| s.to_string()).collect(),
-                },
-            ]);
-            let result = execute_query(&handle.graph, &handle.neural_network, &gremlin_query);
-            Json(result)
+    let (g, n) = {
+        let gm = state.graph_manager.lock().unwrap();
+        match gm.get(&graph_name) {
+            Some(handle) => (handle.graph.clone(), handle.neural_network.clone()),
+            None => return Json(QueryResponse {
+                success: false, data: vec![], error: Some(format!("Graph '{}' not found", graph_name)),
+                ticks_used: None, neurons_fired: None,
+            }),
         }
-        None => Json(QueryResponse {
-            success: false, data: vec![], error: Some(format!("Graph '{}' not found", graph_name)),
-            ticks_used: None, neurons_fired: None,
-        }),
-    }
+    };
+    let gremlin_query = GremlinQuery::new(vec![
+        super::query::TraversalStep::Search {
+            keywords: query_text.split_whitespace().map(|s| s.to_string()).collect(),
+        },
+    ]);
+    let result = tokio::task::spawn_blocking(move || {
+        execute_query(&g, &n, &gremlin_query)
+    }).await.unwrap_or_else(|_| QueryResponse {
+        success: false, data: vec![], error: Some("Query execution panicked".to_string()),
+        ticks_used: None, neurons_fired: None,
+    });
+    Json(result)
 }
 
 // ─── Extraction (Async Task API) ──────────────────────────────
