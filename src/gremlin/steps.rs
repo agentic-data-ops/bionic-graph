@@ -850,7 +850,7 @@ fn run_steps(
 /// Falls back to simple whitespace splitting if LLM is unavailable.
 fn extract_search_keywords(llm_config: Option<&ExtractionConfig>, query: &str) -> Vec<String> {
     if let Some(config) = llm_config {
-        let system_prompt = "Extract 3-5 key search keywords (English/Pinyin) from this query. Return ONLY a JSON array of strings, no other text.";
+        let system_prompt = "Extract 3-5 key search keywords from this query. Keep names in their original language (e.g. Chinese names stay in Chinese). Return ONLY a JSON array of strings, no other text.";
         let user_msg = format!("Query: {}", query);
         match tokio::runtime::Handle::current().block_on(
             crate::extract::llm_client::chat_completion_with_retry(config, system_prompt, &user_msg)
@@ -882,13 +882,19 @@ fn semantic_filter_results(
         return Ok(Vec::new());
     }
 
-    // Build a compact summary of the search results
+    // Build a compact summary of the search results (vertices + edges)
     let mut summary = String::new();
     for (i, r) in results.iter().enumerate() {
-        if let TraversalResult::VertexResult(v) = r {
-            let name = v.properties.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-            let labels = v.labels.join(", ");
-            summary.push_str(&format!("{}. {} [{}]\n", i + 1, name, labels));
+        match r {
+            TraversalResult::VertexResult(v) => {
+                let name = v.properties.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                let labels = v.labels.join(", ");
+                summary.push_str(&format!("{}. V:{} [{}]\n", i + 1, name, labels));
+            }
+            TraversalResult::EdgeResult(e) => {
+                summary.push_str(&format!("{}. EDGE:{} ({})\n", i + 1, e.label, e.id));
+            }
+            _ => {}
         }
     }
 
