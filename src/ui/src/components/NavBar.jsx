@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { listGraphs, createGraph, deleteGraph, compact, extractDoc } from '../api';
+import { listGraphs, createGraph, compact, extractDoc } from '../api';
 
 function Modal({ title, children, onClose }) {
   return (
@@ -18,7 +18,6 @@ export default function NavBar({ graph, setGraph, onExtractDone }) {
   const [graphs, setGraphs] = useState([]);
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
   const [showAdd, setShowAdd] = useState(false);
-  const [showDel, setShowDel] = useState(false);
   const [showCompact, setShowCompact] = useState(false);
   const [showExtract, setShowExtract] = useState(false);
   const [extractContent, setExtractContent] = useState('');
@@ -45,14 +44,6 @@ export default function NavBar({ graph, setGraph, onExtractDone }) {
     setShowAdd(false); setNewName('');
   };
 
-  const handleDelete = async () => {
-    await deleteGraph(graph);
-    const gs = await listGraphs().then(d => d.graphs || []);
-    setGraphs(gs);
-    setGraph(gs[0] || 'default');
-    setShowDel(false);
-  };
-
   const handleCompact = async () => {
     const days = parseInt(compactDays) || 7;
     const before = (Date.now() - days * 86400 * 1000) * 1000;
@@ -74,7 +65,7 @@ export default function NavBar({ graph, setGraph, onExtractDone }) {
 
   return (
     <div className="bg-gray-850 border-b border-gray-700 px-4 py-2 flex items-center gap-3 flex-wrap">
-      <span className="text-blue-400 font-bold text-lg mr-2">B&#x2219;G</span>
+      <span className="text-blue-400 font-bold text-lg mr-2">BG</span>
 
       {/* Graph selector */}
       <div className="flex items-center gap-1">
@@ -82,7 +73,6 @@ export default function NavBar({ graph, setGraph, onExtractDone }) {
           {graphs.map(g => <option key={g} value={g}>{g}</option>)}
         </select>
         <button className="text-green-400 hover:text-green-300 text-sm px-1" title={t('nav.addGraph')} onClick={() => setShowAdd(true)}>+</button>
-        <button className="text-red-400 hover:text-red-300 text-sm px-1" title={t('nav.deleteGraph')} onClick={() => setShowDel(true)}>−</button>
       </div>
 
       <span className="text-gray-600">|</span>
@@ -104,11 +94,6 @@ export default function NavBar({ graph, setGraph, onExtractDone }) {
         <div className="flex justify-end gap-2"><button className="px-4 py-2 rounded bg-gray-600 text-gray-200" onClick={() => setShowAdd(false)}>{t('modal.addGraphCancel')}</button><button className="px-4 py-2 rounded bg-blue-600 text-white" onClick={handleAdd}>{t('modal.addGraphConfirm')}</button></div>
       </Modal>}
 
-      {showDel && <Modal title={t('modal.deleteGraphTitle')} onClose={() => setShowDel(false)}>
-        <p className="text-gray-300 mb-4">{t('modal.deleteGraphMsg')} <strong>{graph}</strong>?</p>
-        <div className="flex justify-end gap-2"><button className="px-4 py-2 rounded bg-gray-600 text-gray-200" onClick={() => setShowDel(false)}>{t('modal.deleteGraphCancel')}</button><button className="px-4 py-2 rounded bg-red-600 text-white" onClick={handleDelete}>{t('modal.deleteGraphConfirm')}</button></div>
-      </Modal>}
-
       {showCompact && <Modal title={t('modal.compactTitle')} onClose={() => setShowCompact(false)}>
         <p className="text-gray-400 text-sm mb-3">{t('modal.compactBefore')}</p>
         <div className="flex gap-2 mb-4">
@@ -119,7 +104,16 @@ export default function NavBar({ graph, setGraph, onExtractDone }) {
       </Modal>}
 
       {showExtract && <Modal title={t('modal.extractTitle')} onClose={() => setShowExtract(false)}>
-        <textarea className="w-full h-32 px-3 py-2 rounded bg-gray-700 border border-gray-600 text-gray-100 text-sm mb-3" placeholder={t('modal.extractDrop')} value={extractContent} onChange={e => setExtractContent(e.target.value)} />
+        <div className="flex gap-2 mb-3">
+          <label className="flex-1 px-3 py-2 rounded bg-gray-700 border border-gray-600 text-gray-400 text-sm cursor-pointer hover:bg-gray-600 text-center">
+            📄 Upload .md
+            <input type="file" accept=".md,.markdown,.txt" className="hidden" onChange={e => {
+              const file = e.target.files?.[0];
+              if (file) file.text().then(t => setExtractContent(t));
+            }} />
+          </label>
+        </div>
+        <textarea className="w-full h-28 px-3 py-2 rounded bg-gray-700 border border-gray-600 text-gray-100 text-sm mb-3" placeholder={t('modal.extractDrop')} value={extractContent} onChange={e => setExtractContent(e.target.value)} />
         {extractResult?.progress && <p className="text-yellow-400 text-sm mb-2">{t('modal.extractProgress')}...</p>}
         {extractResult?.stats && <p className="text-green-400 text-sm mb-2">{t('modal.extractDone', { v: extractResult.stats.new_vertices, e: extractResult.stats.new_edges })}</p>}
         {extractResult?.error && <p className="text-red-400 text-sm mb-2">{t('modal.extractError')}: {extractResult.error}</p>}

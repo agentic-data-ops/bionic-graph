@@ -15,7 +15,12 @@ export default function App() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    document.documentElement.classList.add('dark');
+    const saved = localStorage.getItem('theme');
+    if (saved === 'light') {
+      document.documentElement.classList.remove('dark');
+    } else {
+      document.documentElement.classList.add('dark');
+    }
   }, []);
 
   const handleSearch = useCallback(async ({ mode, query, vLabel, eLabel }) => {

@@ -39,12 +39,6 @@ describe('NavBar', () => {
     expect(screen.getByPlaceholderText('Graph name')).toBeInTheDocument();
   });
 
-  it('opens Delete Graph modal on − click', () => {
-    render(<NavBar graph="default" setGraph={() => {}} />);
-    fireEvent.click(screen.getByText('−'));
-    expect(screen.getAllByText(/delete/i).length).toBeGreaterThanOrEqual(1);
-  });
-
   it('opens Compact modal on Compact click', () => {
     render(<NavBar graph="default" setGraph={() => {}} />);
     fireEvent.click(screen.getByText('Compact'));
