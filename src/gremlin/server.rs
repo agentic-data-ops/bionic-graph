@@ -11,6 +11,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tower_http::cors::CorsLayer;
+use tower_http::services::ServeDir;
 
 use crate::graph::Graph;
 use crate::graph_manager::GraphManager;
@@ -130,6 +131,10 @@ pub fn build_router(state: AppState) -> Router {
 
         // Compaction
         .route("/compact", post(compact_handler))
+
+        // UI — redirect / → /ui/
+        .route("/", get(|| async { axum::response::Redirect::to("/ui/") }))
+        .nest_service("/ui", ServeDir::new("src/ui/dist"))
 
         .layer(CorsLayer::permissive())
         .with_state(state)

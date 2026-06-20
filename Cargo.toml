@@ -17,7 +17,7 @@ clap = { version = "4", features = ["derive"] }
 # Web server
 axum = { version = "0.7", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.5", features = ["cors"] }
+tower-http = { version = "0.5", features = ["cors", "fs"] }
 chrono = "0.4"
 crc32fast = "1"
 log = "0.4"
