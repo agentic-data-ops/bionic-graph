@@ -89,6 +89,5 @@
   "search.filterEdgeLabel": "Edge label",
   "search.filterProperty": "Property",
   "knowledgeBase.title": "Knowledge Base",
-  "knowledgeBase.add": "Add Text",
-  "knowledgeBase.upload": "Upload .md"
+  "knowledgeBase.import": "Import"
 }

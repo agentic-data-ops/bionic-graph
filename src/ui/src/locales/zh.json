@@ -82,6 +82,5 @@
   "settings.noProviders": "暂无供应商，添加一个开始聊天",
   "settings.defaultGraph": "默认图库",
   "knowledgeBase.title": "知识库",
-  "knowledgeBase.add": "添加文本",
-  "knowledgeBase.upload": "上传 .md"
+  "knowledgeBase.import": "导入"
 }

@@ -46,13 +46,13 @@ function SearchStep({ step }) {
 function ChatMessage({ message, graphRef, onMaximizeRef }) {
   const { t } = useTranslation();
   if (message.type === 'user') {
-    return <div className="flex justify-end mb-3 message-enter"><div className="max-w-[72%] bg-[#0a84ff] text-white rounded-2xl rounded-br-md px-4 py-2.5 text-sm leading-relaxed shadow-sm">{message.content}</div></div>;
+    return <div className="flex justify-end mb-3 message-enter"><div className="max-w-[72%] bg-[#0a84ff] text-white rounded-2xl rounded-br-md px-4 py-2.5 text-sm leading-relaxed shadow-sm select-text">{message.content}</div></div>;
   }
   if (message.type === 'assistant') {
     const hasContent = message.content?.length > 0;
     return (
       <div className="flex justify-start mb-3 message-enter">
-        <div className="max-w-[72%] bg-[#2a2a2e] text-[#e5e5e7] rounded-2xl rounded-bl-md px-4 py-2.5 text-sm leading-relaxed shadow-sm">
+        <div className="max-w-[72%] bg-[#2a2a2e] text-[#e5e5e7] rounded-2xl rounded-bl-md px-4 py-2.5 text-sm leading-relaxed shadow-sm select-text">
           {hasContent ? <SimpleMarkdown text={message.content} /> : (
             <span className="inline-flex gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-[#0a84ff] pulse-dot" />

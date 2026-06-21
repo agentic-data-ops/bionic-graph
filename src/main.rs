@@ -122,9 +122,8 @@ async fn main() {
         log::info!("Auto-save background thread started for all graphs");
     }
 
-    // Build the router with extraction settings
-    let ext_cfg = bionic_graph::extract::ExtractionConfig::from_settings(&settings);
-    let app = MemorySystem::into_router_with_manager(gm.clone(), Some(ext_cfg));
+    // Build the router
+    let app = MemorySystem::into_router_with_manager(gm.clone());
 
     // Start server
     let addr: SocketAddr = format!("{}:{}", settings.server.host, settings.server.port)

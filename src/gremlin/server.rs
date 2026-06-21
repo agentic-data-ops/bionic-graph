@@ -16,7 +16,6 @@ use uuid::Uuid;
 use crate::graph_manager::GraphManager;
 
 use crate::documents::DocumentManager;
-use crate::extract::{ExtractionConfig, ExtractionTaskManager};
 
 use super::query::{GremlinQuery, QueryResponse, TraversalResult};
 use super::steps::{execute_query, execute_query_with_llm};
@@ -27,8 +26,6 @@ use super::steps::{execute_query, execute_query_with_llm};
 #[derive(Clone)]
 pub struct AppState {
     pub graph_manager: Arc<Mutex<GraphManager>>,
-    pub extraction_config: Option<ExtractionConfig>,
-    pub task_manager: ExtractionTaskManager,
     pub document_manager: DocumentManager,
 }
 
@@ -126,11 +123,6 @@ pub fn build_router(state: AppState) -> Router {
 
         // Neural search
         .route("/search", post(search_handler))
-
-        // Document extraction (async task API)
-        .route("/extract", post(extract_handler_async))
-        .route("/extract/task/:task_id", get(extract_task_handler))
-        .route("/extract/tasks", get(extract_tasks_handler))
 
         // Compaction
         .route("/compact", post(compact_handler))
@@ -238,10 +230,10 @@ async fn gremlin_handler(
     let graph_name = resolve_graph_name(&headers);
     // Extract handles and drop lock before calling execute_query_with_llm,
     // since it may use block_on internally for LLM calls.
-    let (g, n, c) = {
+    let (g, n) = {
         let gm = state.graph_manager.lock().unwrap();
         match gm.get(&graph_name) {
-            Some(handle) => (handle.graph.clone(), handle.neural_network.clone(), state.extraction_config.clone()),
+            Some(handle) => (handle.graph.clone(), handle.neural_network.clone()),
             None => return Json(QueryResponse {
                 success: false, data: vec![], error: Some(format!("Graph '{}' not found", graph_name)),
                 ticks_used: None, neurons_fired: None,
@@ -250,7 +242,7 @@ async fn gremlin_handler(
     };
     // Run query on a blocking thread to avoid block_on within tokio runtime
     let result = tokio::task::spawn_blocking(move || {
-        execute_query_with_llm(&g, &n, &query, c.as_ref())
+        execute_query_with_llm(&g, &n, &query, None)
     }).await.unwrap_or_else(|_| QueryResponse {
         success: false, data: vec![], error: Some("Query execution panicked".to_string()),
         ticks_used: None, neurons_fired: None,
@@ -412,55 +404,6 @@ async fn search_handler(
     Json(result)
 }
 
-// ─── Extraction (Async Task API) ──────────────────────────────
-
-/// POST /extract — Submit a markdown document for async extraction.
-/// Returns immediately with a task_id. Poll GET /extract/task/{id} for progress.
-async fn extract_handler_async(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    body: String,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let config = state.extraction_config.as_ref().ok_or_else(|| {
-        (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "Extraction not configured. Set BGRAPH_LLM_API_KEY."})))
-    })?;
-    let graph_name = resolve_graph_name(&headers);
-
-    let content = if let Ok(json) = serde_json::from_str::<Value>(&body) {
-        json.get("content").or_else(|| json.get("markdown")).and_then(|v| v.as_str()).unwrap_or(&body).to_string()
-    } else {
-        body
-    };
-    if content.trim().is_empty() {
-        return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Empty content"}))));
-    }
-
-    // Get graph handle and clone the Arc for the async call
-    let (handle, source_name) = {
-        let gm = state.graph_manager.lock().unwrap();
-        let h = gm.get(&graph_name).cloned().ok_or_else(|| {
-            (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": format!("Graph '{}' not found", graph_name)})))
-        })?;
-        let source = format!("{}.md", graph_name);
-        (h, source)
-    };
-
-    // Submit as async background task
-    let task_id = state.task_manager.submit_extraction(
-        config.clone(),
-        content,
-        source_name,
-        handle.graph,
-        handle.neural_network,
-        graph_name.clone(),
-    );
-
-    Ok(Json(serde_json::json!({
-        "task_id": task_id,
-        "status": "pending"
-    })))
-}
-
 // ─── Compaction ─────────────────────────────────────────────────
 
 /// POST /compact — Trigger history compaction on a graph.
@@ -508,30 +451,6 @@ async fn compact_handler(
             "elapsed_us": stats.elapsed_us,
         }
     })))
-}
-
-// ─── Extraction Task Handlers ─────────────────────────────────────
-
-/// GET /extract/task/{task_id} — Get the status and results of an extraction task.
-async fn extract_task_handler(
-    State(state): State<AppState>,
-    Path(task_id): Path<String>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    match state.task_manager.get_task(&task_id) {
-        Some(task) => Ok(Json(serde_json::json!(task))),
-        None => Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Task not found"})))),
-    }
-}
-
-/// GET /extract/tasks — List all extraction tasks (newest first).
-async fn extract_tasks_handler(
-    State(state): State<AppState>,
-) -> Json<Value> {
-    let tasks = state.task_manager.list_tasks();
-    Json(serde_json::json!({
-        "tasks": tasks,
-        "count": tasks.len()
-    }))
 }
 
 // ─── Vertex Delete ───────────────────────────────────────────────

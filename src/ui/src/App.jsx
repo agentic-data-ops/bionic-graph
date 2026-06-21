@@ -131,6 +131,11 @@ export default function App() {
     setActiveConvId(id);
   }, []);
 
+  const handleDeleteConv = useCallback((id) => {
+    setConversations((prev) => prev.filter((c) => c.id !== id));
+    setActiveConvId((prev) => prev === id ? null : prev);
+  }, []);
+
   const handleUpdateConv = useCallback((updated) => {
     setConversations((prev) =>
       prev.map((c) => (c.id === updated.id ? updated : c))
@@ -194,6 +199,7 @@ export default function App() {
         activeConvId={activeConvId}
         onNewChat={handleNewChat}
         onSwitchConv={handleSwitchConv}
+        onDeleteConv={handleDeleteConv}
         onOpenSettings={() => setSettingsOpen(true)}
         onOpenKnowledgeBase={() => setKnowledgeBaseOpen(true)}
       />

@@ -7,8 +7,6 @@ import {
   chatCompletion,
   parseSSEStream,
   graphSearch,
-  extractDocAsync,
-  getTaskStatus,
 } from '../api';
 
 let _idCounter = 0;
@@ -35,7 +33,6 @@ export default function ChatArea({
   const { t } = useTranslation();
 
   const [searchStream, setSearchStream] = useState(null);
-  const [attaching, setAttaching] = useState(false);
 
   // Reset search stream when active conversation changes
   useEffect(() => {
@@ -212,43 +209,6 @@ export default function ChatArea({
     [activeConv, useGraph, searchMode, defaultGraph, providers, activeProvider, onUpdateConv]
   );
 
-  // ── Attachment: extract markdown into graph ──
-  const handleAttach = useCallback(
-    async (content, filename) => {
-      if (attaching) return;
-      setAttaching(true);
-
-      const conv = activeConv;
-      if (!conv) { setAttaching(false); return; }
-
-      const attachMsg = { id: uid(), type: 'assistant', content: `📄 Extracting **${filename}** into graph "${defaultGraph}"...` };
-      onUpdateConv({ ...conv, messages: [...(conv.messages || []), attachMsg] });
-
-      try {
-        const { task_id } = await extractDocAsync(content, defaultGraph);
-        const pollRef = setInterval(async () => {
-          try {
-            const task = await getTaskStatus(task_id);
-            if (task.status === 'completed') {
-              clearInterval(pollRef);
-              setAttaching(false);
-              const doneMsg = { id: uid(), type: 'assistant', content: t('modal.extractDone', { v: task.stats?.new_vertices || 0, e: task.stats?.new_edges || 0 }) };
-              onUpdateConv({ ...conv, messages: [...conv.messages, doneMsg] });
-            } else if (task.status === 'failed') {
-              clearInterval(pollRef);
-              setAttaching(false);
-              onUpdateConv({ ...conv, messages: [...conv.messages, { id: uid(), type: 'assistant', content: `**Extraction failed**: ${task.error}` }] });
-            }
-          } catch { /* keep polling */ }
-        }, 1500);
-      } catch (e) {
-        setAttaching(false);
-        onUpdateConv({ ...conv, messages: [...conv.messages, { id: uid(), type: 'assistant', content: `**Error**: ${e.message}` }] });
-      }
-    },
-    [activeConv, defaultGraph, attaching, onUpdateConv, t]
-  );
-
   const messages = activeConv?.messages || [];
 
   return (
@@ -277,8 +237,7 @@ export default function ChatArea({
         onGraphNameChange={onDefaultGraphChange}
         graphs={graphs}
         onSend={handleSend}
-        onAttach={handleAttach}
-        disabled={!!searchStream || attaching}
+        disabled={!!searchStream}
       />
     </div>
   );

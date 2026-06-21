@@ -7,7 +7,6 @@ use std::path::PathBuf;
 use crate::graph::{Graph, VertexId};
 use crate::graph::graph::GraphError;
 use crate::graph_manager::GraphManager;
-use crate::extract::ExtractionTaskManager;
 use crate::gremlin::{
     build_router, execute_query, AppState, GremlinQuery, QueryResponse,
 };
@@ -221,11 +220,9 @@ impl MemorySystem {
     // ─── Server ───────────────────────────────────────────────────
 
     /// Build the REST API router using GraphManager (multi-graph).
-    pub fn into_router_with_manager(gm: Arc<Mutex<GraphManager>>, ext_cfg: Option<crate::extract::ExtractionConfig>) -> axum::Router {
+    pub fn into_router_with_manager(gm: Arc<Mutex<GraphManager>>) -> axum::Router {
         let state = AppState {
             graph_manager: gm,
-            extraction_config: ext_cfg,
-            task_manager: ExtractionTaskManager::new(),
             document_manager: crate::documents::DocumentManager::new("data"),
         };
         build_router(state)
@@ -237,18 +234,15 @@ impl MemorySystem {
             self.graph.clone(),
             self.neural_network.clone(),
             self.data_dir.clone(),
-            None,
         )
     }
 
     /// Build router with settings (single graph, backward compat).
-    pub fn into_router_with_settings(self, settings: Settings) -> axum::Router {
-        let ext_cfg = crate::extract::ExtractionConfig::from_settings(&settings);
+    pub fn into_router_with_settings(self, _settings: Settings) -> axum::Router {
         Self::into_router_with_settings_v2(
             self.graph.clone(),
             self.neural_network.clone(),
             self.data_dir.clone(),
-            Some(ext_cfg),
         )
     }
 
@@ -257,7 +251,6 @@ impl MemorySystem {
         graph: Arc<Mutex<Graph>>,
         neural_network: Arc<Mutex<NeuralNetwork>>,
         data_dir: impl Into<PathBuf>,
-        ext_cfg: Option<crate::extract::ExtractionConfig>,
     ) -> axum::Router {
         use crate::graph_manager::GraphHandle;
         let mut gm = GraphManager::empty(data_dir);
@@ -269,8 +262,6 @@ impl MemorySystem {
         });
         let state = AppState {
             graph_manager: Arc::new(Mutex::new(gm)),
-            extraction_config: ext_cfg,
-            task_manager: ExtractionTaskManager::new(),
             document_manager: crate::documents::DocumentManager::new("data"),
         };
         build_router(state)

@@ -32,7 +32,7 @@ function InfoPanel({ item, type, onClose }) {
   const props = item.properties || {};
   const labels = item.labels || [];
   return (
-    <div className="w-72 bg-[#1c1c20] border-l border-[#2a2a2e] flex flex-col h-full overflow-y-auto flex-shrink-0">
+    <div className="w-72 bg-[#1c1c20] border-l border-[#2a2a2e] flex flex-col h-full overflow-y-auto flex-shrink-0 select-text">
       <div className="flex items-center justify-between px-4 py-3 border-b border-[#2a2a2e] flex-shrink-0">
         <span className="text-xs font-semibold text-[#98989d] uppercase tracking-wider">
           {type === 'vertex' ? 'Vertex' : 'Edge'}

@@ -38,6 +38,12 @@
   border-radius: 6px;
 }
 
+/* Allow text selection in messages and property panels */
+.select-text {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 /* Smooth transitions everywhere */
 * {
   transition-property: background-color, border-color, color, opacity, box-shadow;
