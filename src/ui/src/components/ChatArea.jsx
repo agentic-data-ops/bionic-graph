@@ -1,0 +1,277 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import MessageList from './MessageList';
+import ChatInput from './ChatInput';
+
+import {
+  chatCompletion,
+  parseSSEStream,
+  graphSearch,
+  extractDocAsync,
+  getTaskStatus,
+} from '../api';
+
+let _idCounter = 0;
+function uid() {
+  return `m${Date.now()}-${++_idCounter}`;
+}
+
+export default function ChatArea({
+  activeConv,
+  onUpdateConv,
+  providers,
+  activeProvider,
+  onProviderChange,
+  useGraph,
+  onGraphToggle,
+  searchMode,
+  onSearchModeChange,
+  timeTravel,
+  onTimeTravelToggle,
+  defaultGraph,
+  onDefaultGraphChange,
+  graphs,
+}) {
+  const { t } = useTranslation();
+
+  const [searchStream, setSearchStream] = useState(null);
+  const [attaching, setAttaching] = useState(false);
+
+  // Reset search stream when active conversation changes
+  useEffect(() => {
+    setSearchStream(null);
+  }, [activeConv?.id]);
+
+  // ── Handle sending a message ──
+  const handleSend = useCallback(
+    async (text) => {
+      const conv = activeConv;
+      if (!conv) return;
+
+      const userMsg = { id: uid(), type: 'user', content: text };
+      const updatedMsgs = [...(conv.messages || []), userMsg];
+      onUpdateConv({ ...conv, messages: updatedMsgs });
+
+      if (useGraph) {
+        // ── Graph mode: keyword or semantic search ──
+        const isSemantic = searchMode === 'semantic';
+        const provider = providers.find((p) => p.id === activeProvider);
+
+        const steps = isSemantic
+          ? [
+              { icon: '🔑', name: 'Extracting search keywords', status: 'pending', llmOutput: '' },
+              { icon: '🔍', name: 'Searching knowledge graph', status: 'pending', llmOutput: '' },
+              { icon: '🎯', name: 'Filtering semantically relevant results', status: 'pending', llmOutput: '' },
+            ]
+          : [
+              { icon: '🔍', name: 'Searching knowledge graph', status: 'running', llmOutput: '' },
+            ];
+
+        const progressMsgId = uid();
+        const progressMsg = { id: progressMsgId, type: 'search_progress', title: text, steps };
+        setSearchStream(progressMsg); // only in stream, not saved to conversation
+
+        try {
+          let keywordsArr;
+          let step1done;
+          if (isSemantic) {
+            // Step 1: Extract keywords via LLM (streaming)
+            const step1 = { icon: '🔑', name: 'Extracting search keywords', status: 'running', llmOutput: '' };
+            setSearchStream({ ...progressMsg, steps: [step1, progressMsg.steps[1], progressMsg.steps[2]] });
+
+            const systemPrompt = 'Select 3-5 key search keywords from the user\'s query below. ONLY pick words/phrases that actually appear in the query — do NOT generate, infer, or translate any new words. Return ONLY a JSON array of strings, no other text.';
+            const { response } = chatCompletion(
+              [{ role: 'system', content: systemPrompt }, { role: 'user', content: `Query: ${text}` }],
+              provider,
+            );
+            let llmBuf = '';
+            await parseSSEStream(await response, (t) => {
+              llmBuf += t;
+              setSearchStream({
+                ...progressMsg,
+                steps: [
+                  { icon: '🔑', name: 'Extracting search keywords', status: 'running', llmOutput: llmBuf },
+                  progressMsg.steps[1],
+                  progressMsg.steps[2],
+                ],
+              });
+            });
+            try { keywordsArr = JSON.parse(llmBuf.trim()); }
+            catch { keywordsArr = text.split(/\s+/).filter(Boolean); }
+
+            step1done = { icon: '✅', name: `Extracted keywords: ${keywordsArr.join(', ')}`, status: 'done', llmOutput: llmBuf };
+            const step2run = { icon: '🔍', name: 'Searching knowledge graph', status: 'running', llmOutput: '' };
+            setSearchStream({ ...progressMsg, steps: [step1done, step2run, progressMsg.steps[2]] });
+          } else {
+            keywordsArr = text.split(/\s+/).filter(Boolean);
+          }
+
+          // Step 2 (or only step for keyword): Search graph
+          const res = await graphSearch(keywordsArr, defaultGraph);
+
+          if (!isSemantic) {
+            setSearchStream(null);
+            const resultMsg = { id: uid(), type: 'graph_result', data: res, graphName: defaultGraph };
+            onUpdateConv({ ...conv, messages: [...updatedMsgs, resultMsg] });
+            return;
+          }
+
+          const step2done = { icon: '✅', name: 'Graph search completed', status: 'done', llmOutput: '' };
+          const step3run = { icon: '🎯', name: 'Filtering semantically relevant results', status: 'running', llmOutput: '' };
+          setSearchStream({ ...progressMsg, steps: [step1done, step2done, step3run] });
+
+          // Step 3: Filter results via LLM (streaming)
+          const items = (res?.data || []).slice(0, 30);
+          let summary = '';
+          for (let i = 0; i < items.length; i++) {
+            const item = items[i];
+            if (item.type === 'vertex') {
+              summary += `${i + 1}. V:${item.properties?.name || '?'} [${(item.labels || []).join(', ')}]\n`;
+            } else if (item.type === 'edge') {
+              summary += `${i + 1}. EDGE:${item.label} (${item.id})\n`;
+            }
+          }
+
+          const filterPrompt = 'You are a semantic relevance filter. Given a user query and a list of search results, return ONLY the indices (comma-separated, 1-based) of results that are semantically relevant to the query. If none are relevant, return "NONE". No other text.';
+          const { response: filterResponse } = chatCompletion(
+            [{ role: 'system', content: filterPrompt }, { role: 'user', content: `Query: ${text}\n\nSearch results:\n${summary}` }],
+            provider,
+          );
+          let filterBuf = '';
+          await parseSSEStream(await filterResponse, (t) => {
+            filterBuf += t;
+            setSearchStream({
+              ...progressMsg,
+              steps: [step1done, step2done, { icon: '🎯', name: 'Filtering semantically relevant results', status: 'running', llmOutput: filterBuf }],
+            });
+          });
+
+          const text2 = filterBuf.trim();
+          let filteredData;
+          if (text2 === 'NONE') {
+            filteredData = { ...res, data: [] };
+          } else {
+            const indices = text2.split(',').map((s) => parseInt(s.trim(), 10) - 1).filter((i) => !isNaN(i) && i >= 0 && i < items.length);
+            filteredData = indices.length > 0 ? { ...res, data: indices.map((i) => items[i]) } : res;
+          }
+
+          setSearchStream(null);
+          const resultMsg = { id: uid(), type: 'graph_result', data: filteredData, graphName: defaultGraph };
+          onUpdateConv({ ...conv, messages: [...updatedMsgs, resultMsg] });
+        } catch (e) {
+          setSearchStream({ ...progressMsg, steps: (steps || []).map((s) => ({ ...s, status: 'failed' })) });
+          const errorMsg = { id: uid(), type: 'assistant', content: `**Search error**: ${e.message}` };
+          onUpdateConv({ ...conv, messages: [...updatedMsgs, errorMsg] });
+        }
+      } else {
+        // ── LLM mode: streaming chat ──
+        const provider = providers.find((p) => p.id === activeProvider);
+        if (!provider) return;
+
+        // Build message list for LLM — skip assistant placeholders with empty content
+        // Only send user/assistant messages with content to the LLM
+        const llmMessages = updatedMsgs
+          .filter((m) => m.type === 'user' || (m.type === 'assistant' && m.content))
+          .map((m) => ({
+            role: m.type === 'user' ? 'user' : 'assistant',
+            content: m.content,
+          }));
+
+        const assistantMsg = { id: uid(), type: 'assistant', content: '' };
+
+        try {
+          const { response } = chatCompletion(llmMessages, provider);
+          let fullContent = '';
+          await parseSSEStream(
+            await response,
+            (token) => {
+              fullContent += token;
+              onUpdateConv({
+                ...conv,
+                messages: [...updatedMsgs, { ...assistantMsg, content: fullContent }],
+              });
+            },
+          );
+        } catch (e) {
+          if (e.name === 'AbortError') return;
+          onUpdateConv({
+            ...conv,
+            messages: [...updatedMsgs, { ...assistantMsg, content: `**Error**: ${e.message}` }],
+          });
+        }
+      }
+    },
+    [activeConv, useGraph, defaultGraph, providers, activeProvider, onUpdateConv]
+  );
+
+  // ── Attachment: extract markdown into graph ──
+  const handleAttach = useCallback(
+    async (content, filename) => {
+      if (attaching) return;
+      setAttaching(true);
+
+      const conv = activeConv;
+      if (!conv) { setAttaching(false); return; }
+
+      const attachMsg = { id: uid(), type: 'assistant', content: `📄 Extracting **${filename}** into graph "${defaultGraph}"...` };
+      onUpdateConv({ ...conv, messages: [...(conv.messages || []), attachMsg] });
+
+      try {
+        const { task_id } = await extractDocAsync(content, defaultGraph);
+        const pollRef = setInterval(async () => {
+          try {
+            const task = await getTaskStatus(task_id);
+            if (task.status === 'completed') {
+              clearInterval(pollRef);
+              setAttaching(false);
+              const doneMsg = { id: uid(), type: 'assistant', content: t('modal.extractDone', { v: task.stats?.new_vertices || 0, e: task.stats?.new_edges || 0 }) };
+              onUpdateConv({ ...conv, messages: [...conv.messages, doneMsg] });
+            } else if (task.status === 'failed') {
+              clearInterval(pollRef);
+              setAttaching(false);
+              onUpdateConv({ ...conv, messages: [...conv.messages, { id: uid(), type: 'assistant', content: `**Extraction failed**: ${task.error}` }] });
+            }
+          } catch { /* keep polling */ }
+        }, 1500);
+      } catch (e) {
+        setAttaching(false);
+        onUpdateConv({ ...conv, messages: [...conv.messages, { id: uid(), type: 'assistant', content: `**Error**: ${e.message}` }] });
+      }
+    },
+    [activeConv, defaultGraph, attaching, onUpdateConv, t]
+  );
+
+  const messages = activeConv?.messages || [];
+
+  return (
+    <div className="flex-1 flex flex-col min-w-0 bg-[#1a1a1e]">
+      <div className="px-5 py-3 border-b border-[#2a2a2e] bg-[#1c1c20]">
+        <h2 className="text-sm font-semibold text-[#e5e5e7] truncate tracking-tight">
+          {activeConv?.title || t('chat.newChat')}
+        </h2>
+      </div>
+
+      <div className="flex-1 flex flex-col min-h-0">
+        <MessageList messages={messages} searchStream={searchStream} />
+      </div>
+
+      <ChatInput
+        providers={providers}
+        activeProvider={activeProvider}
+        onProviderChange={onProviderChange}
+        useGraph={useGraph}
+        onGraphToggle={onGraphToggle}
+        searchMode={searchMode}
+        onSearchModeChange={onSearchModeChange}
+        timeTravel={timeTravel}
+        onTimeTravelToggle={onTimeTravelToggle}
+        graphName={defaultGraph}
+        onGraphNameChange={onDefaultGraphChange}
+        graphs={graphs}
+        onSend={handleSend}
+        onAttach={handleAttach}
+        disabled={!!searchStream || attaching}
+      />
+    </div>
+  );
+}

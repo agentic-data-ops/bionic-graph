@@ -226,7 +226,7 @@ impl MemorySystem {
             graph_manager: gm,
             extraction_config: ext_cfg,
             task_manager: ExtractionTaskManager::new(),
-            search_task_manager: crate::gremlin::server::SearchTaskManager::new(),
+            document_manager: crate::documents::DocumentManager::new("data"),
         };
         build_router(state)
     }
@@ -271,7 +271,7 @@ impl MemorySystem {
             graph_manager: Arc::new(Mutex::new(gm)),
             extraction_config: ext_cfg,
             task_manager: ExtractionTaskManager::new(),
-            search_task_manager: crate::gremlin::server::SearchTaskManager::new(),
+            document_manager: crate::documents::DocumentManager::new("data"),
         };
         build_router(state)
     }

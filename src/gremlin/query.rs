@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 pub enum TraversalStep {
     /// Start traversal by finding vertices via the neural index.
     /// Custom extension to Gremlin.
-    #[serde(rename = "keywordSearch")]
+    #[serde(rename = "search")]
     Search {
         keywords: Vec<String>,
     },
@@ -142,13 +142,6 @@ pub enum TraversalStep {
     Repeat {
         times: usize,
         steps: Vec<TraversalStep>,
-    },
-
-    /// Semantic search: LLM extracts keywords from natural language query,
-    /// then performs keywordSearch with those keywords.
-    #[serde(rename = "semanticSearch")]
-    SemanticSearch {
-        query: String,
     },
 
     /// Set a query time point for time-travel (affects subsequent steps).
@@ -457,7 +450,7 @@ mod tests {
     fn test_search_step() {
         roundtrip(
             TraversalStep::Search { keywords: vec!["AI".into(), "engineer".into()] },
-            r#"{"step":"keywordSearch","keywords":["AI","engineer"]}"#,
+            r#"{"step":"search","keywords":["AI","engineer"]}"#,
         );
     }
 

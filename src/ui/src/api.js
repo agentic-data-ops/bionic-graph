@@ -39,12 +39,8 @@ export async function gremlin(steps, graph = 'default') {
   });
 }
 
-export async function keywordSearch(keywords, graph = 'default') {
-  return gremlin([{ step: 'keywordSearch', keywords }], graph);
-}
-
-export async function semanticSearch(query, graph = 'default') {
-  return gremlin([{ step: 'semanticSearch', query }], graph);
+export async function graphSearch(keywords, graph = 'default') {
+  return gremlin([{ step: 'search', keywords }], graph);
 }
 
 export async function compact(beforeTs, graph = 'default') {
@@ -90,26 +86,6 @@ export async function listExtractTasks() {
   return res.json();
 }
 
-// ─── Async Semantic Search ──────────────────────────────────────
-
-/** Submit a semantic search as an async background task. Returns { task_id, status } */
-export async function semanticSearchAsync(query, graph = 'default') {
-  const res = await fetch(BASE + '/search/semantic', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Graph-Name': graph },
-    body: JSON.stringify({ query }),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-/** Get the status and results of an async search task. */
-export async function getSearchTaskStatus(taskId) {
-  const res = await fetch(BASE + `/search/task/${encodeURIComponent(taskId)}`);
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
 export async function traverse(vid, label = null, graph = 'default') {
   const edgeFilter = label ? { label } : {};
   // Fetch both neighboring vertices AND edges in a single merged response
@@ -143,4 +119,136 @@ export async function updateVertex(vid, props, labels, graph = 'default') {
     { step: 'V', ids: [vid] },
     { step: 'property', key: 'name', value: props.name || '' },
   ], graph);
+}
+
+// ─── LLM Chat (OpenAI-compatible streaming) ─────────────────────
+
+/**
+ * Call an OpenAI-compatible chat completion API with SSE streaming.
+ * Returns an object with:
+ *   - response: the fetch Response (for reading body as SSE)
+ *   - abort: () => void  to abort the request
+ */
+export function chatCompletion(messages, { apiBase, model, apiKey }) {
+  const controller = new AbortController();
+  const url = apiBase.replace(/\/+$/, '') + '/chat/completions';
+
+  const promise = fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      stream: true,
+    }),
+    signal: controller.signal,
+  });
+
+  return {
+    response: promise,
+    abort: () => controller.abort(),
+  };
+}
+
+/**
+ * Parse an SSE stream from a chat completion response.
+ * Calls `onToken(token: string)` for each content chunk and
+ * `onDone()` when the stream ends.
+ * Returns when the stream completes.
+ */
+export async function parseSSEStream(response, onToken, onDone) {
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`LLM API error ${response.status}: ${body}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || ''; // keep incomplete line
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || !trimmed.startsWith('data: ')) continue;
+      const data = trimmed.slice(6);
+      if (data === '[DONE]') { onDone?.(); return; }
+      try {
+        const parsed = JSON.parse(data);
+        const content = parsed.choices?.[0]?.delta?.content || '';
+        if (content) onToken?.(content);
+      } catch {
+        // ignore parse errors for partial chunks
+      }
+    }
+  }
+  onDone?.();
+}
+
+// ─── Document Management ─────────────────────────────────────────
+
+export async function listDocuments() {
+  return api('/documents');
+}
+
+export async function addDocument(title, content, tags = []) {
+  return api('/documents', {
+    method: 'POST',
+    body: JSON.stringify({ title, content, tags }),
+  });
+}
+
+export async function getDocument(id) {
+  return api(`/documents/${encodeURIComponent(id)}`);
+}
+
+export async function getDocumentContent(id) {
+  const res = await fetch(`/documents/${encodeURIComponent(id)}/content`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.text();
+}
+
+export async function updateDocument(id, title, content, tags = []) {
+  return api(`/documents/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ title, content, tags }),
+  });
+}
+
+export async function deleteDocument(id) {
+  return api(`/documents/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+// ─── Vertex Management ───────────────────────────────────────────
+
+export async function addVertex(labels, properties = {}, graph = 'default') {
+  return api('/vertices', {
+    method: 'POST',
+    headers: { 'X-Graph-Name': graph },
+    body: JSON.stringify({ labels, properties }),
+  });
+}
+
+export async function addEdge(label, source, target, properties = {}, graph = 'default') {
+  return api('/edges', {
+    method: 'POST',
+    headers: { 'X-Graph-Name': graph },
+    body: JSON.stringify({ label, source, target, properties }),
+  });
+}
+
+export async function deleteVertex(id, graph = 'default') {
+  return api(`/vertices/${id}`, {
+    method: 'DELETE',
+    headers: { 'X-Graph-Name': graph },
+  });
 }

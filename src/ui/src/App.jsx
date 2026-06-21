@@ -1,149 +1,246 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import NavBar from './components/NavBar';
-import SearchBar from './components/SearchBar';
-import GraphViewer from './components/GraphViewer';
-import PropertyPanel from './components/PropertyPanel';
-import { keywordSearch, semanticSearch, getVertex, semanticSearchAsync, getSearchTaskStatus } from './api';
+import Sidebar from './components/Sidebar';
+import ChatArea from './components/ChatArea';
+import SettingsDialog from './components/SettingsDialog';
+import KnowledgeBase from './components/KnowledgeBase';
+import { listGraphs } from './api';
+
+// ── Helpers ──────────────────────────────────────────────────────
+
+let _convCounter = 0;
+function newConvId() {
+  return `conv-${Date.now()}-${++_convCounter}`;
+}
+
+const DEFAULT_SETTINGS = {
+  providers: [
+    {
+      id: 'default-deepseek',
+      name: 'DeepSeek',
+      apiBase: 'https://api.deepseek.com/v1',
+      model: 'deepseek-v4-flash',
+      apiKey: '',
+    },
+  ],
+  activeProvider: 'default-deepseek',
+  defaultGraph: 'default',
+  timeTravel: false,
+  useGraph: false,
+  searchMode: 'semantic',
+};
+
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem('bgraph-settings');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return { ...DEFAULT_SETTINGS, ...parsed };
+    }
+  } catch {}
+  return { ...DEFAULT_SETTINGS };
+}
+
+function saveSettings(settings) {
+  localStorage.setItem('bgraph-settings', JSON.stringify(settings));
+}
+
+function loadConversations() {
+  try {
+    const raw = localStorage.getItem('bgraph-convs');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
+  } catch {}
+  return [];
+}
+
+function saveConversations(convs) {
+  localStorage.setItem('bgraph-convs', JSON.stringify(convs));
+}
 
 export default function App() {
-  const { t } = useTranslation();
-  const [graph, setGraph] = useState('default');
-  const [searchResult, setSearchResult] = useState(null);
-  const [selected, setSelected] = useState(null);
-  const [selectedType, setSelectedType] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [searchTask, setSearchTask] = useState(null); // { task_id, status, steps, ... }
-  const searchPollRef = useRef(null);
+  const { t, i18n } = useTranslation();
+
+  // ── Settings (persisted) ──
+  const [settings, setSettings] = useState(loadSettings);
+
+  // ── Conversations (persisted) ──
+  const [conversations, setConversations] = useState(() => {
+    const convs = loadConversations();
+    return convs;
+  });
+  const [activeConvId, setActiveConvId] = useState(
+    () => conversations[0]?.id || null
+  );
+
+  // ── UI state ──
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [knowledgeBaseOpen, setKnowledgeBaseOpen] = useState(false);
+  const [graphs, setGraphs] = useState([]);
+
+  // ── Theme ──
+  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
 
   useEffect(() => {
-    const saved = localStorage.getItem('theme');
-    if (saved === 'light') {
-      document.documentElement.classList.remove('dark');
-    } else {
-      document.documentElement.classList.add('dark');
-    }
-  }, []);
+    document.documentElement.classList.toggle('dark', theme === 'dark');
+    localStorage.setItem('theme', theme);
+  }, [theme]);
 
-  const handleSearch = useCallback(async ({ mode, query, vLabel, eLabel }) => {
-    if (mode === 'keyword') {
-      setLoading(true);
-      try {
-        let res = await keywordSearch(query.split(/\s+/).filter(Boolean), graph);
-        if (res?.data && (vLabel || eLabel)) {
-          res.data = res.data.filter(item => {
-            if (item.type === 'vertex' && vLabel) return item.labels?.includes(vLabel);
-            if (item.type === 'edge' && eLabel) return item.label === eLabel;
-            return true;
-          });
+  // ── Load graph list ──
+  useEffect(() => {
+    listGraphs()
+      .then((d) => {
+        const gs = d.graphs || [];
+        setGraphs(gs);
+        // Ensure default graph exists
+        if (!gs.includes(settings.defaultGraph)) {
+          setSettings((s) => ({ ...s, defaultGraph: gs[0] || 'default' }));
         }
-        setSearchResult(res);
-        setSelected(null);
-      } catch (e) {
-        console.error(e);
-        setSearchResult({ success: false, data: [], error: e.message });
-      }
-      setLoading(false);
-    } else {
-      // Semantic search — async with progress
-      try {
-        const { task_id } = await semanticSearchAsync(query, graph);
-        setSearchTask({ task_id, status: 'pending', steps: [], results: null });
-        // Start polling
-        if (searchPollRef.current) clearInterval(searchPollRef.current);
-        searchPollRef.current = setInterval(async () => {
-          try {
-            const task = await getSearchTaskStatus(task_id);
-            setSearchTask(task);
-            if (task.status === 'completed') {
-              clearInterval(searchPollRef.current);
-              searchPollRef.current = null;
-              let res = task.results;
-              if (res?.data && (vLabel || eLabel)) {
-                res.data = res.data.filter(item => {
-                  if (item.type === 'vertex' && vLabel) return item.labels?.includes(vLabel);
-                  if (item.type === 'edge' && eLabel) return item.label === eLabel;
-                  return true;
-                });
-              }
-              setSearchResult(res);
-              setSearchTask(null);
-              setSelected(null);
-            } else if (task.status === 'failed') {
-              clearInterval(searchPollRef.current);
-              searchPollRef.current = null;
-              setSearchResult({ success: false, data: [], error: task.error });
-              setSearchTask(null);
-            }
-          } catch (e) {
-            console.error('Search poll error:', e);
-          }
-        }, 1000);
-      } catch (e) {
-        console.error(e);
-        setSearchResult({ success: false, data: [], error: e.message });
-      }
-    }
-  }, [graph]);
-
-  // Cleanup poll on unmount
-  useEffect(() => {
-    return () => { if (searchPollRef.current) clearInterval(searchPollRef.current); };
+      })
+      .catch(() => {});
   }, []);
 
-  const handleSelect = useCallback(async (type, item) => {
-    // Enrich vertex with full data
-    if (type === 'vertex') {
-      try {
-        const res = await getVertex(item.id, graph);
-        if (res?.data?.[0]) { setSelected(res.data[0]); setSelectedType('vertex'); return; }
-      } catch {}
-    }
-    setSelected(item);
-    setSelectedType(type);
-  }, [graph]);
+  // ── Persist settings on change ──
+  useEffect(() => {
+    saveSettings(settings);
+  }, [settings]);
 
-  const handleExtractDone = useCallback((res) => {
-    // Refresh graph data
-    if (res?.stats?.new_vertices > 0) {
-      keywordSearch([], graph).then(setSearchResult).catch(() => {});
+  // ── Persist conversations on change ──
+  useEffect(() => {
+    saveConversations(conversations);
+  }, [conversations]);
+
+  // ── Derived: active conversation ──
+  const activeConv = conversations.find((c) => c.id === activeConvId) || null;
+
+  // ── Conversation actions ──
+  const handleNewChat = useCallback(() => {
+    const newConv = {
+      id: newConvId(),
+      title: t('chat.newChat'),
+      messages: [],
+      createdAt: Date.now(),
+    };
+    setConversations((prev) => [newConv, ...prev]);
+    setActiveConvId(newConv.id);
+  }, [t]);
+
+  const handleSwitchConv = useCallback((id) => {
+    setActiveConvId(id);
+  }, []);
+
+  const handleUpdateConv = useCallback((updated) => {
+    setConversations((prev) =>
+      prev.map((c) => (c.id === updated.id ? updated : c))
+    );
+    // Auto-title: use first user message
+    if (
+      !updated.title ||
+      updated.title === t('chat.newChat') ||
+      updated.title === t('chat.untitled')
+    ) {
+      const firstUserMsg = updated.messages.find((m) => m.type === 'user');
+      if (firstUserMsg) {
+        const title = firstUserMsg.content.slice(0, 40) + (firstUserMsg.content.length > 40 ? '…' : '');
+        setConversations((prev) =>
+          prev.map((c) =>
+            c.id === updated.id ? { ...c, title } : c
+          )
+        );
+      }
     }
-  }, [graph]);
+  }, [t]);
+
+  // ── Settings actions ──
+  const handleUpdateSettings = useCallback((partial) => {
+    setSettings((prev) => ({ ...prev, ...partial }));
+  }, []);
+
+  const handleUpdateProviders = useCallback((providers) => {
+    setSettings((prev) => ({
+      ...prev,
+      providers,
+      activeProvider: providers.length > 0 ? prev.activeProvider : null,
+    }));
+  }, []);
+
+  const handleThemeToggle = useCallback(() => {
+    setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
+  }, []);
+
+  const handleLanguageToggle = useCallback(() => {
+    const next = i18n.language === 'zh' ? 'en' : 'zh';
+    i18n.changeLanguage(next);
+  }, [i18n]);
+
+  // Initialize first conversation if none
+  useEffect(() => {
+    if (conversations.length === 0) {
+      handleNewChat();
+    }
+  }, [conversations.length, handleNewChat]);
 
   return (
-    <div className="h-screen flex flex-col bg-gray-900 text-gray-100">
-      <NavBar graph={graph} setGraph={setGraph} onExtractDone={handleExtractDone} />
-      <SearchBar onSearch={handleSearch} />
-      {loading && (
-        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-10 px-4 py-2 bg-blue-600 text-white rounded shadow-lg text-sm">
-          {t('graph.loading')}
-        </div>
-      )}
-      {searchTask && searchTask.status !== 'completed' && searchTask.status !== 'failed' && (
-        <div className="mx-4 mt-1 px-4 py-2 bg-gray-800 border border-gray-700 rounded shadow-lg">
-          <div className="flex items-center gap-2 mb-1">
-            <span className="text-blue-400 font-semibold text-sm">{t('nav.extract')} 搜索</span>
-            <span className="text-xs text-gray-500 ml-auto">#{searchTask.task_id?.slice(0,8)}</span>
-          </div>
-          <div className="space-y-1">
-            {(searchTask.steps || []).map((step, i) => (
-              <div key={i} className="flex items-center gap-2 text-xs">
-                {step.status === 'running' && <span className="w-3 h-3 rounded-full bg-blue-500 animate-pulse" />}
-                {step.status === 'done' && <span className="w-3 h-3 rounded-full bg-green-500" />}
-                {step.status === 'pending' && <span className="w-3 h-3 rounded-full bg-gray-600" />}
-                {step.status === 'failed' && <span className="w-3 h-3 rounded-full bg-red-500" />}
-                <span className={step.status === 'running' ? 'text-blue-300' : step.status === 'done' ? 'text-green-400' : 'text-gray-500'}>
-                  {step.name}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-      <div className="flex-1 flex min-h-0">
-        <GraphViewer data={searchResult} onSelect={handleSelect} graph={graph} />
-        {selected && <PropertyPanel item={selected} type={selectedType} onClose={() => setSelected(null)} />}
-      </div>
+    <div className={`h-screen flex overflow-hidden select-none ${
+      theme === 'dark'
+        ? 'bg-[#1a1a1e] text-[#e5e5e7]'
+        : 'bg-[#f5f5f7] text-[#1d1d1f]'
+    }`}>
+      {/* Sidebar */}
+      <Sidebar
+        conversations={conversations}
+        activeConvId={activeConvId}
+        onNewChat={handleNewChat}
+        onSwitchConv={handleSwitchConv}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenKnowledgeBase={() => setKnowledgeBaseOpen(true)}
+      />
+
+      {/* Main chat area */}
+      <ChatArea
+        activeConv={activeConv}
+        onUpdateConv={handleUpdateConv}
+        providers={settings.providers}
+        activeProvider={settings.activeProvider}
+        onProviderChange={(id) => handleUpdateSettings({ activeProvider: id })}
+        useGraph={settings.useGraph}
+        onGraphToggle={(v) => handleUpdateSettings({ useGraph: v })}
+        searchMode={settings.searchMode}
+        onSearchModeChange={(v) => handleUpdateSettings({ searchMode: v })}
+        timeTravel={settings.timeTravel}
+        onTimeTravelToggle={(v) => handleUpdateSettings({ timeTravel: v })}
+        defaultGraph={settings.defaultGraph}
+        onDefaultGraphChange={(g) => handleUpdateSettings({ defaultGraph: g })}
+        graphs={graphs}
+      />
+
+      {/* Knowledge Base dialog */}
+      <KnowledgeBase
+        open={knowledgeBaseOpen}
+        onClose={() => setKnowledgeBaseOpen(false)}
+        providers={settings.providers}
+        activeProvider={settings.activeProvider}
+        defaultGraph={settings.defaultGraph}
+        theme={theme}
+      />
+
+      {/* Settings dialog */}
+      <SettingsDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        providers={settings.providers}
+        onUpdateProviders={handleUpdateProviders}
+        graphName={settings.defaultGraph}
+        onGraphNameChange={(g) => handleUpdateSettings({ defaultGraph: g })}
+        graphs={graphs}
+        onGraphsChange={setGraphs}
+        theme={theme}
+        onThemeToggle={handleThemeToggle}
+        language={i18n.language}
+        onLanguageToggle={handleLanguageToggle}
+      />
     </div>
   );
 }

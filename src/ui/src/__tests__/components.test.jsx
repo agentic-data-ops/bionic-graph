@@ -3,8 +3,6 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
 import en from '../locales/en.json';
-import NavBar from '../components/NavBar';
-import SearchBar from '../components/SearchBar';
 import PropertyPanel from '../components/PropertyPanel';
 import * as api from '../api';
 
@@ -13,95 +11,6 @@ i18n.use(initReactI18next).init({
   lng: 'en',
   fallbackLng: 'en',
   interpolation: { escapeValue: false },
-});
-
-// ─── NavBar ────────────────────────────────────────
-
-describe('NavBar', () => {
-  beforeEach(() => {
-    global.fetch = vi.fn(() =>
-      Promise.resolve({ ok: true, json: () => Promise.resolve({ graphs: ['default', 'test'] }) })
-    );
-  });
-
-  it('renders Compact and Extract buttons', async () => {
-    render(<NavBar graph="default" setGraph={() => {}} />);
-    await waitFor(() => {
-      expect(screen.getByText('Compact')).toBeInTheDocument();
-      expect(screen.getByText('Extract')).toBeInTheDocument();
-    });
-  });
-
-  it('opens Add Graph modal on + click', async () => {
-    render(<NavBar graph="default" setGraph={() => {}} />);
-    fireEvent.click(screen.getByText('+'));
-    await waitFor(() => expect(screen.getByText('Add Graph')).toBeInTheDocument());
-    expect(screen.getByPlaceholderText('Graph name')).toBeInTheDocument();
-  });
-
-  it('opens Compact modal on Compact click', () => {
-    render(<NavBar graph="default" setGraph={() => {}} />);
-    fireEvent.click(screen.getByText('Compact'));
-    expect(screen.getByText(/Compact History/)).toBeInTheDocument();
-  });
-
-  it('opens Extract modal on Extract click', () => {
-    render(<NavBar graph="default" setGraph={() => {}} />);
-    fireEvent.click(screen.getByText('Extract'));
-    expect(screen.getByText(/Extract from Markdown/)).toBeInTheDocument();
-  });
-
-  it('calls setGraph on selector change', async () => {
-    const setGraph = vi.fn();
-    render(<NavBar graph="default" setGraph={setGraph} />);
-    await waitFor(() => {
-      fireEvent.change(screen.getByRole('combobox'), { target: { value: 'test' } });
-      expect(setGraph).toHaveBeenCalledWith('test');
-    });
-  });
-
-  it('toggles theme on click', () => {
-    render(<NavBar graph="default" setGraph={() => {}} />);
-    fireEvent.click(screen.getByText('☀️'));
-    expect(screen.getByText('🌙')).toBeInTheDocument();
-  });
-});
-
-// ─── SearchBar ──────────────────────────────────────
-
-describe('SearchBar', () => {
-  it('defaults to keyword mode', () => {
-    render(<SearchBar onSearch={() => {}} />);
-    expect(screen.getByText('Keyword').className).toContain('bg-blue-600');
-  });
-
-  it('toggles to semantic mode', () => {
-    render(<SearchBar onSearch={() => {}} />);
-    fireEvent.click(screen.getByText('Semantic'));
-    expect(screen.getByText('Semantic').className).toContain('bg-blue-600');
-  });
-
-  it('shows advanced panel on toggle', () => {
-    render(<SearchBar onSearch={() => {}} />);
-    fireEvent.click(screen.getByText(/Advanced/));
-    expect(screen.getByText(/Vertex label/)).toBeInTheDocument();
-  });
-
-  it('calls onSearch on Enter', () => {
-    const onSearch = vi.fn();
-    render(<SearchBar onSearch={onSearch} />);
-    fireEvent.change(screen.getByPlaceholderText(/search/i), { target: { value: 'test query' } });
-    fireEvent.keyDown(screen.getByPlaceholderText(/search/i), { key: 'Enter' });
-    expect(onSearch).toHaveBeenCalledWith(expect.objectContaining({ query: 'test query', mode: 'keyword' }));
-  });
-
-  it('calls onSearch on search button click', () => {
-    const onSearch = vi.fn();
-    render(<SearchBar onSearch={onSearch} />);
-    fireEvent.change(screen.getByPlaceholderText(/search/i), { target: { value: 'AI' } });
-    fireEvent.click(screen.getByText('Search'));
-    expect(onSearch).toHaveBeenCalled();
-  });
 });
 
 // ─── PropertyPanel ──────────────────────────────────
@@ -134,10 +43,10 @@ describe('PropertyPanel', () => {
     expect(screen.getByText('knows')).toBeInTheDocument();
   });
 
-  it('calls onClose on ✕ click', () => {
+  it('calls onClose on close button click', () => {
     const fn = vi.fn();
     render(<PropertyPanel item={vertex} type="vertex" onClose={fn} />);
-    fireEvent.click(screen.getByText('✕'));
+    fireEvent.click(screen.getByRole('button'));
     expect(fn).toHaveBeenCalledOnce();
   });
 
@@ -157,20 +66,12 @@ describe('API client', () => {
     expect((await api.health()).status).toBe('ok');
   });
 
-  it('keywordSearch sends proper step', async () => {
+  it('graphSearch sends proper step', async () => {
     fetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({}) });
-    await api.keywordSearch(['AI', 'engineer'], 'g');
+    await api.graphSearch(['AI', 'engineer'], 'g');
     const body = JSON.parse(fetch.mock.calls[0][1].body);
-    expect(body.steps[0].step).toBe('keywordSearch');
+    expect(body.steps[0].step).toBe('search');
     expect(body.steps[0].keywords).toEqual(['AI', 'engineer']);
-  });
-
-  it('semanticSearch sends proper step', async () => {
-    fetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({}) });
-    await api.semanticSearch('find people', 'g');
-    const body = JSON.parse(fetch.mock.calls[0][1].body);
-    expect(body.steps[0].step).toBe('semanticSearch');
-    expect(body.steps[0].query).toBe('find people');
   });
 
   it('listGraphs calls GET', async () => {
@@ -202,13 +103,20 @@ describe('API client', () => {
     expect(call[1].headers['Content-Type']).toBe('text/markdown');
   });
 
-  it('traverse sends V + out steps', async () => {
-    fetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({}) });
+  it('traverse sends V+both and V+bothE', async () => {
+    fetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ data: [] }) });
+    fetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ data: [] }) });
     await api.traverse(42, 'knows', 'g');
-    const body = JSON.parse(fetch.mock.calls[0][1].body);
-    expect(body.steps[0].step).toBe('V');
-    expect(body.steps[0].ids).toEqual([42]);
-    expect(body.steps[1].step).toBe('out');
+    // First call: V + both
+    const body0 = JSON.parse(fetch.mock.calls[0][1].body);
+    expect(body0.steps[0].step).toBe('V');
+    expect(body0.steps[0].ids).toEqual([42]);
+    expect(body0.steps[1].step).toBe('both');
+    // Second call: V + bothE
+    const body1 = JSON.parse(fetch.mock.calls[1][1].body);
+    expect(body1.steps[0].step).toBe('V');
+    expect(body1.steps[0].ids).toEqual([42]);
+    expect(body1.steps[1].step).toBe('bothE');
   });
 
   it('throws on non-ok response', async () => {

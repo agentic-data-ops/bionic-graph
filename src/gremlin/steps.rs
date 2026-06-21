@@ -80,55 +80,6 @@ pub fn execute_query_with_llm(
                 fill_vertex_details(&graph.lock().unwrap(), results)
             }
 
-            TraversalStep::SemanticSearch { query } => {
-                let keywords = extract_search_keywords(llm_config, query);
-                let mut nn = neural_network.lock().unwrap();
-                let query_str = keywords.join(" ");
-                let (ranked_vertices, ranked_edges, fired, _hot, ticks) = nn.search(&query_str);
-                ticks_used = Some(ticks);
-                neurons_fired = Some(fired);
-
-                // Convert ranked vertices to TraversalResults
-                let mut results: Vec<TraversalResult> = ranked_vertices
-                    .into_iter()
-                    .map(|(vid, _score)| TraversalResult::VertexResult(VertexResult {
-                        element_type: "vertex".to_string(),
-                        id: vid,
-                        labels: Vec::new(),
-                        properties: std::collections::HashMap::new(),
-                    }))
-                    .collect();
-
-                // Add edge results from search
-                let g = graph.lock().unwrap();
-                for (eid, _score) in ranked_edges {
-                    if let Some(e) = g.get_edge(eid) {
-                        results.push(edge_to_result(e));
-                    }
-                }
-                drop(g);
-
-                // Fill in vertex details from graph
-                let filled = match fill_vertex_details(&graph.lock().unwrap(), results) {
-                    Ok(f) => f,
-                    Err(e) => {
-                        return QueryResponse {
-                            success: false, data: Vec::new(), error: Some(e),
-                            ticks_used: None, neurons_fired: None,
-                        };
-                    }
-                };
-
-                // Post-filter: LLM prunes results not semantically relevant (limit to 30)
-                let final_results = if let Some(config) = llm_config {
-                    let filter_input: Vec<_> = filled.into_iter().take(30).collect();
-                    semantic_filter_results(config, query, &filter_input)
-                } else {
-                    Ok(filled)
-                };
-                final_results
-            }
-
             TraversalStep::V { ids } => {
                 let g = graph.lock().unwrap();
                 let results: Vec<TraversalResult> = if ids.is_empty() {
@@ -827,11 +778,7 @@ fn run_steps(
             }
 
             TraversalStep::Search { .. } => {
-                return Err("keywordSearch is not supported inside repeat".to_string());
-            }
-
-            TraversalStep::SemanticSearch { .. } => {
-                return Err("semanticSearch is not supported inside repeat".to_string());
+                return Err("search is not supported inside repeat".to_string());
             }
 
             TraversalStep::E { .. } => {
@@ -873,7 +820,7 @@ fn extract_search_keywords(llm_config: Option<&ExtractionConfig>, query: &str) -
     }
 }
 
-/// After keywordSearch, ask the LLM to prune results not semantically relevant.
+/// After search, ask the LLM to prune results not semantically relevant.
 pub(super) fn semantic_filter_results(
     config: &ExtractionConfig,
     query: &str,
