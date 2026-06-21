@@ -2,8 +2,6 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import GraphViewer from './GraphViewer';
 
-
-
 function SimpleMarkdown({ text }) {
   if (!text) return null;
   const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -22,7 +20,6 @@ function SearchStep({ step }) {
     : step.status === 'running' ? 'text-[#0a84ff]'
     : step.status === 'failed' ? 'text-[#ff453a]'
     : 'text-[#636366]';
-
   return (
     <div className="py-1.5">
       <div className="flex items-center gap-2">
@@ -36,40 +33,27 @@ function SearchStep({ step }) {
           </span>
         )}
       </div>
-      {/* LLM output — shown when step has output */}
       {step.llmOutput && step.status === 'done' && (
-        <div className="mt-1.5 ml-5 text-[11px] text-[#636366] leading-relaxed font-mono whitespace-pre-wrap border-l border-[#2a2a2e] pl-3">
-          {step.llmOutput}
-        </div>
+        <div className="mt-1.5 ml-5 text-[11px] text-[#636366] leading-relaxed font-mono whitespace-pre-wrap border-l border-[#2a2a2e] pl-3">{step.llmOutput}</div>
       )}
       {step.llmOutput && step.status === 'running' && (
-        <div className="mt-1.5 ml-5 text-[11px] text-[#48484a] leading-relaxed font-mono whitespace-pre-wrap border-l border-[#2a2a2e] pl-3 max-h-20 overflow-y-auto">
-          {step.llmOutput}
-        </div>
+        <div className="mt-1.5 ml-5 text-[11px] text-[#48484a] leading-relaxed font-mono whitespace-pre-wrap border-l border-[#2a2a2e] pl-3 max-h-20 overflow-y-auto">{step.llmOutput}</div>
       )}
     </div>
   );
 }
 
-function ChatMessage({ message, onMaximize, onSelectNode }) {
+function ChatMessage({ message, graphRef, onMaximizeRef }) {
   const { t } = useTranslation();
-
   if (message.type === 'user') {
-    return (
-      <div className="flex justify-end mb-3 message-enter">
-        <div className="max-w-[72%] bg-[#0a84ff] text-white rounded-2xl rounded-br-md px-4 py-2.5 text-sm leading-relaxed shadow-sm">{message.content}</div>
-      </div>
-    );
+    return <div className="flex justify-end mb-3 message-enter"><div className="max-w-[72%] bg-[#0a84ff] text-white rounded-2xl rounded-br-md px-4 py-2.5 text-sm leading-relaxed shadow-sm">{message.content}</div></div>;
   }
-
   if (message.type === 'assistant') {
     const hasContent = message.content?.length > 0;
     return (
       <div className="flex justify-start mb-3 message-enter">
         <div className="max-w-[72%] bg-[#2a2a2e] text-[#e5e5e7] rounded-2xl rounded-bl-md px-4 py-2.5 text-sm leading-relaxed shadow-sm">
-          {hasContent ? (
-            <SimpleMarkdown text={message.content} />
-          ) : (
+          {hasContent ? <SimpleMarkdown text={message.content} /> : (
             <span className="inline-flex gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-[#0a84ff] pulse-dot" />
               <span className="w-1.5 h-1.5 rounded-full bg-[#0a84ff] pulse-dot" style={{ animationDelay: '0.2s' }} />
@@ -80,105 +64,89 @@ function ChatMessage({ message, onMaximize, onSelectNode }) {
       </div>
     );
   }
-
   if (message.type === 'search_progress') {
     return (
       <div className="flex justify-start mb-3 message-enter">
         <div className="w-full max-w-[90%] bg-[#1c1c20] border border-[#2a2a2e] rounded-2xl overflow-hidden shadow-sm">
           <div className="px-4 py-3.5">
-            <div className="text-xs text-[#0a84ff] font-semibold mb-2 tracking-tight">
-              🔎 Graph Search · <span className="text-[#636366] font-normal">{message.title}</span>
-            </div>
-            <div className="space-y-0">
-              {(message.steps || []).map((step, i) => (
-                <SearchStep key={i} step={step} />
-              ))}
-            </div>
+            <div className="text-xs text-[#0a84ff] font-semibold mb-2 tracking-tight">🔎 Graph Search · <span className="text-[#636366] font-normal">{message.title}</span></div>
+            <div className="space-y-0">{(message.steps || []).map((step, i) => <SearchStep key={i} step={step} />)}</div>
           </div>
           {message.graphData && (
             <div className="border-t border-[#2a2a2e]">
               <div className="px-4 py-2 bg-[#1c1c20] border-b border-[#2a2a2e] flex items-center gap-2">
                 <span className="text-xs font-semibold text-[#e5e5e7] tracking-tight">{t('chat.searchResult')}</span>
-                <span className="text-xs text-[#636366] ml-auto font-medium">
-                  {message.graphData?.data?.length || 0} <span className="text-[#48484a]">items</span>
-                </span>
-                <button
-                  className="w-6 h-6 rounded-md bg-[#2a2a2e] hover:bg-[#3a3a3e] flex items-center justify-center text-[#636366] hover:text-white transition-all"
-                  onClick={() => onMaximize?.(message.graphData, message.graphName)}
-                  title={t('chat.maximize')}
-                >
+                <span className="text-xs text-[#636366] ml-auto font-medium">{message.graphData?.data?.length || 0} <span className="text-[#48484a]">items</span></span>
+                <button className="w-6 h-6 rounded-md bg-[#2a2a2e] hover:bg-[#3a3a3e] flex items-center justify-center text-[#636366] hover:text-white transition-all flex-shrink-0 ml-2" onClick={() => onMaximizeRef?.(message.graphName)} title={t('chat.maximize')}>
                   <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
                   </svg>
                 </button>
               </div>
-              <div className="h-[420px] relative">
-                <GraphViewer data={message.graphData} graph={message.graphName} />
-              </div>
+              <div className="h-[420px] relative"><GraphViewer ref={graphRef} data={message.graphData} graph={message.graphName} /></div>
             </div>
           )}
         </div>
       </div>
     );
   }
-
   if (message.type === 'graph_result') {
     return (
-      <>
-        <div className="flex justify-start mb-3 message-enter">
-          <div className="w-full max-w-[90%] bg-[#1c1c20] border border-[#2a2a2e] rounded-2xl overflow-hidden shadow-sm">
-            <div className="px-4 py-2.5 bg-[#1c1c20] border-b border-[#2a2a2e] flex items-center gap-2">
-              <span className="text-xs font-semibold text-[#e5e5e7] tracking-tight">{t('chat.searchResult')}</span>
-              <span className="text-xs text-[#636366] ml-auto font-medium">
-                {message.data?.data?.length || 0} <span className="text-[#48484a]">items</span>
-              </span>
-              <button
-                className="w-6 h-6 rounded-md bg-[#2a2a2e] hover:bg-[#3a3a3e] flex items-center justify-center text-[#636366] hover:text-white transition-all"
-                onClick={() => onMaximize?.(message.data, message.graphName)}
-                title={t('chat.maximize')}
-              >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
-                </svg>
-              </button>
-            </div>
-            <div className="h-[420px] relative">
-              <GraphViewer data={message.data} graph={message.graphName} />
-            </div>
+      <div className="flex justify-start mb-3 message-enter">
+        <div className="w-full max-w-[90%] bg-[#1c1c20] border border-[#2a2a2e] rounded-2xl overflow-hidden shadow-sm">
+          <div className="px-4 py-2.5 bg-[#1c1c20] border-b border-[#2a2a2e] flex items-center gap-2">
+            <span className="text-xs font-semibold text-[#e5e5e7] tracking-tight">{t('chat.searchResult')}</span>
+            <span className="text-xs text-[#636366] ml-auto font-medium">{message.data?.data?.length || 0} <span className="text-[#48484a]">items</span></span>
+            <button className="w-6 h-6 rounded-md bg-[#2a2a2e] hover:bg-[#3a3a3e] flex items-center justify-center text-[#636366] hover:text-white transition-all flex-shrink-0 ml-2" onClick={() => onMaximizeRef?.(message.graphName)} title={t('chat.maximize')}>
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+              </svg>
+            </button>
           </div>
+          <div className="h-[420px] relative"><GraphViewer ref={graphRef} data={message.data} graph={message.graphName} /></div>
         </div>
-      </>
+      </div>
     );
   }
-
   return null;
 }
 
 export default function MessageList({ messages, searchStream }) {
   const { t } = useTranslation();
   const bottomRef = useRef(null);
-  const [maximized, setMaximized] = useState(null); // { data, graphName }
+  const inlineRefs = useRef({});
+  const fullscreenRef = useRef(null);
+  const [maximized, setMaximized] = useState(null); // { msgId, graphName }
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [messages, searchStream]);
+  const handleMaximize = useCallback((msgId, graphName) => {
+    const ref = inlineRefs.current[msgId];
+    if (ref?.getSnapshot) {
+      const snap = ref.getSnapshot();
+      if (snap) setMaximized({ msgId, graphName, ...snap });
+    }
+  }, []);
 
-  const allMessages = searchStream
-    ? [
-        ...messages,
-        {
-          id: '__search_progress__',
-          type: 'search_progress',
-          title: searchStream.title || searchStream.query || 'Graph Search',
-          steps: searchStream.steps || [],
-          graphData: searchStream.graphData,
-          graphName: searchStream.graphName,
-        },
-      ]
-    : messages;
+  const handleRestore = useCallback(() => {
+    // Get snapshot from fullscreen view
+    const fsSnap = fullscreenRef.current?.getSnapshot();
+    // Apply to inline view
+    if (maximized?.msgId && fsSnap) {
+      const inlineRef = inlineRefs.current[maximized.msgId];
+      inlineRef?.applySnapshot?.(fsSnap);
+    }
+    setMaximized(null);
+  }, [maximized]);
+
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [messages, searchStream]);
+
+  const allMessages = searchStream ? [...messages, {
+    id: '__search_progress__', type: 'search_progress',
+    title: searchStream.title || searchStream.query || 'Graph Search',
+    steps: searchStream.steps || [], graphData: searchStream.graphData, graphName: searchStream.graphName,
+  }] : messages;
 
   return (
-    <>
+    <div className="flex-1 flex flex-col min-h-0">
       <div className="flex-1 overflow-y-auto px-4 py-4 min-h-0 relative scroll-smooth">
         {allMessages.length === 0 && (
           <div className="h-full flex flex-col items-center justify-center text-[#48484a]">
@@ -191,34 +159,37 @@ export default function MessageList({ messages, searchStream }) {
             <p className="text-xs text-[#48484a] mt-1.5 max-w-xs text-center leading-relaxed">{t('chat.welcomeHint')}</p>
           </div>
         )}
-
         {allMessages.map((msg) => (
-          <ChatMessage key={msg.id} message={msg} onMaximize={(data, graphName) => setMaximized({ data, graphName })} />
+          <ChatMessage key={msg.id} message={msg}
+            graphRef={(el) => { if (el) inlineRefs.current[msg.id] = el; }}
+            onMaximizeRef={(graphName) => handleMaximize(msg.id, graphName)}
+          />
         ))}
-
         <div ref={bottomRef} />
       </div>
 
-      {/* Fullscreen graph overlay */}
+      {/* Maximized overlay */}
       {maximized && (
         <div className="fixed inset-0 z-[100] bg-[#1a1a1e] flex flex-col">
           <div className="flex items-center justify-between px-5 py-3 border-b border-[#2a2a2e] bg-[#1c1c20] flex-shrink-0">
             <span className="text-sm font-semibold text-[#e5e5e7] tracking-tight">{t('chat.searchResult')}</span>
-            <button
-              className="w-7 h-7 rounded-lg bg-[#2a2a2e] hover:bg-[#3a3a3e] flex items-center justify-center text-[#636366] hover:text-white transition-all"
-              onClick={() => setMaximized(null)}
-              title={t('panel.close')}
-            >
+            <button className="w-7 h-7 rounded-lg bg-[#2a2a2e] hover:bg-[#3a3a3e] flex items-center justify-center text-[#636366] hover:text-white transition-all" onClick={handleRestore} title={t('panel.close')}>
               <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
           </div>
           <div className="flex-1 relative">
-            <GraphViewer data={maximized.data} graph={maximized.graphName} />
+            <GraphViewer ref={fullscreenRef}
+              data={{ success: true, data: [
+                ...(maximized.nodes || []).map((n) => n._original || { type: 'vertex', id: n.id, labels: [], properties: { name: n.label } }),
+                ...(maximized.edges || []).map((e) => e._original || { type: 'edge', id: e.id, source: e.from, target: e.to, label: e.label || '', properties: {} }),
+              ]}}
+              graph={maximized.graphName}
+            />
           </div>
         </div>
       )}
-    </>
+    </div>
   );
 }

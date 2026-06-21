@@ -110,9 +110,9 @@ export default function ChatArea({
           const res = await graphSearch(keywordsArr, defaultGraph);
 
           if (!isSemantic) {
+            const doneSteps = [{ icon: '✅', name: 'Graph search completed', status: 'done', llmOutput: '' }];
             setSearchStream(null);
-            const resultMsg = { id: uid(), type: 'graph_result', data: res, graphName: defaultGraph };
-            onUpdateConv({ ...conv, messages: [...updatedMsgs, resultMsg] });
+            onUpdateConv({ ...conv, messages: [...updatedMsgs, { ...progressMsg, steps: doneSteps, graphData: res, graphName: defaultGraph }] });
             return;
           }
 
@@ -152,16 +152,24 @@ export default function ChatArea({
             filteredData = { ...res, data: [] };
           } else {
             const indices = text2.split(',').map((s) => parseInt(s.trim(), 10) - 1).filter((i) => !isNaN(i) && i >= 0 && i < items.length);
-            filteredData = indices.length > 0 ? { ...res, data: indices.map((i) => items[i]) } : res;
+            const selected = indices.length > 0 ? indices.map((i) => items[i]) : items;
+            // Collect vertex IDs from filtered results, then include edges that connect them
+            const keptVertexIds = new Set(selected.filter((i) => i.type === 'vertex').map((i) => i.id));
+            const allData = (res?.data || []);
+            const extraEdges = allData.filter((i) => i.type === 'edge' && keptVertexIds.has(i.source) && keptVertexIds.has(i.target));
+            // Merge: selected items (minus edges duplicated by extra) + extra edges
+            const selectedIds = new Set(selected.map((i) => i.type === 'edge' ? `e:${i.id}` : `v:${i.id}`));
+            const merged = [...selected.filter((i) => i.type !== 'edge' || !extraEdges.some((e) => e.id === i.id)), ...extraEdges];
+            filteredData = { ...res, data: merged };
           }
 
           setSearchStream(null);
-          const resultMsg = { id: uid(), type: 'graph_result', data: filteredData, graphName: defaultGraph };
-          onUpdateConv({ ...conv, messages: [...updatedMsgs, resultMsg] });
+          const finalSteps = [step1done, step2done, { icon: '✅', name: 'Filtering completed', status: 'done', llmOutput: filterBuf }];
+          onUpdateConv({ ...conv, messages: [...updatedMsgs, { ...progressMsg, steps: finalSteps, graphData: filteredData, graphName: defaultGraph }] });
         } catch (e) {
-          setSearchStream({ ...progressMsg, steps: (steps || []).map((s) => ({ ...s, status: 'failed' })) });
-          const errorMsg = { id: uid(), type: 'assistant', content: `**Search error**: ${e.message}` };
-          onUpdateConv({ ...conv, messages: [...updatedMsgs, errorMsg] });
+          const failedSteps = (steps || []).map((s) => ({ ...s, status: 'failed' }));
+          setSearchStream(null);
+          onUpdateConv({ ...conv, messages: [...updatedMsgs, { ...progressMsg, steps: failedSteps }] });
         }
       } else {
         // ── LLM mode: streaming chat ──
@@ -201,7 +209,7 @@ export default function ChatArea({
         }
       }
     },
-    [activeConv, useGraph, defaultGraph, providers, activeProvider, onUpdateConv]
+    [activeConv, useGraph, searchMode, defaultGraph, providers, activeProvider, onUpdateConv]
   );
 
   // ── Attachment: extract markdown into graph ──

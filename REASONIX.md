@@ -7,55 +7,68 @@
 - **CLI**: clap 4 (derive)
 - **Async runtime**: tokio (full)
 - **Config**: `~/.config/bionic-graph/settings.json`, auto-generated on first run
+- **Frontend**: React 19 + Vite 8 + Tailwind CSS 4 + vis-network (Canvas 2D)
+- **Frontend embedding**: rust-embed (compile-time embedding into Rust binary)
 
 ## Layout
 - `src/graph/` — Vertex/Edge/Graph types, MVCC versioning, BFS/DFS traversal
 - `src/neuron/` — Spreading activation network, Hebbian learning, `EntityType` (Vertex/Edge per neuron)
 - `src/storage/` — Disk-backed storage: subgraph partitioning, LRU cache, WAL (redo_log), version log (vlog), compaction
-- `src/gremlin/` — REST API routes + Gremlin JSON pipeline step engine (16 steps)
-- `src/extract/` — Markdown document → LLM extraction (batch/concurrent) → graph insert + section/paragraph structure
+- `src/gremlin/` — REST API routes + Gremlin JSON pipeline step engine (15 steps)
+- `src/extract/` — Backend document extraction (legacy; extraction moved to frontend)
   - `task_manager.rs` — Async task lifecycle (pending → running → completed/failed), UUID-based task tracking with progress
 - `src/config/` — Settings struct (serde) + loader with env override
 - `src/persistence/` — graph_store/neuron_store serialization + auto-save thread
 - `src/graph_manager.rs` — Multi-graph manager (HashMap<String, GraphHandle>)
+- `src/documents.rs` — Document management CRUD (file storage + JSON index)
+- `src/ui_serve.rs` — Embedded static file serving (rust-embed)
 - `src/memory_system.rs` — Legacy single-graph wrapper (backward compat)
+- `src/ui/` — React frontend (Vite + Tailwind + vis-network)
 
 ## Commands
-- **build**: `cargo build`
+- **build**: `cargo build` (also runs `npm --prefix src/ui run build` before Rust compile)
 - **release**: `cargo build --release`
-- **test**: `cargo test` (159 unit tests)
-- **run**: `cargo run`
-- **demo**: `cargo run --example demo`
+- **test**: `cargo test` (Rust unit tests) + `npm --prefix src/ui run test` (frontend tests)
+- **run**: `cargo run` → serves both API + frontend at `http://127.0.0.1:8080`
+- **frontend dev**: `npm --prefix src/ui run dev` (standalone Vite, proxies API to port 8080)
+- **frontend build**: `npm --prefix src/ui run build`
+- **frontend test**: `npm --prefix src/ui run test`
 
-## Extraction Config (`settings.json` → `extraction`)
-| Field | Default | Description |
-|-------|---------|-------------|
-| `api_base_url` | `https://api.deepseek.com/v1` | OpenAI-compatible endpoint |
-| `model` | `deepseek-v4-flash` | Model identifier |
-| `context_window` | 65536 | Max tokens per call |
-| `max_output_tokens` | 16384 | Max tokens in LLM response |
-| `max_retries` | 3 | Retries on API failure |
-| `concurrent_sections` | 3 | Parallel LLM call limit (via tokio semaphore) |
-| `pass_section_context` | true | Pass previous section summary as context |
-| `batch_size` | 5 | Sections per LLM call (reduces API calls ~5x) |
+## Frontend Architecture
 
-Env overrides: `BGRAPH_LLM_API_KEY` (required), `BGRAPH_EXTRACT_*` for backward compat.
+### Stack
+- React 19, Vite 8, Tailwind CSS 4
+- `vis-network` + `vis-data` (Canvas 2D graph visualization)
+- `i18next` (i18n EN/ZH)
+- All LLM calls (chat, semantic search, document extraction) are frontend-side
 
-## Extraction Pipeline
-1. **Input**: Markdown text → `split_sections()` → heading-based section split
-2. **Batching**: Sections grouped into batches of `batch_size` (default 5)
-3. **Concurrent**: Batches run in parallel up to `concurrent_sections` via tokio semaphore
-4. **LLM call**: Each batch sends one prompt listing all sections, expects JSON array response
-5. **Parse**: `parse_batch_response()` extracts per-section `SectionExtraction` from JSON array
-6. **Fallback**: On batch parse failure, falls back to per-section individual LLM calls
-7. **Graph insert**: Each extraction's entities → vertices (with entity-specific neurons), relations → edges
-8. **Progress**: `ProgressCallback` fires after each section, updates task via `task_manager.rs`
+### Layout
+```
+App.jsx
+├── Sidebar.jsx          — 对话列表 + 知识库入口 + 设置入口
+├── ChatArea.jsx         — 聊天主区域
+│   ├── MessageList.jsx  — 消息列表 (用户/助手/搜索进度/图谱结果)
+│   └── ChatInput.jsx    — 输入框 + 模型选择 + 图谱开关 + 搜索模式切换
+├── KnowledgeBase.jsx    — 知识库弹窗 (文件管理 + LLM 提取)
+└── SettingsDialog.jsx   — 设置弹窗 (供应商/图库/通用)
+```
 
-## Gremlin Steps (16 total)
+### Conversation Flow
+- **LLM Chat**: User input → `chatCompletion()` (SSE streaming) → streaming display
+- **Keyword Search**: User input → split keywords → `graphSearch` → graph result
+- **Semantic Search**: User input → LLM extract keywords → `graphSearch` → LLM filter results → graph result
+- **Document Extraction**: Markdown file → LLM generate title/tags → LLM extract entities/relations → `POST /vertices` + `POST /edges`
+
+### Data Persistence
+- Conversations → `localStorage('bgraph-convs')`
+- Settings (providers, graphs, search mode) → `localStorage('bgraph-settings')`
+- Documents → Backend `data/documents/` (files + JSON index)
+- Graph data → Backend `data/` (graph.bin + neural.bin)
+
+## Gremlin Steps (15 total)
 | Step | Description |
 |------|-------------|
-| `keywordSearch` | Neural index search — **only returns vertices from matched/activated neurons** (inactive neurons filtered out). Capped at 100 results. |
-| `semanticSearch` | LLM keywords → keywordSearch → LLM result filter |
+| `search` | Neural index search — returns vertices from matched/activated neurons (inactive filtered out). Capped at 100 results. |
 | `V` / `E` | All or specific vertices / edges |
 | `has` / `hasNot` / `hasKey` / `hasValue` / `hasLabel` / `hasText` | Property filters |
 | `out` / `in` / `both` | Vertex traversal (supports depth) |
@@ -71,13 +84,17 @@ Env overrides: `BGRAPH_LLM_API_KEY` (required), `BGRAPH_EXTRACT_*` for backward 
 | GET | `/health` | System health + aggregate stats |
 | GET/POST/DELETE | `/graphs` | List / create / delete graphs |
 | POST | `/gremlin` | Gremlin pipeline query |
-| POST | `/search` | Quick neural keyword search |
+| POST | `/search` | Neural keyword search |
 | POST | `/vertices`, `/edges` | Add vertex/edge (auto-creates neurons) |
+| DELETE | `/vertices/:id` | Delete vertex + connected edges |
 | POST | `/neurons`, `/neurons/:id/link`, `/neurons/:id/synapse` | Neural network management |
-| **POST** | **`/extract`** | **Submit async extraction → returns `{task_id, status}`** |
-| **GET** | **`/extract/task/:task_id`** | **Poll task status + progress + results** |
-| **GET** | **`/extract/tasks`** | **List all extraction tasks (newest first)** |
-| POST | `/compact` | Trigger history compaction |
+| POST | `/extract` | Submit async extraction (legacy, backend-side) |
+| GET | `/extract/task/:task_id` | Poll extraction task |
+| GET | `/extract/tasks` | List extraction tasks |
+| POST | `/compact` | History compaction |
+| POST | `/reindex` | Re-index edges into neural network |
+| GET/POST/PUT/DELETE | `/documents` | Document CRUD |
+| GET | `/documents/:id/content` | Document content |
 
 ## Watch out for
 - **`edit_file` SEARCH must match byte-for-byte** — the Rust source has no trailing whitespace convention, and SEARCH is whitespace-sensitive.
@@ -86,10 +103,15 @@ Env overrides: `BGRAPH_LLM_API_KEY` (required), `BGRAPH_EXTRACT_*` for backward 
 - **`Graph::remove_vertex(id, force)`** — when `force=false` and `time_travel_enabled=true`, performs soft-delete. Otherwise hard-delete.
 - **`POST /vertices` and `POST /edges` auto-create neurons** — HTTP handlers call `Neuron::for_vertex` / `Neuron::for_edge` + `auto_synapse`.
 - **Route params use `:param` syntax** — axum 0.7.9 requires `:param` (not `{param}`) for path parameters in `.route()`.
-- **`keywordSearch` filters inactive neurons** — `activation.rs` only collects vertex refs from neurons with `activation > 0`. Entity-specific neurons are created during extraction with the entity name + labels as keywords.
-- **Batch extraction can truncate** — if `max_output_tokens` is too low for a batch's combined output, JSON truncation occurs. Setting of 16384 handles 5-section batches comfortably. Falls back to per-section on parse error.
+- **`search` step filters inactive neurons** — `activation.rs` only collects vertex refs from neurons with `activation > 0`.
+- **`cargo build` needs `touch src/ui_serve.rs` after frontend changes** — rust-embed doesn't detect `src/ui/dist/` file changes for recompilation.
+- **`semanticSearch` removed from backend** — all semantic search logic now runs on the frontend (LLM calls + graphSearch).
+- **`graph_result` message type deprecated** — search results are now stored as `search_progress` messages with `graphData` field.
+- **GraphViewer uses vis-network** — Canvas 2D, no WebGL required. Nodes/edges stored in DataSet with `_original` field for full data preservation.
+- **Maximize uses dual GraphViewer instances** — inline card and fullscreen overlay share data via `getSnapshot()` / `applySnapshot()` pattern.
 
 ## Implemented Plans
 - `001-arch-verify.md` — Full feature verification (151 tests, 0 failed)
 - `002-section-paragraph-graph.md` — Section/paragraph graph structure
 - `003-keyword-semantic-search.md` — keywordSearch + semanticSearch + global LLM config
+- `005-ui-rewrite-knowledgebase-visnetwork.md` — Frontend rewrite + knowledge base + vis-network migration

@@ -83,7 +83,7 @@ export default function ChatInput({
 
         <div className="flex-1" />
 
-        {!useGraph && providers.length > 0 && (
+        {(!useGraph || searchMode === 'semantic') && providers.length > 0 && (
           <select
             className="bg-[#2a2a2e] text-[#98989d] rounded-lg px-2.5 py-1 text-xs border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff] cursor-pointer appearance-none"
             style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath fill='%2386868b' d='M0 0l4 5 4-5z'/%3E%3C/svg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 6px center', paddingRight: '22px' }}
@@ -96,7 +96,7 @@ export default function ChatInput({
           </select>
         )}
         {useGraph && (
-          <div className="flex rounded-lg overflow-hidden ring-1 ring-[#3a3a3e] ml-auto">
+          <div className="flex rounded-lg overflow-hidden ring-1 ring-[#3a3a3e]">
             <button
               className={`px-2.5 py-1 text-[11px] font-medium transition-all ${searchMode === 'keyword' ? 'bg-[#0a84ff] text-white' : 'bg-[#2a2a2e] text-[#86868b] hover:text-white'}`}
               onClick={() => onSearchModeChange('keyword')}

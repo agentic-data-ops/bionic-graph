@@ -4,4 +4,4 @@ target
 *.pdb
 **/mutants.out*/
 data/
-.reasonix/truncated-results/
+/.reasonix/truncated-results/
