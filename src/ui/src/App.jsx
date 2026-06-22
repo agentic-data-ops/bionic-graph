@@ -4,7 +4,7 @@ import Sidebar from './components/Sidebar';
 import ChatArea from './components/ChatArea';
 import SettingsDialog from './components/SettingsDialog';
 import KnowledgeBase from './components/KnowledgeBase';
-import { listGraphs } from './api';
+import { listGraphs, fetchSettings, updateSettings } from './api';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -19,8 +19,10 @@ const DEFAULT_SETTINGS = {
       id: 'default-deepseek',
       name: 'DeepSeek',
       apiBase: 'https://api.deepseek.com/v1',
-      model: 'deepseek-v4-flash',
       apiKey: '',
+      models: ['deepseek-v4-flash', 'deepseek-v4-pro'],
+      defaultModel: 'deepseek-v4-flash',
+      model: 'deepseek-v4-flash',
     },
   ],
   activeProvider: 'default-deepseek',
@@ -75,6 +77,9 @@ export default function App() {
     () => conversations[0]?.id || null
   );
 
+  // ── Temporary model switch (resets on refresh) ──
+  const [tempModel, setTempModel] = useState(null);
+
   // ── UI state ──
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [knowledgeBaseOpen, setKnowledgeBaseOpen] = useState(false);
@@ -88,15 +93,50 @@ export default function App() {
     localStorage.setItem('theme', theme);
   }, [theme]);
 
-  // ── Load graph list ──
+  // ── Load graph list & backend settings ──
   useEffect(() => {
     listGraphs()
       .then((d) => {
         const gs = d.graphs || [];
         setGraphs(gs);
-        // Ensure default graph exists
         if (!gs.includes(settings.defaultGraph)) {
           setSettings((s) => ({ ...s, defaultGraph: gs[0] || 'default' }));
+        }
+      })
+      .catch(() => {});
+
+    // Load backend LLM providers to sync frontend defaults
+    fetchSettings()
+      .then((backend) => {
+        const llm = backend?.llm;
+        if (llm?.providers?.length > 0) {
+          setSettings((prev) => {
+            // Parse default_model "Provider/Model" format
+            let activeIdx = 0;
+            let defaultModel = llm.providers[0]?.models?.[0] || 'deepseek-v4-flash';
+            if (llm.default_model && llm.default_model.includes('/')) {
+              const [provName, modelName] = llm.default_model.split('/');
+              const idx = llm.providers.findIndex((p) => p.name === provName);
+              if (idx >= 0) { activeIdx = idx; defaultModel = modelName; }
+            }
+            const backendProviders = llm.providers.map((bp, i) => {
+              const m = i === activeIdx ? defaultModel : (bp.models?.[0] || 'deepseek-v4-flash');
+              return {
+                id: `provider-${i}`,
+                name: bp.name,
+                apiBase: bp.api_base_url,
+                apiKey: bp.api_key || '',
+                models: bp.models || [m],
+                defaultModel: m,
+                model: m,
+              };
+            });
+            return {
+              ...prev,
+              providers: backendProviders,
+              activeProvider: `provider-${activeIdx}`,
+            };
+          });
         }
       })
       .catch(() => {});
@@ -106,6 +146,24 @@ export default function App() {
   useEffect(() => {
     saveSettings(settings);
   }, [settings]);
+
+  // ── Sync providers to backend when they change ──
+  useEffect(() => {
+    const providers = settings.providers.map((p) => ({
+      name: p.name,
+      api_base_url: p.apiBase,
+      api_key: p.apiKey || '',
+      models: p.models || [p.model],
+    }));
+    const activeProv = settings.providers.find((p) => p.id === settings.activeProvider);
+    const defaultModel = activeProv
+      ? `${activeProv.name}/${activeProv.defaultModel || activeProv.model}`
+      : 'DeepSeek/deepseek-v4-flash';
+    if (providers.length > 0) {
+      updateSettings(providers, defaultModel)
+        .catch(() => {});
+    }
+  }, [settings.providers, settings.activeProvider]);
 
   // ── Persist conversations on change ──
   useEffect(() => {
@@ -220,6 +278,12 @@ export default function App() {
         defaultGraph={settings.defaultGraph}
         onDefaultGraphChange={(g) => handleUpdateSettings({ defaultGraph: g })}
         graphs={graphs}
+        tempModel={tempModel}
+        onTempModelChange={setTempModel}
+        theme={theme}
+        onThemeToggle={handleThemeToggle}
+        language={i18n.language}
+        onLanguageToggle={handleLanguageToggle}
       />
 
       {/* Knowledge Base dialog */}
@@ -242,6 +306,8 @@ export default function App() {
         onGraphNameChange={(g) => handleUpdateSettings({ defaultGraph: g })}
         graphs={graphs}
         onGraphsChange={setGraphs}
+        activeProvider={settings.activeProvider}
+        onProviderChange={(id) => handleUpdateSettings({ activeProvider: id })}
         theme={theme}
         onThemeToggle={handleThemeToggle}
         language={i18n.language}

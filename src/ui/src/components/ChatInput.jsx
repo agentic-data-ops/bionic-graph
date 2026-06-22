@@ -14,6 +14,8 @@ export default function ChatInput({
   graphName,
   onGraphNameChange,
   graphs,
+  tempModel,
+  onTempModelChange,
   onSend,
   disabled,
 }) {
@@ -47,19 +49,7 @@ export default function ChatInput({
     <div className="bg-[#1c1c20] border-t border-[#2a2a2e] px-4 py-3">
       {/* Mode bar */}
       <div className="flex items-center gap-2 mb-2.5 flex-wrap">
-        {/* Provider selector — always visible, leftmost */}
-        {providers.length > 0 && (
-          <select
-            className="bg-[#2a2a2e] text-[#e5e5e7] rounded-lg px-2.5 py-1 text-xs border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff] cursor-pointer appearance-none flex-shrink-0"
-            style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath fill='%2386868b' d='M0 0l4 5 4-5z'/%3E%3C/svg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 6px center', paddingRight: '22px' }}
-            value={activeProvider}
-            onChange={(e) => onProviderChange(e.target.value)}
-          >
-            {providers.map((p) => (
-              <option key={p.id} value={p.id}>{p.name} ({p.model})</option>
-            ))}
-          </select>
-        )}
+
 
         {/* Graph toggle */}
         <label className="flex items-center gap-1.5 cursor-pointer select-none flex-shrink-0" onClick={(e) => { e.preventDefault(); onGraphToggle(!useGraph); }}>
@@ -96,8 +86,47 @@ export default function ChatInput({
             </div>
           </>
         )}
-      </div>
 
+        {/* Model selector — right-aligned within the flex row */}
+        {providers.length > 0 && activeProvider && (() => {
+          const activeProv = providers.find(p => p.id === activeProvider);
+          if (!activeProv) return null;
+          const effectiveModel = tempModel || activeProv.defaultModel || activeProv.model;
+          const currentKey = `${activeProv.name}/${effectiveModel}`;
+          const options = [];
+          providers.forEach(p => {
+            const models = p.models || [p.model];
+            models.forEach(m => {
+              options.push({ key: `${p.name}/${m}`, providerId: p.id, model: m });
+            });
+          });
+          return (
+            <select
+              className="bg-[#2a2a2e] text-[#e5e5e7] rounded-lg px-2.5 py-1 text-xs border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff] cursor-pointer appearance-none ml-auto flex-shrink-0"
+              style={{ maxWidth: '200px', backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath fill='%2386868b' d='M0 0l4 5 4-5z'/%3E%3C/svg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 6px center', paddingRight: '22px' }}
+              value={currentKey}
+              onChange={(e) => {
+                const selected = options.find(o => o.key === e.target.value);
+                if (!selected) return;
+                if (selected.providerId !== activeProvider) {
+                  onProviderChange(selected.providerId);
+                }
+                const prov = providers.find(p => p.id === selected.providerId);
+                const defaultM = prov?.defaultModel || prov?.model;
+                if (selected.model === defaultM) {
+                  onTempModelChange(null);
+                } else {
+                  onTempModelChange(selected.model);
+                }
+              }}
+            >
+              {options.map((opt) => (
+                <option key={opt.key} value={opt.key}>{opt.key}</option>
+              ))}
+            </select>
+          );
+        })()}
+      </div>
       {/* Input area */}
       <div className="flex items-end gap-2">
         <textarea

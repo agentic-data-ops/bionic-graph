@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::config::Settings;
+use crate::extract::ExtractionTaskManager;
 use std::path::PathBuf;
 
 use crate::graph::{Graph, VertexId};
@@ -220,10 +221,16 @@ impl MemorySystem {
     // ─── Server ───────────────────────────────────────────────────
 
     /// Build the REST API router using GraphManager (multi-graph).
-    pub fn into_router_with_manager(gm: Arc<Mutex<GraphManager>>) -> axum::Router {
+    pub fn into_router_with_manager(
+        gm: Arc<Mutex<GraphManager>>,
+        task_manager: ExtractionTaskManager,
+        settings: Arc<Mutex<Settings>>,
+    ) -> axum::Router {
         let state = AppState {
             graph_manager: gm,
             document_manager: crate::documents::DocumentManager::new("data"),
+            task_manager,
+            settings,
         };
         build_router(state)
     }
@@ -263,6 +270,8 @@ impl MemorySystem {
         let state = AppState {
             graph_manager: Arc::new(Mutex::new(gm)),
             document_manager: crate::documents::DocumentManager::new("data"),
+            task_manager: ExtractionTaskManager::new(),
+            settings: Arc::new(Mutex::new(Settings::default())),
         };
         build_router(state)
     }

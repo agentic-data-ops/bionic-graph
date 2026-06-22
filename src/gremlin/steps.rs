@@ -970,7 +970,7 @@ fn property_to_json(pv: &PropertyValue) -> Value {
 pub(super) fn fill_vertex_details(g: &Graph, results: Vec<TraversalResult>) -> Result<Vec<TraversalResult>, String> {
     let filled: Vec<TraversalResult> = results
         .into_iter()
-        .map(|r| match r {
+        .filter_map(|r| match r {
             TraversalResult::VertexResult(ref v) => {
                 if let Some(vertex) = g.get_vertex(v.id) {
                     let props: std::collections::HashMap<String, Value> = vertex
@@ -978,16 +978,16 @@ pub(super) fn fill_vertex_details(g: &Graph, results: Vec<TraversalResult>) -> R
                         .iter()
                         .map(|(k, pv)| (k.clone(), property_to_json(pv)))
                         .collect();
-                    TraversalResult::VertexResult(VertexResult {
+                    Some(TraversalResult::VertexResult(VertexResult {
                         labels: vertex.labels.clone(),
                         properties: props,
                         ..v.clone()
-                    })
+                    }))
                 } else {
-                    TraversalResult::VertexResult(v.clone())
+                    None
                 }
             }
-            _ => r,
+            _ => Some(r),
         })
         .collect();
     Ok(filled)

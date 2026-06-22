@@ -51,6 +51,8 @@ pub struct LlmResult {
     pub content: String,
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
+    /// Reason the generation finished: "stop", "length", etc.
+    pub finish_reason: Option<String>,
 }
 
 /// Error from the LLM API.
@@ -152,11 +154,13 @@ pub async fn chat_completion(
         .as_ref()
         .and_then(|u| u.completion_tokens)
         .unwrap_or(0);
+    let finish_reason = choice.finish_reason;
 
     Ok(LlmResult {
         content,
         prompt_tokens,
         completion_tokens,
+        finish_reason,
     })
 }
 

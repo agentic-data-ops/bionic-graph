@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  listDocuments, addDocument, deleteDocument, getDocumentContent,
+  listDocuments, addDocument, updateDocument, deleteDocument, getDocumentContent,
   addVertex, addEdge, deleteVertex, graphSearch, listGraphs,
   chatCompletion, parseSSEStream,
 } from '../api';
@@ -74,8 +74,8 @@ Return ONLY valid JSON with this structure:
 
 /** Progress step component */
 function ProgressStep({ label, status, detail }) {
-  const icon = status === 'done' ? '✅' : status === 'running' ? '⏳' : status === 'failed' ? '❌' : '⏸';
-  const color = status === 'done' ? 'text-[#30d158]' : status === 'running' ? 'text-[#0a84ff]' : status === 'failed' ? 'text-[#ff453a]' : 'text-[#636366]';
+  const icon = (status === 'done' || status === 'completed') ? '✅' : status === 'running' ? '⏳' : status === 'failed' ? '❌' : '⏸';
+  const color = (status === 'done' || status === 'completed') ? 'text-[#30d158]' : status === 'running' ? 'text-[#0a84ff]' : status === 'failed' ? 'text-[#ff453a]' : 'text-[#636366]';
   return (
     <div className="py-1">
       <div className="flex items-center gap-2">
@@ -83,7 +83,7 @@ function ProgressStep({ label, status, detail }) {
         <span className={`text-xs ${color} font-medium`}>{label}</span>
         {status === 'running' && <span className="inline-flex gap-0.5"><span className="w-1 h-1 rounded-full bg-[#0a84ff] pulse-dot" /><span className="w-1 h-1 rounded-full bg-[#0a84ff] pulse-dot" style={{ animationDelay: '0.2s' }} /><span className="w-1 h-1 rounded-full bg-[#0a84ff] pulse-dot" style={{ animationDelay: '0.4s' }} /></span>}
       </div>
-      {detail && status === 'done' && <div className="mt-1 ml-5 text-[11px] text-[#636366] leading-relaxed font-mono whitespace-pre-wrap border-l border-[#2a2a2e] pl-3">{detail}</div>}
+      {detail && (status === 'done' || status === 'completed') && <div className="mt-1 ml-5 text-[11px] text-[#636366] leading-relaxed font-mono whitespace-pre-wrap border-l border-[#2a2a2e] pl-3">{detail}</div>}
     </div>
   );
 }
@@ -95,6 +95,7 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
   const [filterTag, setFilterTag] = useState('');
   const [loading, setLoading] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [filterGraph, setFilterGraph] = useState('');
   const [importContent, setImportContent] = useState('');
   const [importGraph, setImportGraph] = useState(defaultGraph);
   const [importProvider, setImportProvider] = useState(activeProvider);
@@ -102,6 +103,9 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
   const [importing, setImporting] = useState(false);
   const [showEdit, setShowEdit] = useState(null);
   const [editContent, setEditContent] = useState('');
+  const [editTitle, setEditTitle] = useState('');
+  const [editTags, setEditTags] = useState([]);
+  const [editNewTag, setEditNewTag] = useState('');
 
   const provider = providers.find((p) => p.id === importProvider);
 
@@ -116,7 +120,12 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
   }, [open]);
 
   const allTags = [...new Set(documents.flatMap((d) => d.tags || []))];
-  const filteredDocs = filterTag ? documents.filter((d) => (d.tags || []).includes(filterTag)) : documents;
+  const allGraphs = [...new Set(documents.map((d) => d.graph_name).filter(Boolean))];
+  const filteredDocs = documents.filter((d) => {
+    if (filterTag && !(d.tags || []).includes(filterTag)) return false;
+    if (filterGraph && d.graph_name !== filterGraph) return false;
+    return true;
+  });
 
   const runExtraction = useCallback(async (content, providerCfg, graphName) => {
     const steps = [];
@@ -131,7 +140,7 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
     addStep({ label: `Tags: ${tags.join(', ')}`, status: 'done', detail: tags.join(', ')});
 
     addStep({ label: 'Adding document...', status: 'running', detail: '' });
-    const doc = await addDocument(title, content, tags);
+    const doc = await addDocument(title, content, tags, graphName);
     addStep({ label: `Document saved`, status: 'done', detail: doc.id });
 
     addStep({ label: 'Extracting entities and relations...', status: 'running', detail: '' });
@@ -195,26 +204,25 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
   }, [provider, importGraph, runExtraction]);
 
   const handleEdit = useCallback(async (doc) => {
-    try { const content = await getDocumentContent(doc.id); setEditContent(content); setShowEdit(doc.id); } catch {}
+    setEditTitle(doc.title);
+    setEditTags(doc.tags || []);
+    setEditNewTag('');
+    setShowEdit(doc.id);
   }, []);
 
   const handleSaveEdit = useCallback(async () => {
-    if (!showEdit || !editContent.trim() || !provider) return;
-    const doc = documents.find((d) => d.id === showEdit);
-    if (!doc) return;
-    setImporting(true);
-    setImportSteps([]);
+    if (!showEdit || !editTitle.trim()) return;
     try {
-      const res = await graphSearch([doc.title], importGraph);
-      const vertexIds = (res?.data || []).filter((item) => item.type === 'vertex' && item.properties?.source_file === doc.title).map((item) => item.id);
-      for (const vid of vertexIds) { try { await deleteVertex(vid, importGraph); } catch {} }
-      await runExtraction(editContent, provider, importGraph);
-      setShowEdit(null); setEditContent('');
+      await updateDocument(showEdit, editTitle, editTags);
+      const docs = await listDocuments();
+      setDocuments(docs.documents || []);
+      setShowEdit(null);
+      setEditTitle('');
+      setEditTags([]);
     } catch (e) {
-      setImportSteps((prev) => [...prev, { label: `❌ Error: ${e.message}`, status: 'failed', detail: '' }]);
+      console.error('Save error:', e);
     }
-    setImporting(false);
-  }, [showEdit, editContent, provider, importGraph, documents, runExtraction]);
+  }, [showEdit, editTitle, editTags]);
 
   const handleDelete = useCallback(async (doc) => {
     if (!confirm(`Delete "${doc.title}"?`)) return;
@@ -234,44 +242,68 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
       {!provider && <div className="text-xs text-[#ff9f0a] mb-4 text-center">{t('chat.noProvider')}</div>}
 
       {/* Tag filter */}
+      <div className="mb-1">
+        <label className="block text-xs text-[#636366] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.tagFilter')}</label>
+      </div>
       <div className="flex gap-1.5 mb-4 flex-wrap">
         <button className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${!filterTag ? 'bg-[#0a84ff] text-white' : 'bg-[#2a2a2e] text-[#86868b] hover:text-white'}`} onClick={() => setFilterTag('')}>All</button>
         {allTags.map((tag) => (<button key={tag} className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${filterTag === tag ? 'bg-[#0a84ff] text-white' : 'bg-[#2a2a2e] text-[#86868b] hover:text-white'}`} onClick={() => setFilterTag(tag)}>{tag}</button>))}
       </div>
 
-      {/* Import button */}
-      <div className="mb-4">
-        <button className="px-3.5 py-2 rounded-xl bg-[#0a84ff] text-white text-sm font-medium hover:bg-[#0a6ed9] transition-all shadow-sm" onClick={() => setShowImport(true)} disabled={!provider || importing}>
-          + {t('knowledgeBase.import')}
-        </button>
+      {/* Graph filter */}
+      <div className="mb-1">
+        <label className="block text-xs text-[#636366] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.graphFilter')}</label>
+      </div>
+      <div className="flex gap-1.5 mb-4 flex-wrap">
+        <button className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${!filterGraph ? 'bg-[#0a84ff] text-white' : 'bg-[#2a2a2e] text-[#86868b] hover:text-white'}`} onClick={() => setFilterGraph('')}>All</button>
+        {allGraphs.map((g) => (<button key={g} className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${filterGraph === g ? 'bg-[#0a84ff] text-white' : 'bg-[#2a2a2e] text-[#86868b] hover:text-white'}`} onClick={() => setFilterGraph(g)}>{g}</button>))}
       </div>
 
-      {/* Import dialog */}
+      {/* Import dialog - separate modal */}
       {showImport && (
-        <div className="mb-4 p-4 bg-[#2a2a2e] rounded-xl space-y-3">
-          {/* Graph selector */}
-          <div className="flex gap-3 items-center">
-            <select className="flex-1 px-3 py-2 rounded-xl bg-[#1c1c20] text-[#e5e5e7] text-sm border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff] appearance-none cursor-pointer" value={importGraph} onChange={(e) => setImportGraph(e.target.value)} style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23636366' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px center', paddingRight: '32px' }}>
+        <Modal title={t('knowledgeBase.import')} onClose={() => { setShowImport(false); setImportContent(''); setImportSteps([]); }}>
+          <div className="space-y-4">
+          <div>
+            <label className="block text-xs text-[#636366] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.graph')}</label>
+            <select className="w-full px-3 py-2 rounded-xl bg-[#1c1c20] text-[#e5e5e7] text-sm border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff] appearance-none cursor-pointer"
+              style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23636366' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px center', paddingRight: '32px' }}
+              value={importGraph} onChange={(e) => setImportGraph(e.target.value)}>
               {graphs.map((g) => <option key={g} value={g}>{g}</option>)}
             </select>
-            <select className="flex-1 px-3 py-2 rounded-xl bg-[#1c1c20] text-[#e5e5e7] text-sm border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff] appearance-none cursor-pointer" value={importProvider} onChange={(e) => setImportProvider(e.target.value)} style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23636366' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px center', paddingRight: '32px' }}>
-              {providers.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.model})</option>)}
+          </div>
+          <div>
+            <label className="block text-xs text-[#636366] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.model')}</label>
+            <select className="w-full px-3 py-2 rounded-xl bg-[#1c1c20] text-[#e5e5e7] text-sm border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff] appearance-none cursor-pointer"
+              style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23636366' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px center', paddingRight: '32px' }}
+              value={importProvider} onChange={(e) => setImportProvider(e.target.value)}>
+              {providers.flatMap((p) => {
+                const models = p.models || [p.model];
+                return models.map((m) => ({
+                  key: p.id + '/' + m,
+                  pid: p.id,
+                  label: p.name + '/' + m,
+                }));
+              }).map((opt) => (
+                <option key={opt.key} value={opt.pid}>{opt.label}</option>
+              ))}
             </select>
           </div>
 
-          {/* Text area */}
-          <textarea className="w-full h-28 px-3 py-2 rounded-xl bg-[#1c1c20] text-[#e5e5e7] text-sm border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff] placeholder-[#48484a] resize-none" placeholder="Paste markdown content or drag a .md file..." value={importContent} onChange={(e) => setImportContent(e.target.value)} />
+          <div>
+            <label className="block text-xs text-[#636366] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.content')}</label>
+            <textarea className="w-full h-28 px-3 py-2 rounded-xl bg-[#1c1c20] text-[#e5e5e7] text-sm border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff] placeholder-[#48484a] resize-none" placeholder={t('knowledgeBase.import') + '...'} value={importContent} onChange={(e) => setImportContent(e.target.value)} />
+          </div>
 
           {/* Action buttons */}
           <div className="flex gap-2 justify-between">
             <label className="px-3.5 py-1.5 rounded-xl bg-[#3a3a3e] text-[#86868b] hover:text-white text-xs font-medium cursor-pointer transition-all">
-              📄 Upload .md
+              {'📄'} {t('knowledgeBase.upload')}
               <input type="file" accept=".md,.markdown,.txt" className="hidden" onChange={handleFileUpload} disabled={!provider || importing} />
             </label>
             <div className="flex gap-2">
-              <button className="px-3.5 py-1.5 rounded-xl bg-[#3a3a3e] text-[#86868b] hover:text-white text-xs font-medium transition-all" onClick={() => { setShowImport(false); setImportContent(''); setImportSteps([]); }}>Cancel</button>
+              <button className="px-3.5 py-1.5 rounded-xl bg-[#3a3a3e] text-[#86868b] hover:text-white text-xs font-medium transition-all" onClick={() => { setShowImport(false); setImportContent(''); setImportSteps([]); }}>{t('panel.close')}</button>
               <button className="px-3.5 py-1.5 rounded-xl bg-[#0a84ff] text-white text-xs font-medium hover:bg-[#0a6ed9] transition-all shadow-sm" onClick={handleImportText} disabled={!importContent.trim() || !provider || importing}>
-                {importing ? 'Importing...' : 'Import'}
+                {importing ? t('knowledgeBase.import') + '...' : t('knowledgeBase.import')}
               </button>
             </div>
           </div>
@@ -282,30 +314,55 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
               {importSteps.map((step, i) => <ProgressStep key={i} {...step} />)}
             </div>
           )}
-        </div>
+          </div>
+        </Modal>
       )}
 
-      {/* Edit dialog */}
+      {/* Edit dialog - modal popup */}
       {showEdit && (
-        <div className="mb-4 p-4 bg-[#2a2a2e] rounded-xl space-y-3">
-          <textarea className="w-full h-32 px-3 py-2 rounded-xl bg-[#1c1c20] border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff] text-[#e5e5e7] text-sm placeholder-[#48484a] resize-none" value={editContent} onChange={(e) => setEditContent(e.target.value)} />
-          <div className="flex gap-2 justify-end">
-            <button className="px-3.5 py-1.5 rounded-xl bg-[#3a3a3e] text-[#86868b] hover:text-white text-xs font-medium transition-all" onClick={() => { setShowEdit(null); setEditContent(''); }}>Cancel</button>
-            <button className="px-3.5 py-1.5 rounded-xl bg-[#0a84ff] text-white text-xs font-medium hover:bg-[#0a6ed9] transition-all shadow-sm" onClick={handleSaveEdit} disabled={!editContent.trim() || !provider || importing}>
-              {importing ? 'Re-extracting...' : 'Save & Re-extract'}
-            </button>
-          </div>
-          {importSteps.length > 0 && (
-            <div className="bg-[#1c1c20] rounded-xl p-3 mt-2">
-              {importSteps.map((step, i) => <ProgressStep key={i} {...step} />)}
+        <Modal title={t('knowledgeBase.editTitle')} onClose={() => { setShowEdit(null); setEditTitle(''); setEditTags([]); setEditNewTag(''); }}>
+          <div className="space-y-4">
+            <div>
+              <label className="block text-xs text-[#636366] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.editTitle')}</label>
+              <input className="w-full px-3.5 py-2 rounded-xl bg-[#2a2a2e] text-[#e5e5e7] text-sm border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff] placeholder-[#48484a]"
+                type="text" value={editTitle} onChange={(e) => setEditTitle(e.target.value)} />
             </div>
-          )}
-        </div>
+            <div>
+              <label className="block text-xs text-[#636366] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.editTags')}</label>
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {editTags.map((tag, idx) => (
+                  <span key={idx} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[#3a3a3e] text-xs text-[#e5e5e7]">
+                    {tag}
+                    <button className="text-[#ff453a] hover:text-[#ff6961] text-[10px] font-medium" onClick={() => setEditTags(editTags.filter((_, i) => i !== idx))}>&times;</button>
+                  </span>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                <input className="flex-1 px-3 py-1.5 rounded-xl bg-[#2a2a2e] text-[#e5e5e7] text-xs border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff] placeholder-[#48484a]"
+                  type="text" placeholder={t('knowledgeBase.addTag')} value={editNewTag}
+                  onChange={(e) => setEditNewTag(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); if (editNewTag.trim() && !editTags.includes(editNewTag.trim())) { setEditTags([...editTags, editNewTag.trim()]); setEditNewTag(''); } } }} />
+                <button className="px-3 py-1.5 rounded-xl bg-[#3a3a3e] text-[#86868b] hover:text-white text-xs font-medium transition-all"
+                  onClick={() => { if (editNewTag.trim() && !editTags.includes(editNewTag.trim())) { setEditTags([...editTags, editNewTag.trim()]); setEditNewTag(''); } }}>{t('knowledgeBase.addTag')}</button>
+              </div>
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button className="px-4 py-2 rounded-xl bg-[#3a3a3e] text-[#86868b] hover:text-white text-sm font-medium transition-all" onClick={() => { setShowEdit(null); setEditTitle(''); setEditTags([]); setEditNewTag(''); }}>{t('panel.close')}</button>
+              <button className="px-4 py-2 rounded-xl bg-[#0a84ff] text-white text-sm font-medium hover:bg-[#0a6ed9] transition-all shadow-sm" onClick={handleSaveEdit} disabled={!editTitle.trim()}>
+                {t('settings.save')}
+              </button>
+            </div>
+          </div>
+        </Modal>
       )}
 
       {loading && <div className="text-center text-[#636366] text-sm py-8">Loading...</div>}
 
       {!loading && (
+        <>
+        <div className="mb-1">
+          <label className="block text-xs text-[#636366] font-medium mb-2 tracking-tight">{t('knowledgeBase.docList')}</label>
+        </div>
         <div className="space-y-1 max-h-60 overflow-y-auto">
           {filteredDocs.length === 0 && <div className="text-center text-[#636366] text-sm py-8">No documents yet</div>}
           {filteredDocs.map((doc) => (
@@ -313,6 +370,7 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
               <div className="flex-1 min-w-0">
                 <div className="text-sm text-[#e5e5e7] font-medium truncate">{doc.title}</div>
                 <div className="text-xs text-[#636366] mt-0.5">
+                  {doc.graph_name && <><span className="text-[#0a84ff]">{doc.graph_name}</span>{' · '}</>}
                   {doc.tags?.length > 0 && doc.tags.join(', ') + ' · '}
                   {new Date(doc.updated_at || doc.created_at).toLocaleDateString()}
                 </div>
@@ -324,6 +382,12 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
             </div>
           ))}
         </div>
+        <div className="mt-4">
+          <button className="w-full py-2.5 rounded-xl bg-[#0a84ff] text-white text-sm font-medium hover:bg-[#0a6ed9] transition-all shadow-sm" onClick={() => setShowImport(true)} disabled={!provider || importing}>
+            + {t('knowledgeBase.import')}
+          </button>
+        </div>
+        </>
       )}
     </Modal>
   );

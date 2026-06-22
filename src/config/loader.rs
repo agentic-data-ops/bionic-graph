@@ -16,7 +16,7 @@ pub fn config_file_path() -> PathBuf {
 /// Load settings from the config file, or create and save defaults.
 ///
 /// Priority (highest wins):
-/// 1. Environment variables (`BGRAPH_HOST`, `BGRAPH_PORT`, `BGRAPH_LLM_API_KEY`, etc.)
+/// 1. Environment variables (`BGRAPH_HOST`, `BGRAPH_PORT`, etc.)
 /// 2. `~/.config/bionic-graph/settings.json`
 /// 3. Built-in defaults
 pub fn load_or_create_settings() -> Settings {
@@ -49,20 +49,41 @@ pub fn load_or_create_settings() -> Settings {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Ok(json) = serde_json::to_string_pretty(&s) {
-            if let Err(e) = std::fs::write(&path, &json) {
-                log::warn!("Failed to write default config to {:?}: {}", path, e);
-            } else {
-                log::info!("Default config written to {:?}", path);
-            }
-        }
+        write_settings_inner(&path, &s);
         s
     };
 
-    // Environment variable overrides
+    // Environment variable overrides (only host/port/data-dir remain)
     apply_env_overrides(&mut settings);
 
     settings
+}
+
+/// Save settings back to the config file at the default path.
+pub fn save_settings(settings: &Settings) -> Result<(), String> {
+    let path = config_file_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create config dir: {}", e))?;
+    }
+    write_settings_inner(&path, settings);
+    Ok(())
+}
+
+/// Save settings to a specific path.
+fn write_settings_inner(path: &std::path::Path, settings: &Settings) {
+    match serde_json::to_string_pretty(settings) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(path, &json) {
+                log::error!("Failed to write config to {:?}: {}", path, e);
+            } else {
+                log::info!("Config saved to {:?}", path);
+            }
+        }
+        Err(e) => {
+            log::error!("Failed to serialize config: {}", e);
+        }
+    }
 }
 
 /// Override settings from environment variables where set.
@@ -75,17 +96,6 @@ fn apply_env_overrides(settings: &mut Settings) {
         if let Ok(port) = val.parse::<u16>() {
             settings.server.port = port;
         }
-    }
-
-    // Extraction
-    if std::env::var("BGRAPH_LLM_API_KEY").is_ok() || std::env::var("BGRAPH_EXTRACT_API_KEY").is_ok() {
-        log::info!("BGRAPH_LLM_API_KEY set via environment");
-    }
-    if let Ok(val) = std::env::var("BGRAPH_LLM_BASE_URL").or_else(|_| std::env::var("BGRAPH_EXTRACT_BASE_URL")) {
-        settings.extraction.api_base_url = val;
-    }
-    if let Ok(val) = std::env::var("BGRAPH_LLM_MODEL").or_else(|_| std::env::var("BGRAPH_EXTRACT_MODEL")) {
-        settings.extraction.model = val;
     }
 
     // Storage
@@ -112,20 +122,29 @@ mod tests {
         let json = serde_json::to_string_pretty(&s).unwrap();
         let parsed: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.server.port, 8080);
-        assert_eq!(parsed.extraction.model, "deepseek-v4-flash");
+        assert_eq!(parsed.llm.default_model, "DeepSeek/deepseek-v4-flash");
         assert_eq!(parsed.storage.data_dir, "data");
         assert_eq!(parsed.neural.default_threshold, 0.7);
     }
 
     #[test]
     fn test_load_nonexistent_creates_default() {
-        // Temporarily change HOME to a temp dir so no real config is touched
         let dir = tempdir().unwrap();
         std::env::set_var("HOME", dir.path());
         let s = load_or_create_settings();
         assert_eq!(s.server.port, 8080);
-        // Config file should now exist
         let path = config_file_path();
         assert!(path.exists());
+    }
+
+    #[test]
+    fn test_save_and_reload() {
+        let dir = tempdir().unwrap();
+        std::env::set_var("HOME", dir.path());
+        let mut s = Settings::default();
+        s.llm.default_model = "TestProvider/gpt-4".to_string();
+        save_settings(&s).unwrap();
+        let loaded = load_or_create_settings();
+        assert_eq!(loaded.llm.default_model, "TestProvider/gpt-4");
     }
 }

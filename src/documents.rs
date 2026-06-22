@@ -14,6 +14,7 @@ pub struct Document {
     pub tags: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub graph_name: String,
 }
 
 /// Document index stored on disk.
@@ -76,7 +77,7 @@ impl DocumentManager {
     }
 
     /// Add a new document. Stores content to file and metadata to index.
-    pub fn add(&self, id: &str, title: &str, content: &str, tags: &[String]) -> Document {
+    pub fn add(&self, id: &str, title: &str, content: &str, tags: &[String], graph_name: &str) -> Document {
         // Save content
         let file_path = self.docs_dir.join(format!("{}.md", id));
         fs::write(&file_path, content).ok();
@@ -88,6 +89,7 @@ impl DocumentManager {
             tags: tags.to_vec(),
             created_at: now.clone(),
             updated_at: now,
+            graph_name: graph_name.to_string(),
         };
 
         let mut index = self.index.lock().unwrap();
@@ -98,15 +100,15 @@ impl DocumentManager {
     }
 
     /// Update document content and metadata.
-    pub fn update(&self, id: &str, title: &str, content: &str, tags: &[String]) -> Option<Document> {
-        let file_path = self.docs_dir.join(format!("{}.md", id));
-        fs::write(&file_path, content).ok();
-
+    pub fn update(&self, id: &str, title: &str, tags: &[String], graph_name: Option<&str>) -> Option<Document> {
         let now = chrono::Utc::now().to_rfc3339();
         let mut index = self.index.lock().unwrap();
         if let Some(doc) = index.documents.iter_mut().find(|d| d.id == id) {
             doc.title = title.to_string();
             doc.tags = tags.to_vec();
+            if let Some(g) = graph_name {
+                doc.graph_name = g.to_string();
+            }
             doc.updated_at = now;
             let result = doc.clone();
             drop(index);

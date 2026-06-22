@@ -13,7 +13,9 @@ use tower_http::cors::CorsLayer;
 use crate::ui_serve::{ui_handler, ui_root_handler};
 use uuid::Uuid;
 
+use crate::config::{Settings, save_settings};
 use crate::graph_manager::GraphManager;
+use crate::extract::{ExtractionTaskManager, ExtractionConfig, TaskResponse};
 
 use crate::documents::DocumentManager;
 
@@ -27,6 +29,9 @@ use super::steps::{execute_query, execute_query_with_llm};
 pub struct AppState {
     pub graph_manager: Arc<Mutex<GraphManager>>,
     pub document_manager: DocumentManager,
+    pub task_manager: ExtractionTaskManager,
+    /// Mutable settings that can be updated at runtime via PUT /settings.
+    pub settings: Arc<Mutex<Settings>>,
 }
 
 /// Default graph name used when no X-Graph-Name header is present.
@@ -130,6 +135,10 @@ pub fn build_router(state: AppState) -> Router {
         // Vertex management
         .route("/vertices/:id", delete(delete_vertex_handler))
 
+        // Settings
+        .route("/settings", get(get_settings_handler))
+        .route("/settings", put(update_settings_handler))
+
         // Document management
         .route("/documents", get(list_documents_handler))
         .route("/documents", post(add_document_handler))
@@ -137,6 +146,13 @@ pub fn build_router(state: AppState) -> Router {
         .route("/documents/:id", put(update_document_handler))
         .route("/documents/:id", delete(delete_document_handler))
         .route("/documents/:id/content", get(get_document_content_handler))
+
+        // Document extraction (background task)
+        .route("/documents/:id/extract", post(start_extraction_handler))
+
+        // Extraction task status
+        .route("/extract/tasks", get(list_tasks_handler))
+        .route("/extract/tasks/:task_id", get(get_task_handler))
 
         // Re-index edges into neural network
         .route("/reindex", post(reindex_handler))
@@ -265,16 +281,24 @@ async fn add_vertex_handler(
     let mut g = handle.graph.lock().unwrap();
     let props: std::collections::HashMap<String, crate::graph::PropertyValue> = req
         .properties.into_iter().map(|(k, v)| (k, json_to_property(&v))).collect();
+    // Extract name for neuron keywords before props is moved
+    let name_keyword = props.get("name").and_then(|pv| {
+        if let crate::graph::PropertyValue::String(n) = pv { Some(n.clone()) } else { None }
+    });
     let id = g.create_vertex(labels.clone());
     if let Some(v) = g.get_vertex_mut(id) {
         v.properties = props;
     }
-    // Auto-create a neuron for this vertex
+    // Auto-create a neuron for this vertex (keywords include name for search)
     let nn_label = labels.first().cloned().unwrap_or_else(|| "entity".to_string());
+    let mut keywords = labels.clone();
+    if let Some(name) = name_keyword {
+        keywords.push(name);
+    }
     let neuron = crate::neuron::neuron::Neuron::for_vertex(
         (handle.neural_network.lock().unwrap().neuron_count() as u64) + 1,
         &nn_label, id,
-    ).with_keywords(labels);
+    ).with_keywords(keywords);
     handle.neural_network.lock().unwrap().add_neuron(neuron);
     Ok(Json(AddVertexResponse { id }))
 }
@@ -477,6 +501,50 @@ async fn delete_vertex_handler(
     Ok(Json(serde_json::json!({"success": true, "deleted": id})))
 }
 
+// ─── Settings ────────────────────────────────────────────────────
+
+/// GET /settings — Return full LLM settings (providers list with api_key).
+async fn get_settings_handler(
+    State(state): State<AppState>,
+) -> Json<Value> {
+    let s = state.settings.lock().unwrap();
+    Json(serde_json::json!({
+        "llm": {
+            "providers": s.llm.providers,
+            "default_model": s.llm.default_model,
+            "context_window": s.llm.context_window,
+            "max_output_tokens": s.llm.max_output_tokens,
+            "max_retries": s.llm.max_retries,
+        }
+    }))
+}
+
+#[derive(Deserialize)]
+struct UpdateLlmRequest {
+    providers: Vec<crate::config::LlmProvider>,
+    default_model: String,
+    context_window: Option<usize>,
+    max_output_tokens: Option<usize>,
+    max_retries: Option<u32>,
+}
+
+/// PUT /settings — Update full LLM settings and persist to file.
+async fn update_settings_handler(
+    State(state): State<AppState>,
+    Json(req): Json<UpdateLlmRequest>,
+) -> Json<Value> {
+    let mut s = state.settings.lock().unwrap();
+    s.llm.providers = req.providers;
+    s.llm.default_model = req.default_model;
+    if let Some(v) = req.context_window { s.llm.context_window = v; }
+    if let Some(v) = req.max_output_tokens { s.llm.max_output_tokens = v; }
+    if let Some(v) = req.max_retries { s.llm.max_retries = v; }
+
+    let _ = save_settings(&s);
+
+    Json(serde_json::json!({"success": true}))
+}
+
 // ─── Document Management ─────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -490,6 +558,8 @@ struct AddDocumentRequest {
     content: String,
     #[serde(default)]
     tags: Vec<String>,
+    #[serde(default)]
+    graph_name: String,
 }
 
 /// GET /documents — List all documents.
@@ -529,16 +599,16 @@ async fn add_document_handler(
     Json(req): Json<AddDocumentRequest>,
 ) -> Json<Value> {
     let id = uuid::Uuid::new_v4().to_string();
-    let doc = state.document_manager.add(&id, &req.title, &req.content, &req.tags);
+    let doc = state.document_manager.add(&id, &req.title, &req.content, &req.tags, &req.graph_name);
     Json(serde_json::json!(doc))
 }
 
 #[derive(Deserialize)]
 struct UpdateDocumentRequest {
     title: String,
-    content: String,
-    #[serde(default)]
     tags: Vec<String>,
+    #[serde(default)]
+    graph_name: Option<String>,
 }
 
 /// PUT /documents/{id} — Update document.
@@ -547,21 +617,143 @@ async fn update_document_handler(
     Path(id): Path<String>,
     Json(req): Json<UpdateDocumentRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    match state.document_manager.update(&id, &req.title, &req.content, &req.tags) {
+    match state.document_manager.update(&id, &req.title, &req.tags, req.graph_name.as_deref()) {
         Some(doc) => Ok(Json(serde_json::json!(doc))),
         None => Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Document not found"})))),
     }
 }
 
-/// DELETE /documents/{id} — Delete a document.
+/// DELETE /documents/{id} — Delete a document and its associated graph data.
 async fn delete_document_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    // Get doc metadata first (to find source_file in graph)
+    let doc = state.document_manager.get(&id)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Document not found"}))))?;
+
+    let doc_title = doc.title.clone();
+
+    // Clean up graph vertices associated with this document
+    let deleted_vertices = {
+        let gm = state.graph_manager.lock().unwrap();
+        if let Some(handle) = gm.get("default") {
+            let mut g = handle.graph.lock().unwrap();
+            use crate::graph::PropertyValue;
+            // Find vertices with matching source_file
+            let to_delete: Vec<u64> = g.vertex_ids()
+                .filter_map(|vid| {
+                    let v = g.get_vertex(*vid)?;
+                    if v.properties.get("source_file")
+                        .map_or(false, |pv| matches!(pv, PropertyValue::String(s) if s == &doc_title))
+                    {
+                        Some(*vid)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let count = to_delete.len();
+            for vid in to_delete {
+                // Remove connected edges first
+                let edge_ids: Vec<u64> = g.all_edges()
+                    .filter(|e| e.source == vid || e.target == vid)
+                    .map(|e| e.id)
+                    .collect();
+                for eid in edge_ids {
+                    let _ = g.remove_edge(eid);
+                }
+                g.remove_vertex(vid, true);
+            }
+            count
+        } else {
+            0
+        }
+    };
+
+    // Delete the document
     if state.document_manager.delete(&id) {
-        Ok(Json(serde_json::json!({"success": true})))
+        Ok(Json(serde_json::json!({
+            "success": true,
+            "deleted_vertices": deleted_vertices,
+        })))
     } else {
         Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Document not found"}))))
+    }
+}
+
+// ─── Document Extraction (Background Task) ────────────────────────
+
+/// POST /documents/{id}/extract — Start extraction for a document.
+async fn start_extraction_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let graph_name = resolve_graph_name(&headers);
+
+    // Check document exists
+    let doc = state.document_manager.get(&id)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Document not found"}))))?;
+
+    // Get document content
+    let content = state.document_manager.get_content(&id)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Document content not found"}))))?;
+
+    // Get graph handle from X-Graph-Name header
+    let (graph, neural) = {
+        let gm = state.graph_manager.lock().unwrap();
+        let handle = gm.get(&graph_name).ok_or_else(|| {
+            (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": format!("Graph '{}' not found", graph_name)})))
+        })?;
+        (handle.graph.clone(), handle.neural_network.clone())
+    };
+
+    let title = doc.title.clone();
+
+    // Build ExtractionConfig from current settings at runtime
+    let extract_config = {
+        let s = state.settings.lock().unwrap();
+        ExtractionConfig::from_llm_config(&s.llm)
+    };
+
+    let task_id = state.task_manager.submit_document_extraction(
+        extract_config,
+        id,
+        content,
+        title,
+        graph,
+        neural,
+    );
+
+    Ok(Json(serde_json::json!({
+        "task_id": task_id,
+        "status": "running",
+    })))
+}
+
+/// GET /extract/tasks — List all extraction tasks.
+async fn list_tasks_handler(
+    State(state): State<AppState>,
+) -> Json<Value> {
+    let tasks: Vec<TaskResponse> = state.task_manager.list_tasks()
+        .into_iter()
+        .map(|t| t.into())
+        .collect();
+    Json(serde_json::json!({ "tasks": tasks }))
+}
+
+/// GET /extract/tasks/{task_id} — Get extraction task status.
+async fn get_task_handler(
+    State(state): State<AppState>,
+    Path(task_id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    match state.task_manager.get_task(&task_id) {
+        Some(task) => {
+            let resp: TaskResponse = task.into();
+            Ok(Json(serde_json::json!(resp)))
+        }
+        None => Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Task not found"})))),
     }
 }
 

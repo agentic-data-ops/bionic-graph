@@ -29,6 +29,12 @@ export default function ChatArea({
   defaultGraph,
   onDefaultGraphChange,
   graphs,
+  tempModel,
+  onTempModelChange,
+  theme,
+  onThemeToggle,
+  language,
+  onLanguageToggle,
 }) {
   const { t } = useTranslation();
 
@@ -213,10 +219,18 @@ export default function ChatArea({
 
   return (
     <div className="flex-1 flex flex-col min-w-0 bg-[#1a1a1e]">
-      <div className="px-5 py-3 border-b border-[#2a2a2e] bg-[#1c1c20]">
+      <div className="px-5 py-3 border-b border-[#2a2a2e] bg-[#1c1c20] flex items-center justify-between">
         <h2 className="text-sm font-semibold text-[#e5e5e7] truncate tracking-tight">
           {activeConv?.title || t('chat.newChat')}
         </h2>
+        <div className="flex items-center gap-2 flex-shrink-0 ml-4">
+          <button className="w-7 h-7 rounded-lg bg-[#2a2a2e] hover:bg-[#3a3a3e] flex items-center justify-center text-xs transition-all" onClick={onThemeToggle} title={theme === 'dark' ? 'Light mode' : 'Dark mode'}>
+            {theme === 'dark' ? '☀️' : '🌙'}
+          </button>
+          <button className="px-2 py-1 rounded-lg bg-[#2a2a2e] text-[#86868b] hover:text-white hover:bg-[#3a3a3e] text-xs font-medium transition-all" onClick={onLanguageToggle}>
+            {language === 'zh' ? 'EN' : '中文'}
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 flex flex-col min-h-0">

@@ -200,10 +200,10 @@ export async function listDocuments() {
   return api('/documents');
 }
 
-export async function addDocument(title, content, tags = []) {
+export async function addDocument(title, content, tags = [], graphName = '') {
   return api('/documents', {
     method: 'POST',
-    body: JSON.stringify({ title, content, tags }),
+    body: JSON.stringify({ title, content, tags, graph_name: graphName }),
   });
 }
 
@@ -217,15 +217,70 @@ export async function getDocumentContent(id) {
   return res.text();
 }
 
-export async function updateDocument(id, title, content, tags = []) {
+export async function updateDocument(id, title, tags = [], graphName) {
   return api(`/documents/${encodeURIComponent(id)}`, {
     method: 'PUT',
-    body: JSON.stringify({ title, content, tags }),
+    body: JSON.stringify({ title, tags, graph_name: graphName || undefined }),
   });
 }
 
 export async function deleteDocument(id) {
   return api(`/documents/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+// ─── Settings Sync ───────────────────────────────────────────────
+
+/** Fetch full LLM settings from backend (providers, models, api_keys). */
+export async function fetchSettings() {
+  const res = await fetch('/settings');
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+/**
+ * Save full LLM providers config to backend.
+ * @param {Array} providers - [{ name, api_base_url, api_key, models: ["model1", "model2"] }]
+ * @param {string} defaultModel - "ProviderName/ModelName"
+ */
+export async function updateSettings(providers, defaultModel) {
+  const res = await fetch('/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      providers,
+      default_model: defaultModel,
+    }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+// ─── Document Extraction (Backend Task) ─────────────────────────
+
+/** Submit a document for background extraction. Returns { task_id, status } */
+export async function startDocumentExtraction(docId, graphName) {
+  const headers = {};
+  if (graphName) headers['X-Graph-Name'] = graphName;
+  const res = await fetch(`/documents/${encodeURIComponent(docId)}/extract`, {
+    method: 'POST',
+    headers,
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+/** Get extraction task status (with step progress). */
+export async function getExtractionTask(taskId) {
+  const res = await fetch(`/extract/tasks/${encodeURIComponent(taskId)}`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+/** List all extraction tasks. */
+export async function listExtractionTasks() {
+  const res = await fetch('/extract/tasks');
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
 }
 
 // ─── Vertex Management ───────────────────────────────────────────

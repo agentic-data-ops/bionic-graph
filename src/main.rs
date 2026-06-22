@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use clap::Parser;
 use bionic_graph::config::load_or_create_settings;
+use bionic_graph::extract::ExtractionTaskManager;
 use bionic_graph::graph_manager::GraphManager;
 use bionic_graph::memory_system::MemorySystem;
 
@@ -122,11 +123,19 @@ async fn main() {
         log::info!("Auto-save background thread started for all graphs");
     }
 
+    // Save host/port before moving settings into shared state
+    let host = settings.server.host.clone();
+    let port = settings.server.port;
+
+    // Shared settings (mutable at runtime via PUT /settings)
+    let shared_settings = Arc::new(Mutex::new(settings));
+    let task_manager = ExtractionTaskManager::new();
+
     // Build the router
-    let app = MemorySystem::into_router_with_manager(gm.clone());
+    let app = MemorySystem::into_router_with_manager(gm.clone(), task_manager, shared_settings);
 
     // Start server
-    let addr: SocketAddr = format!("{}:{}", settings.server.host, settings.server.port)
+    let addr: SocketAddr = format!("{}:{}", host, port)
         .parse()
         .expect("Invalid address");
 

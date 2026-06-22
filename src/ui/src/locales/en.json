@@ -89,5 +89,16 @@
   "search.filterEdgeLabel": "Edge label",
   "search.filterProperty": "Property",
   "knowledgeBase.title": "Knowledge Base",
-  "knowledgeBase.import": "Import"
+  "knowledgeBase.import": "Import",
+  "knowledgeBase.graph": "Graph",
+  "knowledgeBase.model": "Model",
+  "knowledgeBase.content": "Content",
+  "knowledgeBase.upload": "Upload",
+  "settings.defaultModel": "Default Model",
+  "knowledgeBase.tagFilter": "Tag filter",
+  "knowledgeBase.graphFilter": "Graph filter",
+  "knowledgeBase.docList": "Documents",
+  "knowledgeBase.editTitle": "Title",
+  "knowledgeBase.editTags": "Tags",
+  "knowledgeBase.addTag": "Add tag"
 }

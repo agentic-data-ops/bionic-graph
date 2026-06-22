@@ -82,5 +82,16 @@
   "settings.noProviders": "暂无供应商，添加一个开始聊天",
   "settings.defaultGraph": "默认图库",
   "knowledgeBase.title": "知识库",
-  "knowledgeBase.import": "导入"
+  "knowledgeBase.import": "导入",
+  "knowledgeBase.graph": "图库",
+  "knowledgeBase.model": "模型",
+  "knowledgeBase.content": "知识内容",
+  "knowledgeBase.upload": "上传",
+  "settings.defaultModel": "默认模型",
+  "knowledgeBase.tagFilter": "标签过滤",
+  "knowledgeBase.graphFilter": "图库过滤",
+  "knowledgeBase.docList": "文档列表",
+  "knowledgeBase.editTitle": "标题",
+  "knowledgeBase.editTags": "标签",
+  "knowledgeBase.addTag": "添加标签"
 }

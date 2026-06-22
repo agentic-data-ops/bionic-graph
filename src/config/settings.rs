@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 
 // ─── Server ──────────────────────────────────────────────────────
 
-/// Server listening configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ServerConfig {
@@ -12,45 +11,78 @@ pub struct ServerConfig {
 
 impl Default for ServerConfig {
     fn default() -> Self {
-        Self {
-            host: "127.0.0.1".to_string(),
-            port: 8080,
-        }
+        Self { host: "127.0.0.1".to_string(), port: 8080 }
     }
 }
 
-// ─── Extraction (LLM document parser) ────────────────────────────
+// ─── LLM Provider (multi-vendor, each with string-list of models) ─
 
-/// Document knowledge extraction configuration.
+/// A single LLM provider (vendor) with its API endpoint and model list.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmProvider {
+    pub name: String,
+    pub api_base_url: String,
+    pub api_key: String,
+    /// Model names as plain strings, e.g. ["deepseek-v4-flash", "deepseek-v4-pro"]
+    pub models: Vec<String>,
+}
+
+/// Full LLM configuration.
+/// `default_model` uses format `"<provider_name>/<model_name>"`, e.g. `"DeepSeek/deepseek-v4-flash"`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct ExtractionConfig {
-    pub api_base_url: String,
-    pub model: String,
+pub struct LlmConfig {
+    pub providers: Vec<LlmProvider>,
+    /// e.g. "DeepSeek/deepseek-v4-flash"
+    pub default_model: String,
     pub context_window: usize,
     pub max_output_tokens: usize,
     pub max_retries: u32,
-    pub concurrent_sections: usize,
-    pub pass_section_context: bool,
-    pub batch_size: usize,
 }
 
-impl Default for ExtractionConfig {
-    fn default() -> Self {
-        Self {
-            api_base_url: "https://api.deepseek.com/v1".to_string(),
-            model: "deepseek-v4-flash".to_string(),
-            context_window: 65536,
-            max_output_tokens: 16384,
-            max_retries: 3,
-            concurrent_sections: 1,
-            pass_section_context: true,
-            batch_size: 5,
+impl LlmConfig {
+    /// Parse `default_model` ("Provider/Model") into (provider_name, model_name).
+    pub fn parse_default_model(&self) -> (&str, &str) {
+        if let Some(slash) = self.default_model.find('/') {
+            let provider = &self.default_model[..slash];
+            let model = &self.default_model[slash + 1..];
+            (provider, model)
+        } else {
+            ("", &self.default_model)
+        }
+    }
+
+    /// Find the provider by name and return its api_key + api_base_url + resolved model name.
+    pub fn resolve_default(&self) -> (String, String, String) {
+        let (prov_name, model_name) = self.parse_default_model();
+        if let Some(prov) = self.providers.iter().find(|p| p.name == prov_name) {
+            (prov.api_key.clone(), prov.api_base_url.clone(), model_name.to_string())
+        } else if let Some(first) = self.providers.first() {
+            (first.api_key.clone(), first.api_base_url.clone(), model_name.to_string())
+        } else {
+            (String::new(), "https://api.deepseek.com/v1".to_string(), model_name.to_string())
         }
     }
 }
 
-// ─── Storage (disk-backed graph) ─────────────────────────────────
+impl Default for LlmConfig {
+    fn default() -> Self {
+        Self {
+            providers: vec![LlmProvider {
+                name: "DeepSeek".to_string(),
+                api_base_url: "https://api.deepseek.com/v1".to_string(),
+                api_key: String::new(),
+                models: vec!["deepseek-v4-flash".to_string(), "deepseek-v4-pro".to_string()],
+            }],
+            default_model: "DeepSeek/deepseek-v4-flash".to_string(),
+            context_window: 65536,
+            max_output_tokens: 16384,
+            max_retries: 3,
+        }
+    }
+}
+
+// ─── Storage ─────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -72,7 +104,7 @@ impl Default for StorageConfig {
     }
 }
 
-// ─── Graph (in-memory builder defaults) ──────────────────────────
+// ─── Graph ───────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -90,7 +122,7 @@ impl Default for GraphConfig {
     }
 }
 
-// ─── Neural (spreading activation defaults) ──────────────────────
+// ─── Neural ──────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -116,13 +148,11 @@ impl Default for NeuralConfig {
 
 // ─── Top-level Settings ──────────────────────────────────────────
 
-/// Complete application settings, deserialized from
-/// `~/.config/bionic-graph/settings.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub server: ServerConfig,
-    pub extraction: ExtractionConfig,
+    pub llm: LlmConfig,
     pub storage: StorageConfig,
     pub graph: GraphConfig,
     pub neural: NeuralConfig,
@@ -132,7 +162,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             server: ServerConfig::default(),
-            extraction: ExtractionConfig::default(),
+            llm: LlmConfig::default(),
             storage: StorageConfig::default(),
             graph: GraphConfig::default(),
             neural: NeuralConfig::default(),
