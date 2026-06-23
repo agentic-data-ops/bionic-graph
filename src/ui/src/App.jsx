@@ -29,7 +29,7 @@ const DEFAULT_SETTINGS = {
   defaultGraph: 'default',
   timeTravel: false,
   useGraph: false,
-  searchMode: 'semantic',
+  searchMode: 'keyword',
   chatModel: null,
 };
 
@@ -81,6 +81,8 @@ export default function App() {
   // ── UI state ──
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [knowledgeBaseOpen, setKnowledgeBaseOpen] = useState(false);
+  const [kbInitialContent, setKbInitialContent] = useState('');
+  const [kbInitialGraph, setKbInitialGraph] = useState('');
   const [graphs, setGraphs] = useState([]);
 
   // ── Theme ──
@@ -280,16 +282,23 @@ export default function App() {
         onThemeToggle={handleThemeToggle}
         language={i18n.language}
         onLanguageToggle={handleLanguageToggle}
+        onSaveToKB={(content) => {
+          setKbInitialContent(content);
+          setKbInitialGraph(settings.defaultGraph);
+          setKnowledgeBaseOpen(true);
+        }}
       />
 
       {/* Knowledge Base dialog */}
       <KnowledgeBase
         open={knowledgeBaseOpen}
-        onClose={() => setKnowledgeBaseOpen(false)}
+        onClose={() => { setKnowledgeBaseOpen(false); setKbInitialContent(''); }}
         providers={settings.providers}
         activeProvider={settings.activeProvider}
         defaultGraph={settings.defaultGraph}
         theme={theme}
+        initialContent={kbInitialContent}
+        initialGraph={kbInitialGraph}
       />
 
       {/* Settings dialog */}

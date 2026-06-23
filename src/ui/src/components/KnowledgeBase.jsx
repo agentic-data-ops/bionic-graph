@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  listDocuments, addDocument, updateDocument, deleteDocument, getDocumentContent,
-  addVertex, addEdge, deleteVertex, graphSearch, listGraphs,
+  chatCompletion, listDocuments, addDocument, updateDocument, deleteDocument, getDocumentContent,
+  addVertex, addEdge, deleteVertex, graphSearch, listGraphs, parseSSEStream,
   startDocumentExtraction, getExtractionTask,
 } from '../api';
 
@@ -101,7 +101,7 @@ function ProgressStep({ label, status, detail }) {
   );
 }
 
-export default function KnowledgeBase({ open, onClose, providers, activeProvider, defaultGraph, theme }) {
+export default function KnowledgeBase({ open, onClose, providers, activeProvider, defaultGraph, theme, initialContent, initialGraph }) {
   const { t } = useTranslation();
   const [documents, setDocuments] = useState([]);
   const [graphs, setGraphs] = useState([]);
@@ -112,6 +112,7 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
   const [importContent, setImportContent] = useState('');
   const [importGraph, setImportGraph] = useState(defaultGraph);
   const [importProvider, setImportProvider] = useState(activeProvider);
+  const [importModel, setImportModel] = useState(null);
   const [importSteps, setImportSteps] = useState([]);
   const [importing, setImporting] = useState(false);
   const [showEdit, setShowEdit] = useState(null);
@@ -120,11 +121,23 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
   const [editTags, setEditTags] = useState([]);
   const [editNewTag, setEditNewTag] = useState('');
 
-  const provider = providers.find((p) => p.id === importProvider);
+  const provider = (() => {
+    const p = providers.find((p) => p.id === importProvider);
+    if (!p) return p;
+    if (importModel) {
+      return { ...p, model: importModel };
+    }
+    return p;
+  })();
 
   useEffect(() => {
     if (open) {
       setLoading(true);
+      if (initialContent) {
+        setImportContent(initialContent);
+        setShowImport(true);
+      }
+      if (initialGraph) setImportGraph(initialGraph);
       Promise.all([
         listDocuments().then((d) => setDocuments(d.documents || [])).catch(() => {}),
         listGraphs().then((d) => setGraphs(d.graphs || [])).catch(() => {}),
@@ -298,16 +311,36 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
             <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.model')}</label>
             <select className="w-full px-3 py-2 rounded-xl bg-[var(--bg-secondary)] text-[var(--text-primary)] text-sm border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] appearance-none cursor-pointer"
               style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23636366' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px center', paddingRight: '32px' }}
-              value={importProvider} onChange={(e) => setImportProvider(e.target.value)}>
+              value={(() => {
+                const selProv = providers.find(p => p.id === importProvider);
+                if (!selProv) return '';
+                const effectiveModel = importModel || selProv.defaultModel || selProv.model;
+                return selProv.id + '/' + effectiveModel;
+              })()}
+              onChange={(e) => {
+                const val = e.target.value;
+                const [pid, ...rest] = val.split('/');
+                const modelName = rest.join('/');
+                setImportProvider(pid);
+                const p = providers.find(x => x.id === pid);
+                if (p && modelName === (p.defaultModel || p.model)) {
+                  setImportModel(null);
+                } else {
+                  setImportModel(modelName);
+                }
+              }}>
               {providers.flatMap((p) => {
                 const models = p.models || [p.model];
                 return models.map((m) => ({
                   key: p.id + '/' + m,
                   pid: p.id,
-                  label: p.name + '/' + m,
+                  model: m,
+                  // Only mark as default globally-active provider + its default model
+                  isDefault: p.id === activeProvider && m === (p.defaultModel || p.model),
+                  label: p.name + '/' + m + (p.id === activeProvider && m === (p.defaultModel || p.model) ? ' (默认)' : ''),
                 }));
               }).map((opt) => (
-                <option key={opt.key} value={opt.pid}>{opt.label}</option>
+                <option key={opt.key} value={opt.key}>{opt.label}</option>
               ))}
             </select>
           </div>

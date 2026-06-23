@@ -1381,7 +1381,7 @@ mod tests {
         let g = setup_graph();
         let nn = setup_neural_network();
         let resp = run_query(&g, &nn, vec![
-            TraversalStep::Search { keywords: vec!["person".into()] },
+            TraversalStep::Search { keywords: vec!["person".into()], mode: None },
         ]);
         // Search through neural network — may return results or empty
         assert!(resp.success, "Search should succeed");

@@ -2,8 +2,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use crate::config::settings::NeuralConfig;
 use crate::graph::Graph;
-use crate::neuron::NeuralNetwork;
+use crate::neuron::{ActivationConfig, LearningConfig, NeuralNetwork};
 use crate::persistence::{self, AutoSaveConfig};
 use crate::storage::RedologWal;
 
@@ -29,6 +30,8 @@ impl GraphHandle {
 pub struct GraphManager {
     graphs: HashMap<String, GraphHandle>,
     data_root: PathBuf,
+    /// Stored neural config used when creating new neural networks.
+    neural_config: NeuralConfig,
 }
 
 impl GraphManager {
@@ -36,10 +39,14 @@ impl GraphManager {
     ///
     /// Scans `data_root/graphs/` for subdirectories, opens each one as a graph.
     /// If no graphs exist, creates a `"default"` graph.
-    pub fn open(data_root: impl Into<PathBuf>) -> Result<Self, String> {
+    /// `neural_config` provides activation and learning parameters for new NeuralNetworks.
+    pub fn open(data_root: impl Into<PathBuf>, neural_config: &NeuralConfig) -> Result<Self, String> {
         let data_root: PathBuf = data_root.into();
         let graphs_root = data_root.join("graphs");
         std::fs::create_dir_all(&graphs_root).map_err(|e| format!("Cannot create graphs dir: {}", e))?;
+
+        let neural_config = neural_config.clone();
+        let (act_cfg, learn_cfg) = Self::neural_to_configs(&neural_config);
 
         let mut graphs = HashMap::new();
 
@@ -51,7 +58,7 @@ impl GraphManager {
                     if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                         // Check if there's any graph data in this directory
                         if path.join("graph.bin").exists() || path.join("neural.bin").exists() {
-                            match Self::open_graph(name, &path) {
+                            match Self::open_graph(name, &path, &act_cfg, &learn_cfg) {
                                 Ok(handle) => {
                                     graphs.insert(name.to_string(), handle);
                                 }
@@ -68,7 +75,7 @@ impl GraphManager {
         // If no graphs found, create default
         if graphs.is_empty() {
             let default_path = graphs_root.join("default");
-            let handle = Self::create_graph_internal("default", &default_path, false)?;
+            let handle = Self::create_graph_internal("default", &default_path, false, &act_cfg, &learn_cfg)?;
             graphs.insert("default".to_string(), handle);
             log::info!("Created default graph at {:?}", default_path);
         }
@@ -79,7 +86,7 @@ impl GraphManager {
             data_root
         );
 
-        Ok(Self { graphs, data_root })
+        Ok(Self { graphs, data_root, neural_config })
     }
 
     /// Create a new named graph.
@@ -100,7 +107,8 @@ impl GraphManager {
         if path.exists() {
             return Err(format!("Directory already exists: {:?}", path));
         }
-        let handle = Self::create_graph_internal(name, &path, time_travel)?;
+        let (act_cfg, learn_cfg) = Self::neural_to_configs(&self.neural_config);
+        let handle = Self::create_graph_internal(name, &path, time_travel, &act_cfg, &learn_cfg)?;
         self.graphs.insert(name.to_string(), handle.clone());
         Ok(handle)
     }
@@ -147,6 +155,7 @@ impl GraphManager {
         Self {
             graphs: HashMap::new(),
             data_root: data_root.into(),
+            neural_config: NeuralConfig::default(),
         }
     }
 
@@ -164,9 +173,39 @@ impl GraphManager {
         self.graphs.is_empty()
     }
 
+    // ─── Config conversion ─────────────────────────────────────
+
+    /// Convert a `NeuralConfig` (from settings) into `ActivationConfig` + `LearningConfig`.
+    fn neural_to_configs(nc: &NeuralConfig) -> (ActivationConfig, LearningConfig) {
+        let search_mode = if nc.search.default_search_mode.eq_ignore_ascii_case("exact") {
+            crate::neuron::SearchMode::Exact
+        } else {
+            crate::neuron::SearchMode::Greedy
+        };
+        let act = ActivationConfig {
+            max_ticks: nc.activate.max_ticks,
+            hot_threshold: nc.activate.hot_threshold,
+            search_mode,
+            min_synapse_strength: nc.activate.min_synapse_strength,
+            auto_stabilize: nc.activate.auto_stabilize,
+            greedy_exact_score: nc.search.greedy_exact_score,
+            greedy_partial_score: nc.search.greedy_partial_score,
+            exact_min_score: nc.search.exact_min_score,
+            fuzzy_match_enabled: nc.search.fuzzy_match_enabled,
+            fuzzy_match_threshold: nc.search.fuzzy_match_threshold,
+        };
+        let learn = LearningConfig {
+            enabled: nc.learn.enabled,
+            co_fire_window: nc.learn.co_fire_window,
+            min_plasticity: nc.learn.min_plasticity,
+            synaptic_decay: nc.learn.synaptic_decay,
+        };
+        (act, learn)
+    }
+
     // ─── Internal helpers ──────────────────────────────────────
 
-    fn open_graph(name: &str, data_dir: &Path) -> Result<GraphHandle, String> {
+    fn open_graph(name: &str, data_dir: &Path, act_cfg: &ActivationConfig, learn_cfg: &LearningConfig) -> Result<GraphHandle, String> {
         let config = AutoSaveConfig {
             graph_path: data_dir.join("graph.bin"),
             neural_path: data_dir.join("neural.bin"),
@@ -174,7 +213,7 @@ impl GraphManager {
             ..Default::default()
         };
 
-        let (mut graph, mut neural_network) = persistence::load_or_create(&config)
+        let (mut graph, mut neural_network) = persistence::load_or_create(&config, act_cfg, learn_cfg)
             .map_err(|e| format!("Failed to load graph '{}': {}", name, e))?;
 
         // Open unified WAL and replay un-persisted mutations atomically
@@ -194,10 +233,10 @@ impl GraphManager {
         })
     }
 
-    fn create_graph_internal(name: &str, data_dir: &Path, time_travel: bool) -> Result<GraphHandle, String> {
+    fn create_graph_internal(name: &str, data_dir: &Path, time_travel: bool, act_cfg: &ActivationConfig, learn_cfg: &LearningConfig) -> Result<GraphHandle, String> {
         std::fs::create_dir_all(data_dir)
             .map_err(|e| format!("Cannot create graph dir: {}", e))?;
-        let handle = Self::open_graph(name, data_dir)?;
+        let handle = Self::open_graph(name, data_dir, act_cfg, learn_cfg)?;
         // Set time_travel on the underlying Graph
         if time_travel {
             if let Ok(mut g) = handle.graph.lock() {

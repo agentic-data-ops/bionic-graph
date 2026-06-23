@@ -1,3 +1,5 @@
+use std::cmp::{max, min};
+
 use serde::{Deserialize, Serialize};
 
 use crate::graph::{EdgeId, VertexId};
@@ -49,6 +51,90 @@ impl Default for SearchMode {
     fn default() -> Self {
         Self::Greedy
     }
+}
+
+/// Configurable scores and thresholds for keyword matching in search.
+#[derive(Debug, Clone, Copy)]
+pub struct ScoreConfig {
+    pub search_mode: SearchMode,
+    /// Score for exact keyword match in greedy mode.
+    pub greedy_exact_score: f32,
+    /// Score for partial (substring) keyword match in greedy mode.
+    pub greedy_partial_score: f32,
+    /// Minimum score threshold for exact mode match.
+    pub exact_min_score: f32,
+    /// Enable Levenshtein-distance fuzzy matching fallback.
+    pub fuzzy_match_enabled: bool,
+    /// Normalized Levenshtein threshold (0.0 = exact, 1.0 = any).
+    pub fuzzy_match_threshold: f32,
+}
+
+impl ScoreConfig {
+    /// Create a ScoreConfig from activation parameters.
+    pub fn new(
+        search_mode: SearchMode,
+        greedy_exact_score: f32,
+        greedy_partial_score: f32,
+        exact_min_score: f32,
+        fuzzy_match_enabled: bool,
+        fuzzy_match_threshold: f32,
+    ) -> Self {
+        Self {
+            search_mode,
+            greedy_exact_score,
+            greedy_partial_score,
+            exact_min_score,
+            fuzzy_match_enabled,
+            fuzzy_match_threshold,
+        }
+    }
+}
+
+impl Default for ScoreConfig {
+    fn default() -> Self {
+        Self {
+            search_mode: SearchMode::Greedy,
+            greedy_exact_score: 1.0,
+            greedy_partial_score: 0.8,
+            exact_min_score: 0.5,
+            fuzzy_match_enabled: false,
+            fuzzy_match_threshold: 0.6,
+        }
+    }
+}
+
+/// Compute normalized Levenshtein similarity between two strings.
+/// Returns 1.0 - (edit_distance / max_len), i.e. 1.0 = identical, 0.0 = completely different.
+pub fn levenshtein_similarity(a: &str, b: &str) -> f32 {
+    if a.is_empty() && b.is_empty() {
+        return 1.0;
+    }
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let a_len = a_chars.len();
+    let b_len = b_chars.len();
+    let max_len = max(a_len, b_len);
+    if max_len == 0 {
+        return 1.0;
+    }
+
+    // Use two-row DP for efficiency
+    let mut prev: Vec<usize> = (0..=b_len).collect();
+    let mut curr: Vec<usize> = vec![0; b_len + 1];
+
+    for i in 1..=a_len {
+        curr[0] = i;
+        for j in 1..=b_len {
+            let cost = if a_chars[i - 1] == b_chars[j - 1] { 0 } else { 1 };
+            curr[j] = min(
+                min(curr[j - 1] + 1, prev[j] + 1),
+                prev[j - 1] + cost,
+            );
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+
+    1.0 - (prev[b_len] as f32 / max_len as f32)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -153,29 +239,49 @@ impl Neuron {
 
     /// Check if any keyword matches the given query tokens.
     /// Returns the maximum match score (0.0 = no match, 1.0 = exact keyword match).
-    pub fn match_keywords(&self, query_tokens: &[&str], mode: &SearchMode) -> f32 {
+    pub fn match_keywords(&self, query_tokens: &[&str], scores: &ScoreConfig) -> f32 {
         let lower_keywords: Vec<String> = self.keywords.iter().map(|k| k.to_lowercase()).collect();
         let lower_tokens: Vec<String> = query_tokens.iter().map(|t| t.to_lowercase()).collect();
-        match mode {
+        let fuzzy_enabled = scores.fuzzy_match_enabled;
+        let fuzzy_threshold = scores.fuzzy_match_threshold;
+
+        match scores.search_mode {
             SearchMode::Exact => {
+                // All tokens must match (exactly, by substring, or via fuzzy)
                 for token in &lower_tokens {
                     let any_match = lower_keywords.iter().any(|k| {
-                        k == token || k.contains(token.as_str()) || token.contains(k.as_str())
+                        k == token
+                            || k.contains(token.as_str())
+                            || token.contains(k.as_str())
+                            || (fuzzy_enabled && levenshtein_similarity(k, token) >= fuzzy_threshold)
                     });
                     if !any_match {
                         return 0.0;
                     }
                 }
-                lower_tokens.iter().filter(|t| lower_keywords.iter().any(|k| k == *t)).count() as f32 / lower_tokens.len().max(1) as f32
+                // Score = ratio of tokens that matched exactly
+                let exact_count = lower_tokens.iter()
+                    .filter(|t| lower_keywords.iter().any(|k| k == *t))
+                    .count();
+                let ratio = exact_count as f32 / lower_tokens.len().max(1) as f32;
+                if ratio >= scores.exact_min_score { ratio } else { 0.0 }
             }
             SearchMode::Greedy => {
                 for token in query_tokens {
                     let lower_token = token.to_lowercase();
+                    // Exact match
                     if lower_keywords.iter().any(|k| k == &lower_token) {
-                        return 1.0;
+                        return scores.greedy_exact_score;
                     }
+                    // Substring/partial match
                     if lower_keywords.iter().any(|k| k.contains(&lower_token) || lower_token.contains(k.as_str())) {
-                        return 0.8;
+                        return scores.greedy_partial_score;
+                    }
+                    // Fuzzy match fallback
+                    if fuzzy_enabled {
+                        if lower_keywords.iter().any(|k| levenshtein_similarity(k, &lower_token) >= fuzzy_threshold) {
+                            return scores.greedy_partial_score.max(scores.fuzzy_match_threshold);
+                        }
                     }
                 }
                 0.0

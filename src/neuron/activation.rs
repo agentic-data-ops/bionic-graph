@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::graph::{EdgeId, VertexId};
 
-use super::neuron::{Neuron, NeuronId, Synapse, SearchMode};
+use super::neuron::{Neuron, NeuronId, ScoreConfig, Synapse};
 #[derive(Debug, Clone, Default)]
 pub struct TickResult {
     /// Neurons that fired this tick.
@@ -24,11 +24,25 @@ pub struct ActivationConfig {
     pub hot_threshold: f32,
     /// Search mode: Greedy (any keyword match) or Exact (all keywords).
     #[serde(default)]
-    pub search_mode: SearchMode,
+    pub search_mode: crate::neuron::SearchMode,
     /// Minimum strength for a synapse to pass activation.
     pub min_synapse_strength: f32,
     /// Whether to run until no more neurons fire (auto-stabilize).
     pub auto_stabilize: bool,
+
+    // ── Search score thresholds ────────────────────────────
+    /// Score for exact keyword match in greedy mode.
+    pub greedy_exact_score: f32,
+    /// Score for partial (substring) keyword match in greedy mode.
+    pub greedy_partial_score: f32,
+    /// Minimum score threshold for exact mode match.
+    pub exact_min_score: f32,
+
+    // ── Fuzzy matching ─────────────────────────────────────
+    /// Enable Levenshtein-distance fuzzy matching fallback.
+    pub fuzzy_match_enabled: bool,
+    /// Normalized Levenshtein threshold (0.0 = exact, 1.0 = any).
+    pub fuzzy_match_threshold: f32,
 }
 
 impl Default for ActivationConfig {
@@ -36,9 +50,14 @@ impl Default for ActivationConfig {
         Self {
             max_ticks: 20,
             hot_threshold: 0.3,
-            search_mode: SearchMode::Greedy,
+            search_mode: crate::neuron::SearchMode::Greedy,
             min_synapse_strength: 0.01,
             auto_stabilize: true,
+            greedy_exact_score: 1.0,
+            greedy_partial_score: 0.8,
+            exact_min_score: 0.5,
+            fuzzy_match_enabled: false,
+            fuzzy_match_threshold: 0.6,
         }
     }
 }
@@ -126,7 +145,15 @@ pub fn search(
 ) -> (Vec<(VertexId, u32)>, Vec<(EdgeId, u32)>, Vec<NeuronId>, Vec<NeuronId>, usize) {
     // Step 1: Activate input neurons by keyword matching
     for neuron in neurons.values_mut() {
-        let score = neuron.match_keywords(query_tokens, &config.search_mode);
+        let score_config = ScoreConfig::new(
+            config.search_mode,
+            config.greedy_exact_score,
+            config.greedy_partial_score,
+            config.exact_min_score,
+            config.fuzzy_match_enabled,
+            config.fuzzy_match_threshold,
+        );
+        let score = neuron.match_keywords(query_tokens, &score_config);
         if score > 0.0 {
             neuron.activation = score;
         }
@@ -246,9 +273,10 @@ mod tests {
     fn test_keyword_activation() {
         let mut n = Neuron::new(1, "test");
         n.keywords = vec!["hello".to_string(), "world".to_string()];
-        assert_eq!(n.match_keywords(&["hello"], &SearchMode::Greedy), 1.0);
-        assert_eq!(n.match_keywords(&["world"], &SearchMode::Greedy), 1.0);
-        assert_eq!(n.match_keywords(&["nope"], &SearchMode::Greedy), 0.0);
+        let greedy_scores = ScoreConfig::new(crate::neuron::SearchMode::Greedy, 1.0, 0.8, 0.5, false, 0.6);
+        assert_eq!(n.match_keywords(&["hello"], &greedy_scores), 1.0);
+        assert_eq!(n.match_keywords(&["world"], &greedy_scores), 1.0);
+        assert_eq!(n.match_keywords(&["nope"], &greedy_scores), 0.0);
     }
 
     #[test]
@@ -278,6 +306,12 @@ mod tests {
             hot_threshold: 0.1,
             min_synapse_strength: 0.01,
             auto_stabilize: true,
+            search_mode: crate::neuron::SearchMode::Greedy,
+            greedy_exact_score: 1.0,
+            greedy_partial_score: 0.8,
+            exact_min_score: 0.5,
+            fuzzy_match_enabled: false,
+            fuzzy_match_threshold: 0.6,
         };
 
         let (vertices, _edges, fired, hot, ticks) = search(&mut neurons, &synapses, &config, &["ai"]);

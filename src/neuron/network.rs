@@ -43,6 +43,18 @@ impl NeuralNetwork {
         Self::default()
     }
 
+    /// Create a new NeuralNetwork with the given activation and learning configs.
+    pub fn with_config(activation_config: ActivationConfig, learning_config: LearningConfig) -> Self {
+        Self {
+            neurons: HashMap::new(),
+            synapses: HashMap::new(),
+            activation_config,
+            learning_config,
+            total_ticks: 0,
+            dirty: false,
+        }
+    }
+
     // ─── Neuron Management ────────────────────────────────────────
 
     /// Add a neuron to the network.

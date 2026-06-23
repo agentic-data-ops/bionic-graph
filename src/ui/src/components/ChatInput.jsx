@@ -23,8 +23,12 @@ const ChatInput = forwardRef(function ChatInput({
 }, ref) {
   const { t } = useTranslation();
   const [text, setText] = useState('');
+  const [kwModeOpen, setKwModeOpen] = useState(false);
   const textareaRef = useRef(null);
-  useImperativeHandle(ref, () => ({ focus: () => textareaRef.current?.focus() }), []);
+  useImperativeHandle(ref, () => ({
+    focus: () => textareaRef.current?.focus(),
+    setText: (t) => setText(t),
+  }), []);
 
   useEffect(() => {
     const ta = textareaRef.current;
@@ -123,11 +127,30 @@ const ChatInput = forwardRef(function ChatInput({
               >{t('chat.semantic')}</button>
             </div>
             {searchMode === 'keyword' && (
-              <button
-                className={`px-2 py-1 text-[10px] font-mono rounded-lg transition-all ${kwSearchMode === 'exact' ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}
-                onClick={() => onkwSearchModeChange(kwSearchMode === 'exact' ? 'greedy' : 'exact')}
-                title={t('chat.kwModeHint')}
-              >{kwSearchMode === 'exact' ? 'ALL' : 'ANY'}</button>
+              <div className="relative">
+                <button
+                  className="px-2 py-1 text-[10px] rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-all font-medium flex items-center gap-1"
+                  onClick={(e) => { e.stopPropagation(); setKwModeOpen(!kwModeOpen); }}
+                >
+                  {kwSearchMode === 'exact' ? t('chat.exact') : t('chat.greedy')}
+                  <svg className={`w-2.5 h-2.5 transition-transform ${kwModeOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
+                </button>
+                {kwModeOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setKwModeOpen(false)} />
+                    <div className="absolute right-0 top-full mt-1 z-50 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-lg overflow-hidden min-w-[130px]">
+                      <button
+                        className={`w-full text-left px-3 py-2 text-xs font-medium transition-all ${kwSearchMode === 'greedy' ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
+                        onClick={() => { onkwSearchModeChange('greedy'); setKwModeOpen(false); }}
+                      >{t('chat.greedy')}</button>
+                      <button
+                        className={`w-full text-left px-3 py-2 text-xs font-medium transition-all ${kwSearchMode === 'exact' ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
+                        onClick={() => { onkwSearchModeChange('exact'); setKwModeOpen(false); }}
+                      >{t('chat.exact')}</button>
+                    </div>
+                  </>
+                )}
+              </div>
             )}
           </>
         )}

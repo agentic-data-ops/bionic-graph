@@ -35,6 +35,7 @@ export default function ChatArea({
   onThemeToggle,
   language,
   onLanguageToggle,
+  onSaveToKB,
 }) {
   const { t } = useTranslation();
   const [langOpen, setLangOpen] = useState(false);
@@ -114,7 +115,9 @@ export default function ChatArea({
           }
 
           // Step 2 (or only step for keyword): Search graph
-          const res = await graphSearch(keywordsArr, defaultGraph, kwSearchMode);
+          // When semantic mode, always use greedy for the API call
+          const effectiveKwMode = isSemantic ? 'greedy' : kwSearchMode;
+          const res = await graphSearch(keywordsArr, defaultGraph, effectiveKwMode);
 
           if (!isSemantic) {
             const doneSteps = [{ icon: '✅', name: 'Graph search completed', status: 'done', llmOutput: '' }];
@@ -174,10 +177,12 @@ export default function ChatArea({
           setSearchStream(null);
           const finalSteps = [step1done, step2done, { icon: '✅', name: 'Filtering completed', status: 'done', llmOutput: filterBuf }];
           onUpdateConv({ ...conv, messages: [...updatedMsgs, { ...progressMsg, steps: finalSteps, graphData: filteredData, graphName: defaultGraph }] });
+          chatInputRef.current?.focus();
         } catch (e) {
           const failedSteps = (steps || []).map((s) => ({ ...s, status: 'failed' }));
           setSearchStream(null);
           onUpdateConv({ ...conv, messages: [...updatedMsgs, { ...progressMsg, steps: failedSteps }] });
+          chatInputRef.current?.focus();
         }
       } else {
         // ── LLM mode: streaming chat ──
@@ -209,6 +214,7 @@ export default function ChatArea({
               });
             },
           );
+          chatInputRef.current?.focus();
         } catch (e) {
           if (e.name === 'AbortError') return;
           onUpdateConv({
@@ -257,7 +263,10 @@ export default function ChatArea({
       </div>
 
       <div className="flex-1 flex flex-col min-h-0">
-        <MessageList messages={messages} searchStream={searchStream} theme={theme} />
+        <MessageList messages={messages} searchStream={searchStream} theme={theme}
+          onEdit={(text) => { chatInputRef.current?.setText(text); chatInputRef.current?.focus(); }}
+          onSaveToKB={onSaveToKB}
+        />
       </div>
 
       <ChatInput

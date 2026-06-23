@@ -19,7 +19,7 @@ Bionic-Graph is a **low-cost AI memory system** that combines a knowledge graph 
 │  LLM Chat (SSE)  |  Semantic Search  |  Document Extraction   │
 ├──────────────────────────────────────────────────────────────┤
 │                    REST API (axum, embedded in binary)         │
-│  /gremlin  |  /vertices  |  /edges  |  /documents  |  /search │
+│  /gremlin  |  /vertices  |  /edges  |  /documents  |  /search  |  /settings │
 ├──────────────────────────────────────────────────────────────┤
 │              Neural Index (spreading activation)               │
 │  keyword → neuron activation → spread → entity find           │
@@ -43,7 +43,7 @@ Bionic-Graph is a **low-cost AI memory system** that combines a knowledge graph 
 | **Gremlin API** | `src/gremlin/` | JSON pipeline over HTTP. 15 steps: V, E, has, hasNot, hasKey, hasValue, hasLabel, hasText, out(depth), in, both, outE, inE, bothE, values, limit, count, dedup, repeat, timeTravel, compact, search. |
 | **Storage** | `src/storage/` | Subgraph partitioning + LRU cache. WAL (CRC32, checkpoint, crash recovery). Version log (.vlog) with sparse index for archived history. Compaction orchestrator. |
 | **Documents** | `src/documents.rs` | Markdown file management with JSON index. CRUD via REST API. |
-| **Extraction** | `src/extract/` | (Legacy, backend-side) Markdown → LLM → entities/relations. New extraction is frontend-side. |
+| **Extraction** | `src/extract/` | Async extraction pipeline: Markdown → LLM → entities/relations. Frontend calls `POST /documents/:id/extract` (backend) or LLM directly. |
 | **Graph Manager** | `src/graph_manager.rs` | Multiple named graphs, each persisted to `data/graphs/{name}/`. Manage via REST API. |
 | **Config** | `src/config/` | `~/.config/bionic-graph/settings.json` with env var overrides. Auto-generates defaults. |
 
@@ -119,7 +119,7 @@ After frontend changes, `touch src/ui_serve.rs` is required to force Rust recomp
 
 ### Settings
 
-Auto-created at `~/.config/bionic-graph/settings.json` if not present. Full reference in `REASONIX.md`.
+Auto-created at `~/.config/bionic-graph/settings.json` if not present. Neural config is nested under `activate`/`search`/`learn` groups. Full reference in `REASONIX.md`.
 
 Required: `BGRAPH_LLM_API_KEY` env var for backend LLM features.
 
@@ -192,17 +192,22 @@ curl localhost:8080/documents/{id}/content
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/health` | System health |
-| `PUT` | `/vertices/:id` | Update vertex name/keywords/labels/properties |
+| `GET` | `/extract/tasks` | List extraction tasks |
+| `POST` | `/documents/:id/extract` | Trigger backend document extraction (async) |
+| `GET` | `/extract/task/:task_id` | Poll extraction task progress |
+| `PUT` | `/vertices/:id` | Update vertex name/keywords/document/labels/properties |
 | `PUT` | `/edges/:id` | Update edge label/properties |
 | `DELETE` | `/vertices/:id` | Delete vertex + connected edges |
 | `POST` | `/reindex` | Re-index edges into neural network |
 | `POST` | `/compact` | History compaction |
+| `GET/PUT` | `/settings` | LLM providers config |
+| `GET/PUT` | `/settings/neural` | Neural activation/search/learn config |
 
 ### Supported Gremlin steps
 
 | Step | Parameters | Description |
 |------|-----------|-------------|
-| `search` | `keywords: [string]` | 🔥 Neural index search (vertices + edges) |
+| `search` | `keywords: [string], mode?: "greedy"\|"exact"` | 🔥 Neural index search (vertices + edges) |
 | `V` | `ids?: [number]` | All or specific vertices |
 | `E` | `ids?: [number]` | All or specific edges |
 | `has` | `key, value` | Exact property filter |

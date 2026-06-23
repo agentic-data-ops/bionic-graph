@@ -9,6 +9,7 @@ pub enum TraversalStep {
     #[serde(rename = "search")]
     Search {
         keywords: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         mode: Option<String>,
     },
 
@@ -481,17 +482,21 @@ mod tests {
         let result = VertexResult {
             element_type: "vertex".into(),
             id: 42,
+            name: "Alice".into(),
+            keywords: vec![],
+            document: "".into(),
             labels: vec!["person".into()],
             properties: {
                 let mut m = std::collections::HashMap::new();
-                m.insert("name".into(), serde_json::json!("Alice"));
+                m.insert("extra".into(), serde_json::json!("info"));
                 m
             },
         };
         let json = serde_json::to_string(&result).unwrap();
         let deserialized: VertexResult = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.id, 42);
-        assert_eq!(deserialized.properties["name"], "Alice");
+        assert_eq!(deserialized.name, "Alice");
+        assert_eq!(deserialized.properties["extra"], "info");
     }
 
     #[test]

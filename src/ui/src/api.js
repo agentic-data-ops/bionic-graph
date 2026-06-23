@@ -255,6 +255,29 @@ export async function updateSettings(providers, defaultModel) {
   return res.json();
 }
 
+// ─── Neural Search Config ───────────────────────────────────────
+
+/** Fetch current neural/search configuration from backend. */
+export async function fetchNeuralConfig() {
+  const res = await fetch('/settings/neural');
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+/**
+ * Update neural/search configuration on the backend.
+ * @param {Object} config - Partial neural config fields to update.
+ */
+export async function updateNeuralConfig(config) {
+  const res = await fetch('/settings/neural', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 // ─── Document Extraction (Backend Task) ─────────────────────────
 
 /** Submit a document for background extraction. Returns { task_id, status } */

@@ -8,7 +8,7 @@ use super::graph_store;
 use super::neuron_store;
 use super::StoreError;
 use crate::graph::Graph;
-use crate::neuron::NeuralNetwork;
+use crate::neuron::{ActivationConfig, LearningConfig, NeuralNetwork};
 use crate::storage::DiskGraph;
 
 /// Configuration for the auto-save / checkpoint background thread.
@@ -198,8 +198,13 @@ pub fn start_disk_graph_checkpoint(
 }
 
 /// Load the graph and neural network from disk (legacy), or create empty ones.
+///
+/// `activation_config` and `learning_config` are used when creating a new NeuralNetwork
+/// (no saved neural.bin exists on disk).
 pub fn load_or_create(
     config: &AutoSaveConfig,
+    activation_config: &ActivationConfig,
+    learning_config: &LearningConfig,
 ) -> Result<(Graph, NeuralNetwork), StoreError> {
     let graph = if config.graph_path.exists() {
         graph_store::load_graph(&config.graph_path)?
@@ -210,7 +215,7 @@ pub fn load_or_create(
     let neural = if config.neural_path.exists() {
         neuron_store::load_neural_network(&config.neural_path)?
     } else {
-        NeuralNetwork::new()
+        NeuralNetwork::with_config(activation_config.clone(), learning_config.clone())
     };
 
     Ok((graph, neural))
@@ -231,7 +236,7 @@ mod tests {
             ..Default::default()
         };
 
-        let (graph, nn) = load_or_create(&config).unwrap();
+        let (graph, nn) = load_or_create(&config, &ActivationConfig::default(), &LearningConfig::default()).unwrap();
         assert_eq!(graph.vertex_count(), 0);
         assert_eq!(nn.neuron_count(), 0);
     }

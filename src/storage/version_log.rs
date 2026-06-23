@@ -400,6 +400,9 @@ mod tests {
         VersionRecord {
             version,
             updated_at: (version as i64) * 1000,
+            name: "test".to_string(),
+            keywords: vec![],
+            document: "".to_string(),
             labels: vec!["test".to_string()],
             properties: HashMap::new(),
         }

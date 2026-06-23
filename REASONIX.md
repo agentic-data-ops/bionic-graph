@@ -50,7 +50,7 @@ App.jsx
 │   ├── MessageList.jsx  — 消息列表 (用户/助手/搜索进度/图谱结果)
 │   └── ChatInput.jsx    — 输入框 + 模型选择 + 图谱开关 + 搜索模式切换
 ├── KnowledgeBase.jsx    — 知识库弹窗 (文件管理 + LLM 提取)
-└── SettingsDialog.jsx   — 设置弹窗 (供应商/图库/通用)
+└── SettingsDialog.jsx   — 设置弹窗 (供应商/图库/搜索/通用)
 ```
 
 ### Conversation Flow
@@ -68,7 +68,7 @@ App.jsx
 ## Gremlin Steps (15 total)
 | Step | Description |
 |------|-------------|
-| `search` | Neural index search — returns vertices from matched/activated neurons (inactive filtered out). Capped at 100 results. |
+| `search` | Neural index search — returns vertices from matched/activated neurons. Supports `mode: "greedy"` (match ANY keyword) or `"exact"` (match ALL keywords). Default greedy. Capped at 100 results. |
 | `V` / `E` | All or specific vertices / edges |
 | `has` / `hasNot` / `hasKey` / `hasValue` / `hasLabel` / `hasText` | Property filters |
 | `out` / `in` / `both` | Vertex traversal (supports depth) |
@@ -95,6 +95,8 @@ App.jsx
 | GET | `/extract/tasks` | List extraction tasks |
 | POST | `/compact` | History compaction |
 | POST | `/reindex` | Re-index edges into neural network |
+| GET/PUT | `/settings` | LLM providers config |
+| GET/PUT | `/settings/neural` | Neural activation/search/learn config |
 | GET/POST/PUT/DELETE | `/documents` | Document CRUD |
 | GET | `/documents/:id/content` | Document content |
 
@@ -104,23 +106,38 @@ App.jsx
 - **`Vertex::update_properties(props, record_history)`** — second boolean param controls whether the old state is pushed to `_history`. Call sites must pass the graph's `time_travel_enabled` flag.
 - **`Graph::remove_vertex(id, force)`** — when `force=false` and `time_travel_enabled=true`, performs soft-delete. Otherwise hard-delete.
 - **`POST /vertices`** now requires `name` (String), accepts optional `keywords` (Vec\<String\>) as built-in fields. `properties.name` is no longer used — name is top-level.
-- **`Vertex` has built-in `name` and `keywords`** — `name` is required, `keywords` are additional search terms for the neural index. Neuron keywords = labels + name + keywords.
-- **`POST /vertices`** now requires `name` (String), accepts optional `keywords` (Vec\<String\>) as built-in fields. `properties.name` is no longer used — name is top-level.
-- **`Vertex` has built-in `name` and `keywords`** — `name` is required, `keywords` are additional search terms for the neural index. Neuron keywords = labels + name + keywords.
+- **`Vertex` built-in fields**: `name` (required), `keywords` (additional search terms), `document` (source doc ID). Neuron keywords = labels + name + keywords.
+- **`POST /vertices`** requires `name`, optional `keywords` and `document`. `properties.name` is no longer used.
+- **Search mode** — Gremlin `search` step and `/search` API accept `mode: "greedy"` (default, match ANY keyword) or `"exact"` (match ALL keywords). Frontend toggles via dropdown.
+- **Theme system** — CSS variables in `index.css` with `:root` (dark) and `.light` classes. Theme toggled in `App.jsx` via `document.documentElement.classList.toggle()`.
+- **Frontend KnowledgeBase extraction** — switched from frontend-side LLM calls to backend async task via `POST /documents/:id/extract`, with step progress polling.
+- **Sidebar collapse persisted** — collapsed state saved to `localStorage('bgraph-sidebar-collapsed')`.
+- **Language switcher dropdown** — replaced EN/中文 toggle with LANG dropdown showing 中文/English.
+- **ChatInput forwardRef** — exposes `focus()` method, called after response completes.
 - **`POST /vertices` and `POST /edges` auto-create neurons** — HTTP handlers call `Neuron::for_vertex` / `Neuron::for_edge` + `auto_synapse`.
 - **Atomic WAL via `RedologWal`** — single file `redolog.wal` logs both graph + neuron mutations in one write+fsync call. Crash between entries cannot leave inconsistent state.
 - **Graph data dir is now `data/graphs/<name>/`** (was `data/<name>/`). Document files stored under `data/documents/YYMMDD/`.
 - **Route params use `:param` syntax** — axum 0.7.9 requires `:param` (not `{param}`) for path parameters in `.route()`.
 - **`search` step filters inactive neurons** — `activation.rs` only collects vertex refs from neurons with `activation > 0`.
+- **`search` step returns full vertex data** — no longer creates synthetic empty VertexResult; looks up from graph via `g.get_vertex(vid)`.
+- **`document_extractor.rs` nid bug** — `(nn.neuron_count()+1)` in separate lock scopes returned same value. Fixed by pre-computing `start_nid` before loop.
 - **`cargo build` needs `touch src/ui_serve.rs` after frontend changes** — rust-embed doesn't detect `src/ui/dist/` file changes for recompilation.
 - **`semanticSearch` removed from backend** — all semantic search logic now runs on the frontend (LLM calls + graphSearch).
 - **`graph_result` message type deprecated** — search results are now stored as `search_progress` messages with `graphData` field.
 - **GraphViewer uses vis-network** — Canvas 2D, no WebGL required. Nodes/edges stored in DataSet with `_original` field for full data preservation.
 - **Maximize uses dual GraphViewer instances** — inline card and fullscreen overlay share data via `getSnapshot()` / `applySnapshot()` pattern.
+- **`NeuralConfig` is nested** — settings.json uses `activate`/`search`/`learn` groups. `NeuralConfig::default()` auto-populates missing groups (`#[serde(default)]`).
+- **`Neuron::match_keywords()` takes `&ScoreConfig`** — not `&SearchMode`. ScoreConfig carries search mode, exact/partial scores, and fuzzy matching params.
+- **`fuzzy_match_enabled` defaults to `true`** — Levenshtein-distance fuzzy matching is on by default for greedy searches.
+- **Message action icons** — hover over user messages for 📋 copy / ✏️ edit; hover over assistant messages for 📋 copy / 💾 save-to-KB.
+- **`ChatInput` exposes `setText()`** — via `useImperativeHandle` for the edit-message feature.
 
 ## Implemented Plans
+- `2024-06-23-search-mode-theme-doc-fields.md` — Search modes (greedy/exact), CSS theme system, `document` built-in field, Vis-network light/dark options, Playwright e2e test, Playwright install
+- `007-settings-neural-config-search-ui.md` — NeuralConfig → activate/search/learn groups, configurable search scores + fuzzy matching, /settings/neural API, settings "搜索" tab, message action icons, chat UX fixes
 - `001-arch-verify.md` — Full feature verification (151 tests, 0 failed)
 - `002-section-paragraph-graph.md` — Section/paragraph graph structure
 - `003-keyword-semantic-search.md` — keywordSearch + semanticSearch + global LLM config
 - `005-ui-rewrite-knowledgebase-visnetwork.md` — Frontend rewrite + knowledge base + vis-network migration
 - `2024-06-23-vertex-redolog-overhaul.md` — Vertex built-in name/keywords, RedologWal atomic WAL, directory restructure, graceful shutdown, frontend improvements
+- `007-settings-neural-config-search-ui.md` — NeuralConfig → activate/search/learn groups, configurable search scores + fuzzy matching, /settings/neural API, settings "搜索" tab, message action icons, chat UX fixes

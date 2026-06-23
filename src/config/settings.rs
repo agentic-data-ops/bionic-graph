@@ -124,24 +124,110 @@ impl Default for GraphConfig {
 
 // ─── Neural ──────────────────────────────────────────────────────
 
+/// Activation spreading parameters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct NeuralConfig {
+pub struct ActivateConfig {
+    /// Default activation threshold for new neurons.
     pub default_threshold: f32,
+    /// Default per-tick decay rate for new neurons.
     pub default_decay_rate: f32,
+    /// Default refractory ticks for new neurons.
     pub default_refractory_ticks: usize,
-    pub learning_enabled: bool,
-    pub co_fire_window: usize,
+    /// Max ticks per search query.
+    pub max_ticks: usize,
+    /// Minimum activation for a neuron to be considered "hot".
+    pub hot_threshold: f32,
+    /// Minimum synapse strength to pass activation.
+    pub min_synapse_strength: f32,
+    /// Auto-stabilize when no more neurons fire.
+    pub auto_stabilize: bool,
 }
 
-impl Default for NeuralConfig {
+impl Default for ActivateConfig {
     fn default() -> Self {
         Self {
             default_threshold: 0.7,
             default_decay_rate: 0.1,
             default_refractory_ticks: 3,
-            learning_enabled: true,
+            max_ticks: 20,
+            hot_threshold: 0.3,
+            min_synapse_strength: 0.01,
+            auto_stabilize: true,
+        }
+    }
+}
+
+/// Search mode, score thresholds, and fuzzy matching.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SearchConfig {
+    /// Default search mode: "greedy" or "exact".
+    pub default_search_mode: String,
+    /// Score for exact keyword match in greedy mode.
+    pub greedy_exact_score: f32,
+    /// Score for partial (substring) keyword match in greedy mode.
+    pub greedy_partial_score: f32,
+    /// Minimum score threshold for exact mode match.
+    pub exact_min_score: f32,
+    /// Enable Levenshtein-distance fuzzy matching fallback.
+    pub fuzzy_match_enabled: bool,
+    /// Normalized Levenshtein threshold (0.0 = exact, 1.0 = any).
+    pub fuzzy_match_threshold: f32,
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self {
+            default_search_mode: "greedy".to_string(),
+            greedy_exact_score: 1.0,
+            greedy_partial_score: 0.8,
+            exact_min_score: 0.5,
+            fuzzy_match_enabled: true,
+            fuzzy_match_threshold: 0.6,
+        }
+    }
+}
+
+/// Hebbian learning parameters.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LearnConfig {
+    /// Enable Hebbian learning entirely.
+    pub enabled: bool,
+    /// How many ticks of co-firing history to track.
+    pub co_fire_window: usize,
+    /// Minimum synapse plasticity to allow learning.
+    pub min_plasticity: f32,
+    /// Decay factor for synapse when pre fires without post.
+    pub synaptic_decay: f32,
+}
+
+impl Default for LearnConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
             co_fire_window: 5,
+            min_plasticity: 0.001,
+            synaptic_decay: 0.01,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NeuralConfig {
+    pub activate: ActivateConfig,
+    pub search: SearchConfig,
+    pub learn: LearnConfig,
+}
+
+impl Default for NeuralConfig {
+    fn default() -> Self {
+        Self {
+            activate: ActivateConfig::default(),
+            search: SearchConfig::default(),
+            learn: LearnConfig::default(),
         }
     }
 }

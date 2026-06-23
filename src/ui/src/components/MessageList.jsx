@@ -43,22 +43,58 @@ function SearchStep({ step }) {
   );
 }
 
-function ChatMessage({ message, graphRef, onMaximizeRef, theme }) {
+function ChatMessage({ message, graphRef, onMaximizeRef, theme, onEdit, onSaveToKB }) {
   const { t } = useTranslation();
+  const [showActions, setShowActions] = useState(false);
+
+  const copyToClipboard = async (text) => {
+    try { await navigator.clipboard.writeText(text); } catch {}
+  };
+
   if (message.type === 'user') {
-    return <div className="flex justify-end mb-3 message-enter"><div className="max-w-[72%] bg-[var(--accent)] text-white rounded-2xl rounded-br-md px-4 py-2.5 text-sm leading-relaxed shadow-sm select-text">{message.content}</div></div>;
+    return (
+      <div className="flex justify-end mb-3 message-enter"
+        onMouseEnter={() => setShowActions(true)}
+        onMouseLeave={() => setShowActions(false)}
+      >
+        <div className="max-w-[72%]">
+          <div className="bg-[var(--accent)] text-white rounded-2xl rounded-br-md px-4 py-2.5 text-sm leading-relaxed shadow-sm select-text">{message.content}</div>
+          {showActions && (
+            <div className="flex justify-end gap-1.5 mt-1 pr-1">
+              <button className="w-6 h-6 rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-all text-xs"
+                onClick={() => copyToClipboard(message.content)} title={t('chat.copy')}>📋</button>
+              <button className="w-6 h-6 rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-all text-xs"
+                onClick={() => onEdit?.(message.content)} title={t('chat.edit')}>✏️</button>
+            </div>
+          )}
+        </div>
+      </div>
+    );
   }
   if (message.type === 'assistant') {
     const hasContent = message.content?.length > 0;
     return (
-      <div className="flex justify-start mb-3 message-enter">
-        <div className="max-w-[72%] bg-[var(--bg-tertiary)] text-[var(--text-primary)] rounded-2xl rounded-bl-md px-4 py-2.5 text-sm leading-relaxed shadow-sm select-text">
-          {hasContent ? <SimpleMarkdown text={message.content} /> : (
-            <span className="inline-flex gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] pulse-dot" />
-              <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] pulse-dot" style={{ animationDelay: '0.2s' }} />
-              <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] pulse-dot" style={{ animationDelay: '0.4s' }} />
-            </span>
+      <div className="flex justify-start mb-3 message-enter"
+        onMouseEnter={() => setShowActions(true)}
+        onMouseLeave={() => setShowActions(false)}
+      >
+        <div className="max-w-[72%]">
+          <div className="bg-[var(--bg-tertiary)] text-[var(--text-primary)] rounded-2xl rounded-bl-md px-4 py-2.5 text-sm leading-relaxed shadow-sm select-text">
+            {hasContent ? <SimpleMarkdown text={message.content} /> : (
+              <span className="inline-flex gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] pulse-dot" />
+                <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] pulse-dot" style={{ animationDelay: '0.2s' }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] pulse-dot" style={{ animationDelay: '0.4s' }} />
+              </span>
+            )}
+          </div>
+          {showActions && hasContent && (
+            <div className="flex gap-1.5 mt-1 pl-1">
+              <button className="w-6 h-6 rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-all text-xs"
+                onClick={() => copyToClipboard(message.content)} title={t('chat.copy')}>📋</button>
+              <button className="w-6 h-6 rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-all text-xs"
+                onClick={() => onSaveToKB?.(message.content)} title={t('chat.saveToKB')}>💾</button>
+            </div>
           )}
         </div>
       </div>
@@ -111,7 +147,7 @@ function ChatMessage({ message, graphRef, onMaximizeRef, theme }) {
   return null;
 }
 
-export default function MessageList({ messages, searchStream, theme }) {
+export default function MessageList({ messages, searchStream, theme, onEdit, onSaveToKB }) {
   const { t } = useTranslation();
   const bottomRef = useRef(null);
   const inlineRefs = useRef({});
@@ -163,6 +199,7 @@ export default function MessageList({ messages, searchStream, theme }) {
           <ChatMessage key={msg.id} message={msg} theme={theme}
             graphRef={(el) => { if (el) inlineRefs.current[msg.id] = el; }}
             onMaximizeRef={(graphName) => handleMaximize(msg.id, graphName)}
+            onEdit={onEdit} onSaveToKB={onSaveToKB}
           />
         ))}
         <div ref={bottomRef} />

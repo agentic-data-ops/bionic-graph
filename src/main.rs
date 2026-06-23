@@ -72,7 +72,7 @@ async fn main() {
     );
 
     // Initialize GraphManager (scans/creates graphs under data dir)
-    let graph_manager = GraphManager::open(&settings.storage.data_dir)
+    let graph_manager = GraphManager::open(&settings.storage.data_dir, &settings.neural)
         .expect("Failed to initialize graph manager");
 
     // Auto-index all graphs if requested

@@ -12,7 +12,7 @@ use crate::graph_manager::GraphManager;
 use crate::gremlin::{
     build_router, execute_query, AppState, GremlinQuery, QueryResponse,
 };
-use crate::neuron::{NeuralNetwork, Neuron, NeuronId};
+use crate::neuron::{ActivationConfig, LearningConfig, NeuralNetwork, Neuron, NeuronId};
 use crate::persistence::{
     self, auto_save, load_or_create, AutoSaveConfig, AutoSaveHandle,
 };
@@ -45,7 +45,7 @@ impl MemorySystem {
             ..Default::default()
         };
 
-        let (graph, neural_network) = load_or_create(&config)?;
+        let (graph, neural_network) = load_or_create(&config, &ActivationConfig::default(), &LearningConfig::default())?;
 
         let graph = Arc::new(Mutex::new(graph));
         let neural_network = Arc::new(Mutex::new(neural_network));

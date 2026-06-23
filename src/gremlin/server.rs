@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tower_http::cors::CorsLayer;
 use crate::ui_serve::{ui_handler, ui_root_handler};
-use crate::config::{Settings, save_settings};
+use crate::config::{NeuralConfig, Settings, save_settings};
 use crate::graph_manager::GraphManager;
 use crate::extract::{ExtractionTaskManager, ExtractionConfig, TaskResponse};
 
@@ -140,6 +140,8 @@ pub fn build_router(state: AppState) -> Router {
         // Settings
         .route("/settings", get(get_settings_handler))
         .route("/settings", put(update_settings_handler))
+        .route("/settings/neural", get(get_neural_settings_handler))
+        .route("/settings/neural", put(update_neural_settings_handler))
 
         // Document management
         .route("/documents", get(list_documents_handler))
@@ -599,6 +601,114 @@ async fn update_settings_handler(
 
     let _ = save_settings(&s);
 
+    Json(serde_json::json!({"success": true}))
+}
+
+/// GET /settings/neural — Return current neural configuration (nested groups).
+async fn get_neural_settings_handler(
+    State(state): State<AppState>,
+) -> Json<Value> {
+    let s = state.settings.lock().unwrap();
+    Json(serde_json::json!({
+        "neural": {
+            "activate": {
+                "default_threshold": s.neural.activate.default_threshold,
+                "default_decay_rate": s.neural.activate.default_decay_rate,
+                "default_refractory_ticks": s.neural.activate.default_refractory_ticks,
+                "max_ticks": s.neural.activate.max_ticks,
+                "hot_threshold": s.neural.activate.hot_threshold,
+                "min_synapse_strength": s.neural.activate.min_synapse_strength,
+                "auto_stabilize": s.neural.activate.auto_stabilize,
+            },
+            "search": {
+                "default_search_mode": s.neural.search.default_search_mode,
+                "greedy_exact_score": s.neural.search.greedy_exact_score,
+                "greedy_partial_score": s.neural.search.greedy_partial_score,
+                "exact_min_score": s.neural.search.exact_min_score,
+                "fuzzy_match_enabled": s.neural.search.fuzzy_match_enabled,
+                "fuzzy_match_threshold": s.neural.search.fuzzy_match_threshold,
+            },
+            "learn": {
+                "enabled": s.neural.learn.enabled,
+                "co_fire_window": s.neural.learn.co_fire_window,
+                "min_plasticity": s.neural.learn.min_plasticity,
+                "synaptic_decay": s.neural.learn.synaptic_decay,
+            },
+        }
+    }))
+}
+
+/// PUT /settings/neural — Update neural configuration and persist to file.
+/// Accepts flat or nested keys for backward compatibility.
+async fn update_neural_settings_handler(
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<Value> {
+    let mut s = state.settings.lock().unwrap();
+
+    // Helper to read a value from nested or flat path
+    let val = |flat: &str, nested: &str| -> Option<&serde_json::Value> {
+        body.get(nested).or_else(|| body.get(flat))
+    };
+
+    // ── activate group ──
+    if let Some(v) = val("default_threshold", "default_threshold").and_then(|v| v.as_f64()) {
+        s.neural.activate.default_threshold = v as f32;
+    }
+    if let Some(v) = val("default_decay_rate", "default_decay_rate").and_then(|v| v.as_f64()) {
+        s.neural.activate.default_decay_rate = v as f32;
+    }
+    if let Some(v) = val("default_refractory_ticks", "default_refractory_ticks").and_then(|v| v.as_u64()) {
+        s.neural.activate.default_refractory_ticks = v as usize;
+    }
+    if let Some(v) = val("max_ticks", "max_ticks").and_then(|v| v.as_u64()) {
+        s.neural.activate.max_ticks = v as usize;
+    }
+    if let Some(v) = val("hot_threshold", "hot_threshold").and_then(|v| v.as_f64()) {
+        s.neural.activate.hot_threshold = v as f32;
+    }
+    if let Some(v) = val("min_synapse_strength", "min_synapse_strength").and_then(|v| v.as_f64()) {
+        s.neural.activate.min_synapse_strength = v as f32;
+    }
+    if let Some(v) = val("auto_stabilize", "auto_stabilize").and_then(|v| v.as_bool()) {
+        s.neural.activate.auto_stabilize = v;
+    }
+
+    // ── search group ──
+    if let Some(v) = val("default_search_mode", "default_search_mode").and_then(|v| v.as_str()) {
+        s.neural.search.default_search_mode = v.to_string();
+    }
+    if let Some(v) = val("greedy_exact_score", "greedy_exact_score").and_then(|v| v.as_f64()) {
+        s.neural.search.greedy_exact_score = v as f32;
+    }
+    if let Some(v) = val("greedy_partial_score", "greedy_partial_score").and_then(|v| v.as_f64()) {
+        s.neural.search.greedy_partial_score = v as f32;
+    }
+    if let Some(v) = val("exact_min_score", "exact_min_score").and_then(|v| v.as_f64()) {
+        s.neural.search.exact_min_score = v as f32;
+    }
+    if let Some(v) = val("fuzzy_match_enabled", "fuzzy_match_enabled").and_then(|v| v.as_bool()) {
+        s.neural.search.fuzzy_match_enabled = v;
+    }
+    if let Some(v) = val("fuzzy_match_threshold", "fuzzy_match_threshold").and_then(|v| v.as_f64()) {
+        s.neural.search.fuzzy_match_threshold = v as f32;
+    }
+
+    // ── learn group ──
+    if let Some(v) = val("learning_enabled", "enabled").and_then(|v| v.as_bool()) {
+        s.neural.learn.enabled = v;
+    }
+    if let Some(v) = val("co_fire_window", "co_fire_window").and_then(|v| v.as_u64()) {
+        s.neural.learn.co_fire_window = v as usize;
+    }
+    if let Some(v) = val("min_plasticity", "min_plasticity").and_then(|v| v.as_f64()) {
+        s.neural.learn.min_plasticity = v as f32;
+    }
+    if let Some(v) = val("synaptic_decay", "synaptic_decay").and_then(|v| v.as_f64()) {
+        s.neural.learn.synaptic_decay = v as f32;
+    }
+
+    let _ = save_settings(&s);
     Json(serde_json::json!({"success": true}))
 }
 
