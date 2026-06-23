@@ -13,7 +13,7 @@
 ## Layout
 - `src/graph/` — Vertex/Edge/Graph types, MVCC versioning, BFS/DFS traversal
 - `src/neuron/` — Spreading activation network, Hebbian learning, `EntityType` (Vertex/Edge per neuron)
-- `src/storage/` — Disk-backed storage: subgraph partitioning, LRU cache, WAL (redo_log), version log (vlog), compaction
+- `src/storage/` — Disk-backed storage: subgraph partitioning, LRU cache, WAL (redo_log / redolog_wal / RedologWal), version log (vlog), compaction
 - `src/gremlin/` — REST API routes + Gremlin JSON pipeline step engine (15 steps)
 - `src/extract/` — Backend document extraction (legacy; extraction moved to frontend)
   - `task_manager.rs` — Async task lifecycle (pending → running → completed/failed), UUID-based task tracking with progress
@@ -61,9 +61,9 @@ App.jsx
 
 ### Data Persistence
 - Conversations → `localStorage('bgraph-convs')`
-- Settings (providers, graphs, search mode) → `localStorage('bgraph-settings')`
-- Documents → Backend `data/documents/` (files + JSON index)
-- Graph data → Backend `data/` (graph.bin + neural.bin)
+- Settings (providers, graphs, search mode, chatModel) → `localStorage('bgraph-settings')`
+- Documents → Backend `data/documents/YYMMDD/<id>.md` + `index.json`
+- Graph data → Backend `data/graphs/<name>/` (graph.bin + neural.bin + redolog.wal)
 
 ## Gremlin Steps (15 total)
 | Step | Description |
@@ -86,6 +86,8 @@ App.jsx
 | POST | `/gremlin` | Gremlin pipeline query |
 | POST | `/search` | Neural keyword search |
 | POST | `/vertices`, `/edges` | Add vertex/edge (auto-creates neurons) |
+| PUT | `/vertices/:id` | Update vertex name/keywords/labels/properties |
+| PUT | `/edges/:id` | Update edge label/properties |
 | DELETE | `/vertices/:id` | Delete vertex + connected edges |
 | POST | `/neurons`, `/neurons/:id/link`, `/neurons/:id/synapse` | Neural network management |
 | POST | `/extract` | Submit async extraction (legacy, backend-side) |
@@ -101,7 +103,13 @@ App.jsx
 - **`.` — `.reasonix/` is committed** — plans in `.reasonix/plans/` and outputs in `.reasonix/output/` are part of the repo.
 - **`Vertex::update_properties(props, record_history)`** — second boolean param controls whether the old state is pushed to `_history`. Call sites must pass the graph's `time_travel_enabled` flag.
 - **`Graph::remove_vertex(id, force)`** — when `force=false` and `time_travel_enabled=true`, performs soft-delete. Otherwise hard-delete.
+- **`POST /vertices`** now requires `name` (String), accepts optional `keywords` (Vec\<String\>) as built-in fields. `properties.name` is no longer used — name is top-level.
+- **`Vertex` has built-in `name` and `keywords`** — `name` is required, `keywords` are additional search terms for the neural index. Neuron keywords = labels + name + keywords.
+- **`POST /vertices`** now requires `name` (String), accepts optional `keywords` (Vec\<String\>) as built-in fields. `properties.name` is no longer used — name is top-level.
+- **`Vertex` has built-in `name` and `keywords`** — `name` is required, `keywords` are additional search terms for the neural index. Neuron keywords = labels + name + keywords.
 - **`POST /vertices` and `POST /edges` auto-create neurons** — HTTP handlers call `Neuron::for_vertex` / `Neuron::for_edge` + `auto_synapse`.
+- **Atomic WAL via `RedologWal`** — single file `redolog.wal` logs both graph + neuron mutations in one write+fsync call. Crash between entries cannot leave inconsistent state.
+- **Graph data dir is now `data/graphs/<name>/`** (was `data/<name>/`). Document files stored under `data/documents/YYMMDD/`.
 - **Route params use `:param` syntax** — axum 0.7.9 requires `:param` (not `{param}`) for path parameters in `.route()`.
 - **`search` step filters inactive neurons** — `activation.rs` only collects vertex refs from neurons with `activation > 0`.
 - **`cargo build` needs `touch src/ui_serve.rs` after frontend changes** — rust-embed doesn't detect `src/ui/dist/` file changes for recompilation.
@@ -115,3 +123,4 @@ App.jsx
 - `002-section-paragraph-graph.md` — Section/paragraph graph structure
 - `003-keyword-semantic-search.md` — keywordSearch + semanticSearch + global LLM config
 - `005-ui-rewrite-knowledgebase-visnetwork.md` — Frontend rewrite + knowledge base + vis-network migration
+- `2024-06-23-vertex-redolog-overhaul.md` — Vertex built-in name/keywords, RedologWal atomic WAL, directory restructure, graceful shutdown, frontend improvements

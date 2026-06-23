@@ -44,7 +44,7 @@ Bionic-Graph is a **low-cost AI memory system** that combines a knowledge graph 
 | **Storage** | `src/storage/` | Subgraph partitioning + LRU cache. WAL (CRC32, checkpoint, crash recovery). Version log (.vlog) with sparse index for archived history. Compaction orchestrator. |
 | **Documents** | `src/documents.rs` | Markdown file management with JSON index. CRUD via REST API. |
 | **Extraction** | `src/extract/` | (Legacy, backend-side) Markdown → LLM → entities/relations. New extraction is frontend-side. |
-| **Graph Manager** | `src/graph_manager.rs` | Multiple named graphs, each persisted to `data/{name}/`. Manage via REST API. |
+| **Graph Manager** | `src/graph_manager.rs` | Multiple named graphs, each persisted to `data/graphs/{name}/`. Manage via REST API. |
 | **Config** | `src/config/` | `~/.config/bionic-graph/settings.json` with env var overrides. Auto-generates defaults. |
 
 ### How it works — a search flow
@@ -143,7 +143,19 @@ curl -X DELETE localhost:8080/graphs/mygraph
 curl -X POST localhost:8080/vertices \
   -H 'Content-Type: application/json' \
   -H 'X-Graph-Name: audit' \
-  -d '{"labels":["person"],"properties":{"name":"Alice"}}'
+  -d '{"name":"Alice","keywords":["engineer","manager"],"labels":["person"],"properties":{"department":"Engineering"}}'
+
+# Update vertex
+curl -X PUT localhost:8080/vertices/1 \
+  -H 'Content-Type: application/json' \
+  -H 'X-Graph-Name: default' \
+  -d '{"name":"Alice Smith","tags":["engineer","lead"],"labels":["person","employee"]}'
+
+# Update edge
+curl -X PUT localhost:8080/edges/1 \
+  -H 'Content-Type: application/json' \
+  -H 'X-Graph-Name: default' \
+  -d '{"label":"manages","properties":{"since":"2024"}}'
 ```
 
 #### Neural search + traversal
@@ -180,6 +192,8 @@ curl localhost:8080/documents/{id}/content
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/health` | System health |
+| `PUT` | `/vertices/:id` | Update vertex name/keywords/labels/properties |
+| `PUT` | `/edges/:id` | Update edge label/properties |
 | `DELETE` | `/vertices/:id` | Delete vertex + connected edges |
 | `POST` | `/reindex` | Re-index edges into neural network |
 | `POST` | `/compact` | History compaction |
