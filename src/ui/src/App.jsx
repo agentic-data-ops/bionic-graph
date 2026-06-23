@@ -88,6 +88,7 @@ export default function App() {
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
+    document.documentElement.classList.toggle('light', theme === 'light');
     localStorage.setItem('theme', theme);
   }, [theme]);
 
@@ -246,11 +247,7 @@ export default function App() {
   }, [conversations.length, handleNewChat]);
 
   return (
-    <div className={`h-screen flex overflow-hidden select-none ${
-      theme === 'dark'
-        ? 'bg-[#1a1a1e] text-[#e5e5e7]'
-        : 'bg-[#f5f5f7] text-[#1d1d1f]'
-    }`}>
+    <div className="h-screen flex overflow-hidden select-none bg-[var(--bg-primary)] text-[var(--text-primary)]">
       {/* Sidebar */}
       <Sidebar
         conversations={conversations}

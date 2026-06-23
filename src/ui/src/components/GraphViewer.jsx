@@ -100,28 +100,28 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument })
   }, [editLabels, editProps, item, type, graphName]);
 
   return (
-    <div className="w-72 bg-[#1c1c20] border-l border-[#2a2a2e] flex flex-col h-full overflow-y-auto flex-shrink-0 select-text">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-[#2a2a2e] flex-shrink-0">
-        <span className="text-xs font-semibold text-[#98989d] uppercase tracking-wider">
+    <div className="w-72 bg-[var(--bg-secondary)] border-l border-[var(--border)] flex flex-col h-full overflow-y-auto flex-shrink-0 select-text">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--border)] flex-shrink-0">
+        <span className="text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wider">
           {type === 'vertex' ? 'Vertex' : 'Edge'}
-          <span className="text-[#48484a] font-mono ml-2 normal-case">#{item.id}</span>
+          <span className="text-[var(--text-muted)] font-mono ml-2 normal-case">#{item.id}</span>
         </span>
         <div className="flex items-center gap-1">
           {!editing && type === 'vertex' && (
             <>
-              <button className="w-5 h-5 rounded-md bg-[#2a2a2e] hover:bg-[#3a3a3e] flex items-center justify-center text-[#636366] hover:text-white text-[11px]" onClick={startEdit} title={t('graph.modify')}>
+              <button className="w-5 h-5 rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] text-[11px]" onClick={startEdit} title={t('graph.modify')}>
                 <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                 </svg>
               </button>
-              <button className="w-5 h-5 rounded-md bg-[#2a2a2e] hover:bg-[#ff453a] flex items-center justify-center text-[#636366] hover:text-white" onClick={() => { if (confirm(t('graph.confirmDelete', { id: item.id, name: item.name || item.id }))) onDelete?.(item.id); }} title={t('graph.delete')}>
+              <button className="w-5 h-5 rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--danger)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)]" onClick={() => { if (confirm(t('graph.confirmDelete', { id: item.id, name: item.name || item.id }))) onDelete?.(item.id); }} title={t('graph.delete')}>
                 <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                 </svg>
               </button>
             </>
           )}
-          <button className="w-5 h-5 rounded-md bg-[#2a2a2e] hover:bg-[#3a3a3e] flex items-center justify-center text-[#636366] hover:text-white" onClick={onClose}>
+          <button className="w-5 h-5 rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)]" onClick={onClose}>
             <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
             </svg>
@@ -131,40 +131,40 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument })
       <div className="p-4 space-y-4">
         {/* Labels */}
         <div>
-          <div className="text-[10px] font-semibold text-[#636366] uppercase tracking-wider mb-2">
-            Labels {editing && <span className="text-[#48484a] normal-case font-normal">(comma-separated)</span>}
+          <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-2">
+            Labels {editing && <span className="text-[var(--text-muted)] normal-case font-normal">(comma-separated)</span>}
           </div>
           {editing ? (
             <input
-              className="w-full px-2.5 py-1.5 rounded-lg bg-[#2a2a2e] text-[#e5e5e7] text-xs border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff]"
+              className="w-full px-2.5 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
               value={editLabels}
               onChange={(e) => setEditLabels(e.target.value)}
             />
           ) : (
             <div className="flex flex-wrap gap-1.5">
-              {labels.map((l, i) => <span key={i} className="px-2 py-0.5 rounded-md bg-[#0a84ff]/15 text-[#0a84ff] text-[11px] font-medium">{l}</span>)}
+              {labels.map((l, i) => <span key={i} className="px-2 py-0.5 rounded-md bg-[var(--accent)]/15 text-[var(--accent)] text-[11px] font-medium">{l}</span>)}
             </div>
           )}
         </div>
         {/* Name (built-in) */}
         <div>
-          <div className="text-[10px] font-semibold text-[#636366] uppercase tracking-wider mb-2">Name</div>
+          <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-2">Name</div>
           {editing ? (
             <input
-              className="w-full px-2.5 py-1.5 rounded-lg bg-[#2a2a2e] text-[#e5e5e7] text-xs border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff]"
+              className="w-full px-2.5 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
               value={localName}
               onChange={(e) => setLocalName(e.target.value)}
             />
           ) : (
-            <div className="text-xs text-[#e5e5e7] font-medium">{item.name || '—'}</div>
+            <div className="text-xs text-[var(--text-primary)] font-medium">{item.name || '—'}</div>
           )}
         </div>
         {/* Keywords (built-in) */}
         <div>
-          <div className="text-[10px] font-semibold text-[#636366]  uppercase tracking-wider mb-2">Keywords</div>
+          <div className="text-[10px] font-semibold text-[var(--text-tertiary)]  uppercase tracking-wider mb-2">Keywords</div>
           {editing ? (
             <input
-              className="w-full px-2.5 py-1.5 rounded-lg bg-[#2a2a2e] text-[#e5e5e7] text-xs border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff]"
+              className="w-full px-2.5 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
               value={localKeywords}
               onChange={(e) => setLocalKeywords(e.target.value)}
               placeholder="comma-separated"
@@ -172,21 +172,21 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument })
           ) : (
             <div className="flex flex-wrap gap-1.5">
               {(item.keywords || []).length > 0 ? item.keywords.map((tag, i) => (
-                <span key={i} className="px-2 py-0.5 rounded-md bg-[#30d158]/15 text-[#30d158] text-[11px] font-medium">{tag}</span>
-              )) : <span className="text-xs text-[#48484a] italic">—</span>}
+                <span key={i} className="px-2 py-0.5 rounded-md bg-[var(--success-bg)] text-[var(--success)] text-[11px] font-medium">{tag}</span>
+              )) : <span className="text-xs text-[var(--text-muted)] italic">—</span>}
             </div>
           )}
         </div>
         {/* Custom Properties */}
         <div>
-          <div className="text-[10px] font-semibold text-[#636366] uppercase tracking-wider mb-2">Custom Properties</div>
+          <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-2">Custom Properties</div>
           {editing ? (
             <div className="space-y-1.5">
               {Object.entries(editProps).filter(([k]) => !k.startsWith('_')).map(([k, v]) => (
-                <div key={k} className="flex items-start gap-1 py-1.5 px-2.5 rounded-lg bg-[#2a2a2e]">
+                <div key={k} className="flex items-start gap-1 py-1.5 px-2.5 rounded-lg bg-[var(--bg-tertiary)]">
                   <div className="flex-1 flex flex-col gap-1 min-w-0">
                     <input
-                      className="w-full px-2 py-1 rounded-md bg-[#1c1c20] text-[#e5e5e7] text-[10px] border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff] font-mono"
+                      className="w-full px-2 py-1 rounded-md bg-[var(--bg-secondary)] text-[var(--text-primary)] text-[10px] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] font-mono"
                       value={k}
                       onChange={(e) => {
                         const { [k]: _, ...rest } = editProps;
@@ -195,20 +195,20 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument })
                       placeholder="key"
                     />
                     <input
-                      className="w-full px-2 py-1 rounded-md bg-[#1c1c20] text-[#e5e5e7] text-xs border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff]"
+                      className="w-full px-2 py-1 rounded-md bg-[var(--bg-secondary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
                       value={v}
                       onChange={(e) => setEditProps({ ...editProps, [k]: e.target.value })}
                     />
                   </div>
                   <button
-                    className="flex-shrink-0 w-5 h-5 rounded-md bg-[#3a3a3e] hover:bg-[#ff453a] flex items-center justify-center text-[#636366] hover:text-white text-[10px] mt-1"
+                    className="flex-shrink-0 w-5 h-5 rounded-md bg-[var(--bg-hover)] hover:bg-[var(--danger)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] text-[10px] mt-1"
                     onClick={() => { const { [k]: _, ...rest } = editProps; setEditProps(rest); }}
                   >✕</button>
                 </div>
               ))}
-              {Object.keys(editProps).length === 0 && <div className="text-xs text-[#48484a] italic">No properties</div>}
+              {Object.keys(editProps).length === 0 && <div className="text-xs text-[var(--text-muted)] italic">No properties</div>}
               <button
-                className="w-full py-1 rounded-lg border border-dashed border-[#3a3a3e] text-[#636366] hover:text-white hover:border-[#0a84ff] text-xs font-medium transition-all"
+                className="w-full py-1 rounded-lg border border-dashed border-[#3a3a3e] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[#0a84ff] text-xs font-medium transition-all"
                 onClick={() => {
                   const key = newPropKey || 'key' + (Object.keys(editProps).length + 1);
                   setEditProps({ ...editProps, [key]: newPropVal || '' });
@@ -219,12 +219,12 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument })
             </div>
           ) : (
             <>
-              {Object.keys(props).length === 0 ? <div className="text-xs text-[#48484a] italic">—</div> : (
+              {Object.keys(props).length === 0 ? <div className="text-xs text-[var(--text-muted)] italic">—</div> : (
                 <div className="space-y-1">
                   {Object.entries(props).map(([k, v]) => (
-                    <div key={k} className="flex justify-between items-start py-1.5 px-2.5 rounded-lg bg-[#2a2a2e]">
-                      <span className="text-[11px] text-[#636366] font-medium mr-3 whitespace-nowrap">{k}</span>
-                      <span className="text-[11px] text-[#e5e5e7] text-right break-all max-w-[160px] font-mono">{String(v)}</span>
+                    <div key={k} className="flex justify-between items-start py-1.5 px-2.5 rounded-lg bg-[var(--bg-tertiary)]">
+                      <span className="text-[11px] text-[var(--text-tertiary)] font-medium mr-3 whitespace-nowrap">{k}</span>
+                      <span className="text-[11px] text-[var(--text-primary)] text-right break-all max-w-[160px] font-mono">{String(v)}</span>
                     </div>
                   ))}
                 </div>
@@ -235,18 +235,18 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument })
         {/* Edge source/target */}
         {type === 'edge' && (
           <div className="space-y-2">
-            <div className="flex items-center gap-2 text-xs"><span className="text-[#636366] font-medium w-14">source</span><span className="text-[#e5e5e7] font-mono">{item.source}</span></div>
-            <div className="flex items-center gap-2 text-xs"><span className="text-[#636366] font-medium w-14">target</span><span className="text-[#e5e5e7] font-mono">{item.target}</span></div>
+            <div className="flex items-center gap-2 text-xs"><span className="text-[var(--text-tertiary)] font-medium w-14">source</span><span className="text-[var(--text-primary)] font-mono">{item.source}</span></div>
+            <div className="flex items-center gap-2 text-xs"><span className="text-[var(--text-tertiary)] font-medium w-14">target</span><span className="text-[var(--text-primary)] font-mono">{item.target}</span></div>
           </div>
         )}
 
         {/* Edit buttons */}
         {editing && (
           <div className="space-y-2">
-            {error && <div className="text-[11px] text-[#ff453a] bg-[#3a2a2e] rounded-lg px-2.5 py-1.5">{error}</div>}
+            {error && <div className="text-[11px] text-[var(--danger)] bg-[#3a2a2e] rounded-lg px-2.5 py-1.5">{error}</div>}
             <div className="flex gap-2">
-              <button className="flex-1 py-1.5 rounded-lg bg-[#3a3a3e] text-[#86868b] hover:text-white text-xs font-medium transition-all" onClick={cancelEdit}>Cancel</button>
-              <button className="flex-1 py-1.5 rounded-lg bg-[#0a84ff] text-white text-xs font-medium hover:bg-[#0a6ed9] transition-all shadow-sm disabled:opacity-50" onClick={saveEdit} disabled={saving}>
+              <button className="flex-1 py-1.5 rounded-lg bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs font-medium transition-all" onClick={cancelEdit}>Cancel</button>
+              <button className="flex-1 py-1.5 rounded-lg bg-[var(--accent)] text-white text-xs font-medium hover:bg-[color-mix(in srgb, var(--accent), black 10%)] transition-all shadow-sm disabled:opacity-50" onClick={saveEdit} disabled={saving}>
                 {saving ? 'Saving...' : 'Save'}
               </button>
             </div>
@@ -377,7 +377,7 @@ const GraphViewer = forwardRef(({ data, graph, className }, ref) => {
   }, [data, graph]);
 
   if (!data?.data?.length) {
-    return <div className="flex items-center justify-center text-[#636366] text-sm min-h-[200px]">No graph data</div>;
+    return <div className="flex items-center justify-center text-[var(--text-tertiary)] text-sm min-h-[200px]">No graph data</div>;
   }
 
   return (

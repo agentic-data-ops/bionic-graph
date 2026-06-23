@@ -46,7 +46,7 @@ export default function ChatInput({
   }, [handleSend]);
 
   return (
-    <div className="bg-[#1c1c20] border-t border-[#2a2a2e] px-4 py-3">
+    <div className="bg-[var(--bg-secondary)] border-t border-[var(--border)] px-4 py-3">
       {/* Mode bar */}
       <div className="flex items-center gap-2 mb-2.5 flex-wrap">
         {/* Model selector — leftmost */}
@@ -65,7 +65,7 @@ export default function ChatInput({
           });
           return (
             <select
-              className="bg-[#2a2a2e] text-[#e5e5e7] rounded-lg px-2.5 py-1 text-xs border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff] cursor-pointer appearance-none flex-shrink-0"
+              className="bg-[var(--bg-tertiary)] text-[var(--text-primary)] rounded-lg px-2.5 py-1 text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] cursor-pointer appearance-none flex-shrink-0"
               style={{ maxWidth: '220px', backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath fill='%2386868b' d='M0 0l4 5 4-5z'/%3E%3C/svg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 6px center', paddingRight: '22px' }}
               value={currentKey}
               onChange={(e) => {
@@ -88,34 +88,34 @@ export default function ChatInput({
 
         {/* Graph toggle */}
         <label className="flex items-center gap-1.5 cursor-pointer select-none flex-shrink-0" onClick={(e) => { e.preventDefault(); onGraphToggle(!useGraph); }}>
-          <div className={`relative w-8 h-4.5 rounded-full transition-all duration-200 ${useGraph ? 'bg-[#0a84ff]' : 'bg-[#3a3a3e]'}`} style={{ height: '18px', width: '32px' }}>
+          <div className={`relative w-8 h-4.5 rounded-full transition-all duration-200 ${useGraph ? 'bg-[var(--accent)]' : 'bg-[var(--bg-hover)]'}`} style={{ height: '18px', width: '32px' }}>
             <div className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white shadow-sm transition-all duration-200 ${useGraph ? 'left-[14px]' : 'left-[1px]'}`} style={{ width: '14px', height: '14px', top: '2px' }} />
           </div>
-          <span className="text-xs text-[#86868b] font-medium">{t('chat.useGraph')}</span>
+          <span className="text-xs text-[var(--text-secondary)] font-medium">{t('chat.useGraph')}</span>
         </label>
 
         {useGraph && (
           <>
             <select
-              className="bg-[#2a2a2e] text-[#e5e5e7] rounded-lg px-2.5 py-1 text-xs border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff] cursor-pointer appearance-none"
+              className="bg-[var(--bg-tertiary)] text-[var(--text-primary)] rounded-lg px-2.5 py-1 text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] cursor-pointer appearance-none"
               style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath fill='%2386868b' d='M0 0l4 5 4-5z'/%3E%3C/svg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 6px center', paddingRight: '22px' }}
               value={graphName}
               onChange={(e) => onGraphNameChange(e.target.value)}
             >
               {graphs.map((g) => <option key={g} value={g}>{g}</option>)}
             </select>
-            <label className="flex items-center gap-1.5 cursor-pointer select-none text-xs text-[#86868b] font-medium whitespace-nowrap">
+            <label className="flex items-center gap-1.5 cursor-pointer select-none text-xs text-[var(--text-secondary)] font-medium whitespace-nowrap">
               <input type="checkbox" checked={timeTravel} onChange={(e) => onTimeTravelToggle(e.target.checked)}
-                className="w-3.5 h-3.5 rounded border-[#3a3a3e] bg-[#2a2a2e] checked:bg-[#0a84ff] checked:border-[#0a84ff] focus:ring-0 cursor-pointer" />
+                className="w-3.5 h-3.5 rounded border-[#3a3a3e] bg-[var(--bg-tertiary)] checked:bg-[var(--accent)] checked:border-[#0a84ff] focus:ring-0 cursor-pointer" />
               {t('chat.timeTravel')}
             </label>
-            <div className="flex rounded-lg overflow-hidden ring-1 ring-[#3a3a3e]">
+            <div className="flex rounded-lg overflow-hidden ring-1 ring-[var(--bg-hover)]">
               <button
-                className={`px-2.5 py-1 text-[11px] font-medium transition-all ${searchMode === 'keyword' ? 'bg-[#0a84ff] text-white' : 'bg-[#2a2a2e] text-[#86868b] hover:text-white'}`}
+                className={`px-2.5 py-1 text-[11px] font-medium transition-all ${searchMode === 'keyword' ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}
                 onClick={() => onSearchModeChange('keyword')}
               >{t('chat.keyword')}</button>
               <button
-                className={`px-2.5 py-1 text-[11px] font-medium transition-all ${searchMode === 'semantic' ? 'bg-[#0a84ff] text-white' : 'bg-[#2a2a2e] text-[#86868b] hover:text-white'}`}
+                className={`px-2.5 py-1 text-[11px] font-medium transition-all ${searchMode === 'semantic' ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}
                 onClick={() => onSearchModeChange('semantic')}
               >{t('chat.semantic')}</button>
             </div>
@@ -127,7 +127,7 @@ export default function ChatInput({
       <div className="flex items-end gap-2">
         <textarea
           ref={textareaRef}
-          className="flex-1 resize-none bg-[#2a2a2e] text-[#e5e5e7] rounded-2xl px-4 py-2.5 text-sm border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff] placeholder-[#636366] max-h-[160px] leading-relaxed transition-all duration-200"
+          className="flex-1 resize-none bg-[var(--bg-tertiary)] text-[var(--text-primary)] rounded-2xl px-4 py-2.5 text-sm border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] placeholder-[var(--text-tertiary)] max-h-[160px] leading-relaxed transition-all duration-200"
           placeholder={t('chat.inputPlaceholder')}
           rows={1}
           value={text}

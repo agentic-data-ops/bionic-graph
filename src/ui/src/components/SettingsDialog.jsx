@@ -7,12 +7,12 @@ function Modal({ title, children, onClose }) {
     <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={onClose}>
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
       <div
-        className="relative bg-[#1c1c20] border border-[#2a2a2e] rounded-2xl p-6 min-w-[520px] max-w-lg max-h-[80vh] overflow-y-auto shadow-2xl"
+        className="relative bg-[var(--bg-secondary)] border border-[var(--border)] rounded-2xl p-6 min-w-[520px] max-w-lg max-h-[80vh] overflow-y-auto shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="text-base font-semibold text-[#e5e5e7] mb-5 flex items-center justify-between tracking-tight">
+        <div className="text-base font-semibold text-[var(--text-primary)] mb-5 flex items-center justify-between tracking-tight">
           <span>{title}</span>
-          <button className="w-7 h-7 rounded-lg bg-[#2a2a2e] hover:bg-[#3a3a3e] flex items-center justify-center text-[#636366] hover:text-white transition-all text-sm" onClick={onClose}>
+          <button className="w-7 h-7 rounded-lg bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-all text-sm" onClick={onClose}>
             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
             </svg>
@@ -27,8 +27,8 @@ function Modal({ title, children, onClose }) {
 const tabCls = (active) =>
   `px-4 py-2 text-sm font-medium rounded-xl transition-all duration-200 ${
     active
-      ? 'bg-[#3a3a3e] text-white shadow-sm'
-      : 'text-[#636366] hover:text-[#e5e5e7] hover:bg-[#2a2a2e]'
+      ? 'bg-[var(--bg-hover)] text-white shadow-sm'
+      : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
   }`;
 
 export default function SettingsDialog({
@@ -144,60 +144,60 @@ export default function SettingsDialog({
             <div className="space-y-3.5">
               {/* Provider name */}
               <div>
-                <label className="block text-xs text-[#636366] font-medium mb-1.5 tracking-tight">{t('settings.providerName')}</label>
-                <input className="w-full px-3.5 py-2 rounded-xl bg-[#2a2a2e] border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff] text-[#e5e5e7] text-sm placeholder-[#48484a]"
+                <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">{t('settings.providerName')}</label>
+                <input className="w-full px-3.5 py-2 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-[var(--text-primary)] text-sm placeholder-[var(--text-muted)]"
                   type="text" value={editingProvider.name}
                   onChange={(e) => setEditingProvider({ ...editingProvider, name: e.target.value })} />
               </div>
 
               {/* API Base URL */}
               <div>
-                <label className="block text-xs text-[#636366] font-medium mb-1.5 tracking-tight">API Base URL</label>
-                <input className="w-full px-3.5 py-2 rounded-xl bg-[#2a2a2e] border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff] text-[#e5e5e7] text-sm placeholder-[#48484a]"
+                <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">API Base URL</label>
+                <input className="w-full px-3.5 py-2 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-[var(--text-primary)] text-sm placeholder-[var(--text-muted)]"
                   type="text" value={editingProvider.apiBase}
                   onChange={(e) => setEditingProvider({ ...editingProvider, apiBase: e.target.value })} />
               </div>
 
               {/* API Key */}
               <div>
-                <label className="block text-xs text-[#636366] font-medium mb-1.5 tracking-tight">API Key</label>
-                <input className="w-full px-3.5 py-2 rounded-xl bg-[#2a2a2e] border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff] text-[#e5e5e7] text-sm placeholder-[#48484a]"
+                <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">API Key</label>
+                <input className="w-full px-3.5 py-2 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-[var(--text-primary)] text-sm placeholder-[var(--text-muted)]"
                   type="password" value={editingProvider.apiKey}
                   onChange={(e) => setEditingProvider({ ...editingProvider, apiKey: e.target.value })} />
               </div>
 
               {/* Models list */}
               <div>
-                <label className="block text-xs text-[#636366] font-medium mb-1.5 tracking-tight">Models</label>
+                <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">Models</label>
                 <div className="space-y-1.5 mb-2">
                   {(editingProvider.models || []).map((m, idx) => (
-                    <div key={idx} className="flex items-center gap-2 bg-[#2a2a2e] rounded-lg px-3 py-1.5">
-                      <span className="flex-1 text-xs text-[#e5e5e7] font-mono">{m}</span>
-                      <button className="text-[10px] text-[#ff453a] hover:text-[#ff6961] font-medium ml-1" onClick={() => handleRemoveModel(idx)}>{'\u2715'}</button>
+                    <div key={idx} className="flex items-center gap-2 bg-[var(--bg-tertiary)] rounded-lg px-3 py-1.5">
+                      <span className="flex-1 text-xs text-[var(--text-primary)] font-mono">{m}</span>
+                      <button className="text-[10px] text-[var(--danger)] hover:text-[#ff6961] font-medium ml-1" onClick={() => handleRemoveModel(idx)}>{'\u2715'}</button>
                     </div>
                   ))}
                 </div>
                 {/* Add model input */}
                 <div className="flex gap-2">
-                  <input className="flex-1 px-3 py-1.5 rounded-xl bg-[#2a2a2e] border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff] text-[#e5e5e7] text-xs placeholder-[#48484a]"
+                  <input className="flex-1 px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-[var(--text-primary)] text-xs placeholder-[var(--text-muted)]"
                     type="text" placeholder="Model name..." value={editingProvider.newModelInput || ''}
                     onChange={(e) => setEditingProvider({ ...editingProvider, newModelInput: e.target.value })}
                     onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddModel(); } }} />
-                  <button className="px-3 py-1.5 rounded-xl bg-[#3a3a3e] text-[#86868b] hover:text-white text-xs font-medium transition-all" onClick={handleAddModel}>+ Add</button>
+                  <button className="px-3 py-1.5 rounded-xl bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs font-medium transition-all" onClick={handleAddModel}>+ Add</button>
                 </div>
               </div>
 
               <div className="flex gap-2 justify-end pt-1">
-                <button className="px-4 py-2 rounded-xl bg-[#2a2a2e] text-[#86868b] hover:text-white text-sm font-medium transition-all" onClick={() => setEditingProvider(null)}>{t('panel.close')}</button>
-                <button className="px-4 py-2 rounded-xl bg-[#0a84ff] text-white text-sm font-medium hover:bg-[#0a6ed9] transition-all shadow-sm" onClick={handleSaveProvider}>{t('settings.save')}</button>
+                <button className="px-4 py-2 rounded-xl bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-sm font-medium transition-all" onClick={() => setEditingProvider(null)}>{t('panel.close')}</button>
+                <button className="px-4 py-2 rounded-xl bg-[var(--accent)] text-white text-sm font-medium hover:bg-[color-mix(in srgb, var(--accent), black 10%)] transition-all shadow-sm" onClick={handleSaveProvider}>{t('settings.save')}</button>
               </div>
             </div>
           ) : (
             <div>
               {/* Default model selector */}
               <div className="mb-4">
-                <label className="block text-xs text-[#636366] font-medium mb-1.5 tracking-tight">{t('settings.defaultModel')}</label>
-                <select className="w-full px-3 py-2 rounded-xl bg-[#2a2a2e] text-[#e5e5e7] text-sm border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff] appearance-none cursor-pointer"
+                <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">{t('settings.defaultModel')}</label>
+                <select className="w-full px-3 py-2 rounded-xl bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-sm border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] appearance-none cursor-pointer"
                   style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23636366' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px center', paddingRight: '32px' }}
                   value={(() => {
                     const ap = providers.find(p => p.id === activeProvider);
@@ -228,30 +228,30 @@ export default function SettingsDialog({
                 </select>
               </div>
 
-              <label className="block text-xs text-[#636366] font-medium mb-2 tracking-tight">{t('settings.providers')}</label>
+              <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-2 tracking-tight">{t('settings.providers')}</label>
               {providers.length === 0 && (
-                <p className="text-[#636366] text-sm text-center py-8 tracking-tight">{t('settings.noProviders')}</p>
+                <p className="text-[var(--text-tertiary)] text-sm text-center py-8 tracking-tight">{t('settings.noProviders')}</p>
               )}
               <div className="space-y-1 max-h-48 overflow-y-auto mb-3">
                 {providers.map((p) => (
-                  <div key={p.id} className="flex items-center justify-between py-2.5 px-3 rounded-xl hover:bg-[#2a2a2e] transition-all group">
+                  <div key={p.id} className="flex items-center justify-between py-2.5 px-3 rounded-xl hover:bg-[var(--bg-tertiary)] transition-all group">
                     <div>
-                      <div className="text-sm text-[#e5e5e7] font-medium">{p.name}</div>
-                      <div className="text-xs text-[#636366] mt-0.5">
+                      <div className="text-sm text-[var(--text-primary)] font-medium">{p.name}</div>
+                      <div className="text-xs text-[var(--text-tertiary)] mt-0.5">
                         {(p.defaultModel || p.model)} <span className="mx-1">{'\u00b7'}</span> {p.apiBase.replace(/^https?:\/\//, '').replace(/\/+$/, '')}
-                        {p.models?.length > 1 && <span className="ml-1 text-[#48484a]">(+{p.models.length - 1} more)</span>}
+                        {p.models?.length > 1 && <span className="ml-1 text-[var(--text-muted)]">(+{p.models.length - 1} more)</span>}
                       </div>
                     </div>
                     <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button className="px-2.5 py-1 text-xs text-[#636366] hover:text-white hover:bg-[#3a3a3e] rounded-lg transition-all" onClick={() => {
+                      <button className="px-2.5 py-1 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] rounded-lg transition-all" onClick={() => {
                         setEditingProvider({ ...p, newModelInput: '' });
                       }}>{t('settings.edit')}</button>
-                      <button className="px-2.5 py-1 text-xs text-[#ff453a] hover:bg-[#3a2a2e] rounded-lg transition-all" onClick={() => handleDeleteProvider(p.id)}>{t('settings.delete')}</button>
+                      <button className="px-2.5 py-1 text-xs text-[var(--danger)] hover:bg-[color-mix(in srgb, var(--bg-hover), var(--danger) 30%)] rounded-lg transition-all" onClick={() => handleDeleteProvider(p.id)}>{t('settings.delete')}</button>
                     </div>
                   </div>
                 ))}
               </div>
-              <button className="w-full py-2.5 rounded-xl bg-[#2a2a2e] text-[#86868b] hover:text-white hover:bg-[#3a3a3e] text-sm font-medium transition-all" onClick={handleAddProvider}>
+              <button className="w-full py-2.5 rounded-xl bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] text-sm font-medium transition-all" onClick={handleAddProvider}>
                 + {t('settings.addProvider')}
               </button>
             </div>
@@ -262,47 +262,47 @@ export default function SettingsDialog({
       {/* ─── Graphs ─── */}
       {tab === 'graphs' && (
         <div>
-          <label className="block text-xs text-[#636366] font-medium mb-2 tracking-tight">{t('settings.graphList')}</label>
+          <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-2 tracking-tight">{t('settings.graphList')}</label>
 
           <div className="space-y-1 max-h-36 overflow-y-auto mb-3">
             {graphs.map((g) => (
-              <div key={g} className="flex items-center justify-between py-2 px-3 rounded-xl hover:bg-[#2a2a2e] transition-all group">
+              <div key={g} className="flex items-center justify-between py-2 px-3 rounded-xl hover:bg-[var(--bg-tertiary)] transition-all group">
                 <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-sm text-[#e5e5e7] font-medium truncate">{g}</span>
+                  <span className="text-sm text-[var(--text-primary)] font-medium truncate">{g}</span>
                   {g === graphName && (
-                    <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-[#0a84ff]/20 text-[#0a84ff] border border-[#0a84ff]/30 flex-shrink-0">默认</span>
+                    <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-[var(--accent)]/20 text-[var(--accent)] border border-[#0a84ff]/30 flex-shrink-0">默认</span>
                   )}
                 </div>
                 <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 ml-2">
                   {g !== graphName && (
-                    <button className="px-2 py-1 text-xs text-[#636366] hover:text-white hover:bg-[#3a3a3e] rounded-lg transition-all" onClick={() => onGraphNameChange(g)}>设为默认</button>
+                    <button className="px-2 py-1 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] rounded-lg transition-all" onClick={() => onGraphNameChange(g)}>设为默认</button>
                   )}
-                  <button className="px-2 py-1 text-xs text-[#ff9f0a] hover:bg-[#3a3020] rounded-lg transition-all" onClick={async () => {
+                  <button className="px-2 py-1 text-xs text-[#ff9f0a] hover:bg-[color-mix(in srgb, var(--bg-hover), orange 20%)] rounded-lg transition-all" onClick={async () => {
                     const days = parseInt(prompt('Compaction days (default: 7):', '7') || '7');
                     if (days > 0) { const before = (Date.now() - days * 86400 * 1000) * 1000; await compact(before, g); }
                   }}>归档</button>
-                  <button className="px-2 py-1 text-xs text-[#ff453a] hover:bg-[#3a2a2e] rounded-lg transition-all" onClick={() => handleDeleteGraph(g)}>删除</button>
+                  <button className="px-2 py-1 text-xs text-[var(--danger)] hover:bg-[color-mix(in srgb, var(--bg-hover), var(--danger) 30%)] rounded-lg transition-all" onClick={() => handleDeleteGraph(g)}>删除</button>
                 </div>
               </div>
             ))}
           </div>
 
           {showAddGraph ? (
-            <div className="space-y-3 mb-3 p-4 bg-[#2a2a2e] rounded-xl">
-              <input className="w-full px-3.5 py-2 rounded-xl bg-[#1c1c20] border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff] text-[#e5e5e7] text-sm placeholder-[#48484a]"
+            <div className="space-y-3 mb-3 p-4 bg-[var(--bg-tertiary)] rounded-xl">
+              <input className="w-full px-3.5 py-2 rounded-xl bg-[var(--bg-secondary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-[var(--text-primary)] text-sm placeholder-[var(--text-muted)]"
                 placeholder={t('modal.addGraphName')} value={newGraphName} onChange={(e) => setNewGraphName(e.target.value)} />
-              <label className="flex items-center gap-2 text-xs text-[#86868b] cursor-pointer select-none">
+              <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)] cursor-pointer select-none">
                 <input type="checkbox" checked={newGraphTT} onChange={(e) => setNewGraphTT(e.target.checked)}
-                  className="w-3.5 h-3.5 rounded border-[#3a3a3e] bg-[#1c1c20] checked:bg-[#0a84ff] checked:border-[#0a84ff] focus:ring-0 cursor-pointer" />
+                  className="w-3.5 h-3.5 rounded border-[#3a3a3e] bg-[var(--bg-secondary)] checked:bg-[var(--accent)] checked:border-[#0a84ff] focus:ring-0 cursor-pointer" />
                 {t('modal.addGraphTimeTravel')}
               </label>
               <div className="flex gap-2 justify-end">
-                <button className="px-3.5 py-1.5 rounded-xl bg-[#3a3a3e] text-[#86868b] hover:text-white text-xs font-medium transition-all" onClick={() => setShowAddGraph(false)}>{t('panel.close')}</button>
-                <button className="px-3.5 py-1.5 rounded-xl bg-[#0a84ff] text-white text-xs font-medium hover:bg-[#0a6ed9] transition-all shadow-sm" onClick={handleAddGraph}>{t('modal.addGraphConfirm')}</button>
+                <button className="px-3.5 py-1.5 rounded-xl bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs font-medium transition-all" onClick={() => setShowAddGraph(false)}>{t('panel.close')}</button>
+                <button className="px-3.5 py-1.5 rounded-xl bg-[var(--accent)] text-white text-xs font-medium hover:bg-[color-mix(in srgb, var(--accent), black 10%)] transition-all shadow-sm" onClick={handleAddGraph}>{t('modal.addGraphConfirm')}</button>
               </div>
             </div>
           ) : (
-            <button className="w-full py-2.5 rounded-xl bg-[#2a2a2e] text-[#86868b] hover:text-white hover:bg-[#3a3a3e] text-sm font-medium transition-all mb-2" onClick={() => setShowAddGraph(true)}>
+            <button className="w-full py-2.5 rounded-xl bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] text-sm font-medium transition-all mb-2" onClick={() => setShowAddGraph(true)}>
               + {t('modal.addGraphTitle')}
             </button>
           )}

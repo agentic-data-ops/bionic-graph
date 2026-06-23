@@ -10,10 +10,10 @@ function Modal({ title, children, onClose }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={onClose}>
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
-      <div className="relative bg-[#1c1c20] border border-[#2a2a2e] rounded-2xl p-6 min-w-[640px] max-w-2xl max-h-[85vh] overflow-y-auto shadow-2xl" onClick={(e) => e.stopPropagation()}>
-        <div className="text-base font-semibold text-[#e5e5e7] mb-5 flex items-center justify-between tracking-tight">
+      <div className="relative bg-[var(--bg-secondary)] border border-[var(--border)] rounded-2xl p-6 min-w-[640px] max-w-2xl max-h-[85vh] overflow-y-auto shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="text-base font-semibold text-[var(--text-primary)] mb-5 flex items-center justify-between tracking-tight">
           <span>{title}</span>
-          <button className="w-7 h-7 rounded-lg bg-[#2a2a2e] hover:bg-[#3a3a3e] flex items-center justify-center text-[#636366] hover:text-white transition-all text-sm" onClick={onClose}>
+          <button className="w-7 h-7 rounded-lg bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-all text-sm" onClick={onClose}>
             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
             </svg>
@@ -81,10 +81,10 @@ function ProgressStep({ label, status, detail }) {
     : status === 'running' ? '⏳'
     : status === 'failed' ? '❌'
     : '⏸';
-  const color = status === 'done' || status === 'completed' ? 'text-[#30d158]'
-    : status === 'running' ? 'text-[#0a84ff]'
-    : status === 'failed' ? 'text-[#ff453a]'
-    : 'text-[#636366]';
+  const color = status === 'done' || status === 'completed' ? 'text-[var(--success)]'
+    : status === 'running' ? 'text-[var(--accent)]'
+    : status === 'failed' ? 'text-[var(--danger)]'
+    : 'text-[var(--text-tertiary)]';
   return (
     <div className="py-1.5">
       <div className="flex items-center gap-2">
@@ -92,10 +92,10 @@ function ProgressStep({ label, status, detail }) {
         <span className={`text-xs ${color} font-medium tracking-tight`}>{label}</span>
       </div>
       {detail && (status === 'done' || status === 'completed') && (
-        <div className="mt-1.5 ml-5 text-[11px] text-[#636366] leading-relaxed font-mono whitespace-pre-wrap border-l border-[#2a2a2e] pl-3">{detail}</div>
+        <div className="mt-1.5 ml-5 text-[11px] text-[var(--text-tertiary)] leading-relaxed font-mono whitespace-pre-wrap border-l border-[var(--border)] pl-3">{detail}</div>
       )}
       {detail && status === 'running' && (
-        <div className="mt-1.5 ml-5 text-[11px] text-[#48484a] leading-relaxed font-mono whitespace-pre-wrap border-l border-[#2a2a2e] pl-3 max-h-20 overflow-y-auto">{detail}</div>
+        <div className="mt-1.5 ml-5 text-[11px] text-[var(--text-muted)] leading-relaxed font-mono whitespace-pre-wrap border-l border-[var(--border)] pl-3 max-h-20 overflow-y-auto">{detail}</div>
       )}
     </div>
   );
@@ -266,20 +266,20 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
 
       {/* Tag filter */}
       <div className="mb-1">
-        <label className="block text-xs text-[#636366] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.tagFilter')}</label>
+        <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.tagFilter')}</label>
       </div>
       <div className="flex gap-1.5 mb-4 flex-wrap">
-        <button className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${!filterTag ? 'bg-[#0a84ff] text-white' : 'bg-[#2a2a2e] text-[#86868b] hover:text-white'}`} onClick={() => setFilterTag('')}>All</button>
-        {allTags.map((tag) => (<button key={tag} className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${filterTag === tag ? 'bg-[#0a84ff] text-white' : 'bg-[#2a2a2e] text-[#86868b] hover:text-white'}`} onClick={() => setFilterTag(tag)}>{tag}</button>))}
+        <button className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${!filterTag ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`} onClick={() => setFilterTag('')}>All</button>
+        {allTags.map((tag) => (<button key={tag} className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${filterTag === tag ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`} onClick={() => setFilterTag(tag)}>{tag}</button>))}
       </div>
 
       {/* Graph filter */}
       <div className="mb-1">
-        <label className="block text-xs text-[#636366] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.graphFilter')}</label>
+        <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.graphFilter')}</label>
       </div>
       <div className="flex gap-1.5 mb-4 flex-wrap">
-        <button className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${!filterGraph ? 'bg-[#0a84ff] text-white' : 'bg-[#2a2a2e] text-[#86868b] hover:text-white'}`} onClick={() => setFilterGraph('')}>All</button>
-        {allGraphs.map((g) => (<button key={g} className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${filterGraph === g ? 'bg-[#0a84ff] text-white' : 'bg-[#2a2a2e] text-[#86868b] hover:text-white'}`} onClick={() => setFilterGraph(g)}>{g}</button>))}
+        <button className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${!filterGraph ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`} onClick={() => setFilterGraph('')}>All</button>
+        {allGraphs.map((g) => (<button key={g} className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${filterGraph === g ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`} onClick={() => setFilterGraph(g)}>{g}</button>))}
       </div>
 
       {/* Import dialog - separate modal */}
@@ -287,16 +287,16 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
         <Modal title={t('knowledgeBase.import')} onClose={() => { setShowImport(false); setImportContent(''); setImportSteps([]); }}>
           <div className="space-y-4">
           <div>
-            <label className="block text-xs text-[#636366] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.graph')}</label>
-            <select className="w-full px-3 py-2 rounded-xl bg-[#1c1c20] text-[#e5e5e7] text-sm border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff] appearance-none cursor-pointer"
+            <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.graph')}</label>
+            <select className="w-full px-3 py-2 rounded-xl bg-[var(--bg-secondary)] text-[var(--text-primary)] text-sm border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] appearance-none cursor-pointer"
               style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23636366' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px center', paddingRight: '32px' }}
               value={importGraph} onChange={(e) => setImportGraph(e.target.value)}>
               {graphs.map((g) => <option key={g} value={g}>{g}</option>)}
             </select>
           </div>
           <div>
-            <label className="block text-xs text-[#636366] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.model')}</label>
-            <select className="w-full px-3 py-2 rounded-xl bg-[#1c1c20] text-[#e5e5e7] text-sm border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff] appearance-none cursor-pointer"
+            <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.model')}</label>
+            <select className="w-full px-3 py-2 rounded-xl bg-[var(--bg-secondary)] text-[var(--text-primary)] text-sm border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] appearance-none cursor-pointer"
               style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23636366' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px center', paddingRight: '32px' }}
               value={importProvider} onChange={(e) => setImportProvider(e.target.value)}>
               {providers.flatMap((p) => {
@@ -313,19 +313,19 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
           </div>
 
           <div>
-            <label className="block text-xs text-[#636366] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.content')}</label>
-            <textarea className="w-full h-28 px-3 py-2 rounded-xl bg-[#1c1c20] text-[#e5e5e7] text-sm border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff] placeholder-[#48484a] resize-none" placeholder={t('knowledgeBase.import') + '...'} value={importContent} onChange={(e) => setImportContent(e.target.value)} />
+            <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.content')}</label>
+            <textarea className="w-full h-28 px-3 py-2 rounded-xl bg-[var(--bg-secondary)] text-[var(--text-primary)] text-sm border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] placeholder-[var(--text-muted)] resize-none" placeholder={t('knowledgeBase.import') + '...'} value={importContent} onChange={(e) => setImportContent(e.target.value)} />
           </div>
 
           {/* Action buttons */}
           <div className="flex gap-2 justify-between">
-            <label className="px-3.5 py-1.5 rounded-xl bg-[#3a3a3e] text-[#86868b] hover:text-white text-xs font-medium cursor-pointer transition-all">
+            <label className="px-3.5 py-1.5 rounded-xl bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs font-medium cursor-pointer transition-all">
               {'📄'} {t('knowledgeBase.upload')}
               <input type="file" accept=".md,.markdown,.txt" className="hidden" onChange={handleFileUpload} disabled={!provider || importing} />
             </label>
             <div className="flex gap-2">
-              <button className="px-3.5 py-1.5 rounded-xl bg-[#3a3a3e] text-[#86868b] hover:text-white text-xs font-medium transition-all" onClick={() => { setShowImport(false); setImportContent(''); setImportSteps([]); }}>{t('panel.close')}</button>
-              <button className="px-3.5 py-1.5 rounded-xl bg-[#0a84ff] text-white text-xs font-medium hover:bg-[#0a6ed9] transition-all shadow-sm" onClick={handleImportText} disabled={!importContent.trim() || !provider || importing}>
+              <button className="px-3.5 py-1.5 rounded-xl bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs font-medium transition-all" onClick={() => { setShowImport(false); setImportContent(''); setImportSteps([]); }}>{t('panel.close')}</button>
+              <button className="px-3.5 py-1.5 rounded-xl bg-[var(--accent)] text-white text-xs font-medium hover:bg-[color-mix(in srgb, var(--accent), black 10%)] transition-all shadow-sm" onClick={handleImportText} disabled={!importContent.trim() || !provider || importing}>
                 {importing ? t('knowledgeBase.import') + '...' : t('knowledgeBase.import')}
               </button>
             </div>
@@ -333,9 +333,9 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
 
           {/* Progress steps */}
           {importSteps.length > 0 && (
-            <div className="border border-[#2a2a2e] rounded-xl overflow-hidden mt-2">
+            <div className="border border-[var(--border)] rounded-xl overflow-hidden mt-2">
               <div className="px-4 py-3">
-                <div className="text-xs text-[#0a84ff] font-semibold mb-2 tracking-tight">📄 {t('knowledgeBase.import')}</div>
+                <div className="text-xs text-[var(--accent)] font-semibold mb-2 tracking-tight">📄 {t('knowledgeBase.import')}</div>
                 <div className="space-y-0">
                   {importSteps.map((step, i) => <ProgressStep key={i} {...step} />)}
                 </div>
@@ -351,32 +351,32 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
         <Modal title={t('knowledgeBase.editTitle')} onClose={() => { setShowEdit(null); setEditTitle(''); setEditTags([]); setEditNewTag(''); }}>
           <div className="space-y-4">
             <div>
-              <label className="block text-xs text-[#636366] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.editTitle')}</label>
-              <input className="w-full px-3.5 py-2 rounded-xl bg-[#2a2a2e] text-[#e5e5e7] text-sm border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff] placeholder-[#48484a]"
+              <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.editTitle')}</label>
+              <input className="w-full px-3.5 py-2 rounded-xl bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-sm border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] placeholder-[var(--text-muted)]"
                 type="text" value={editTitle} onChange={(e) => setEditTitle(e.target.value)} />
             </div>
             <div>
-              <label className="block text-xs text-[#636366] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.editTags')}</label>
+              <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.editTags')}</label>
               <div className="flex flex-wrap gap-1.5 mb-2">
                 {editTags.map((tag, idx) => (
-                  <span key={idx} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[#3a3a3e] text-xs text-[#e5e5e7]">
+                  <span key={idx} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[var(--bg-hover)] text-xs text-[var(--text-primary)]">
                     {tag}
-                    <button className="text-[#ff453a] hover:text-[#ff6961] text-[10px] font-medium" onClick={() => setEditTags(editTags.filter((_, i) => i !== idx))}>&times;</button>
+                    <button className="text-[var(--danger)] hover:text-[#ff6961] text-[10px] font-medium" onClick={() => setEditTags(editTags.filter((_, i) => i !== idx))}>&times;</button>
                   </span>
                 ))}
               </div>
               <div className="flex gap-2">
-                <input className="flex-1 px-3 py-1.5 rounded-xl bg-[#2a2a2e] text-[#e5e5e7] text-xs border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff] placeholder-[#48484a]"
+                <input className="flex-1 px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] placeholder-[var(--text-muted)]"
                   type="text" placeholder={t('knowledgeBase.addTag')} value={editNewTag}
                   onChange={(e) => setEditNewTag(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); if (editNewTag.trim() && !editTags.includes(editNewTag.trim())) { setEditTags([...editTags, editNewTag.trim()]); setEditNewTag(''); } } }} />
-                <button className="px-3 py-1.5 rounded-xl bg-[#3a3a3e] text-[#86868b] hover:text-white text-xs font-medium transition-all"
+                <button className="px-3 py-1.5 rounded-xl bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs font-medium transition-all"
                   onClick={() => { if (editNewTag.trim() && !editTags.includes(editNewTag.trim())) { setEditTags([...editTags, editNewTag.trim()]); setEditNewTag(''); } }}>{t('knowledgeBase.addTag')}</button>
               </div>
             </div>
             <div className="flex gap-2 justify-end">
-              <button className="px-4 py-2 rounded-xl bg-[#3a3a3e] text-[#86868b] hover:text-white text-sm font-medium transition-all" onClick={() => { setShowEdit(null); setEditTitle(''); setEditTags([]); setEditNewTag(''); }}>{t('panel.close')}</button>
-              <button className="px-4 py-2 rounded-xl bg-[#0a84ff] text-white text-sm font-medium hover:bg-[#0a6ed9] transition-all shadow-sm" onClick={handleSaveEdit} disabled={!editTitle.trim()}>
+              <button className="px-4 py-2 rounded-xl bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-sm font-medium transition-all" onClick={() => { setShowEdit(null); setEditTitle(''); setEditTags([]); setEditNewTag(''); }}>{t('panel.close')}</button>
+              <button className="px-4 py-2 rounded-xl bg-[var(--accent)] text-white text-sm font-medium hover:bg-[color-mix(in srgb, var(--accent), black 10%)] transition-all shadow-sm" onClick={handleSaveEdit} disabled={!editTitle.trim()}>
                 {t('settings.save')}
               </button>
             </div>
@@ -384,34 +384,34 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
         </Modal>
       )}
 
-      {loading && <div className="text-center text-[#636366] text-sm py-8">Loading...</div>}
+      {loading && <div className="text-center text-[var(--text-tertiary)] text-sm py-8">Loading...</div>}
 
       {!loading && (
         <>
         <div className="mb-1">
-          <label className="block text-xs text-[#636366] font-medium mb-2 tracking-tight">{t('knowledgeBase.docList')}</label>
+          <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-2 tracking-tight">{t('knowledgeBase.docList')}</label>
         </div>
         <div className="space-y-1 max-h-60 overflow-y-auto">
-          {filteredDocs.length === 0 && <div className="text-center text-[#636366] text-sm py-8">No documents yet</div>}
+          {filteredDocs.length === 0 && <div className="text-center text-[var(--text-tertiary)] text-sm py-8">No documents yet</div>}
           {filteredDocs.map((doc) => (
-            <div key={doc.id} className="flex items-center justify-between py-2.5 px-3 rounded-xl hover:bg-[#2a2a2e] transition-all group">
+            <div key={doc.id} className="flex items-center justify-between py-2.5 px-3 rounded-xl hover:bg-[var(--bg-tertiary)] transition-all group">
               <div className="flex-1 min-w-0">
-                <div className="text-sm text-[#e5e5e7] font-medium truncate">{doc.title}</div>
-                <div className="text-xs text-[#636366] mt-0.5">
-                  {doc.graph_name && <><span className="text-[#0a84ff]">{doc.graph_name}</span>{' · '}</>}
+                <div className="text-sm text-[var(--text-primary)] font-medium truncate">{doc.title}</div>
+                <div className="text-xs text-[var(--text-tertiary)] mt-0.5">
+                  {doc.graph_name && <><span className="text-[var(--accent)]">{doc.graph_name}</span>{' · '}</>}
                   {doc.tags?.length > 0 && doc.tags.join(', ') + ' · '}
                   {new Date(doc.updated_at || doc.created_at).toLocaleDateString()}
                 </div>
               </div>
               <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 ml-2">
-                <button className="px-2 py-1 text-xs text-[#636366] hover:text-white hover:bg-[#3a3a3e] rounded-lg transition-all" onClick={() => handleEdit(doc)} disabled={!!importing}>Edit</button>
-                <button className="px-2 py-1 text-xs text-[#ff453a] hover:bg-[#3a2a2e] rounded-lg transition-all" onClick={() => handleDelete(doc)} disabled={!!importing}>Delete</button>
+                <button className="px-2 py-1 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] rounded-lg transition-all" onClick={() => handleEdit(doc)} disabled={!!importing}>Edit</button>
+                <button className="px-2 py-1 text-xs text-[var(--danger)] hover:bg-[color-mix(in srgb, var(--bg-hover), var(--danger) 30%)] rounded-lg transition-all" onClick={() => handleDelete(doc)} disabled={!!importing}>Delete</button>
               </div>
             </div>
           ))}
         </div>
         <div className="mt-4">
-          <button className="w-full py-2.5 rounded-xl bg-[#0a84ff] text-white text-sm font-medium hover:bg-[#0a6ed9] transition-all shadow-sm" onClick={() => setShowImport(true)} disabled={!provider || importing}>
+          <button className="w-full py-2.5 rounded-xl bg-[var(--accent)] text-white text-sm font-medium hover:bg-[color-mix(in srgb, var(--accent), black 10%)] transition-all shadow-sm" onClick={() => setShowImport(true)} disabled={!provider || importing}>
             + {t('knowledgeBase.import')}
           </button>
         </div>

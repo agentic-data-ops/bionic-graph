@@ -1,5 +1,46 @@
 @import "tailwindcss";
 
+/* ─── Theme Variables ─── */
+:root {
+  --bg-primary: #1a1a1e;
+  --bg-secondary: #1c1c20;
+  --bg-tertiary: #2a2a2e;
+  --bg-hover: #3a3a3e;
+  --text-primary: #e5e5e7;
+  --text-secondary: #86868b;
+  --text-tertiary: #636366;
+  --text-muted: #48484a;
+  --border: #2a2a2e;
+  --accent: #0a84ff;
+  --danger: #ff453a;
+  --success: #30d158;
+  --danger-bg: rgba(255, 69, 58, 0.15);
+  --accent-bg: rgba(10, 132, 255, 0.15);
+  --success-bg: rgba(48, 209, 88, 0.15);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.08);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.14);
+}
+
+.light {
+  --bg-primary: #f5f5f7;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #e8e8ed;
+  --bg-hover: #d1d1d6;
+  --text-primary: #1d1d1f;
+  --text-secondary: #6e6e73;
+  --text-tertiary: #86868b;
+  --text-muted: #aeaeb2;
+  --border: #d2d2d7;
+  --accent: #0a84ff;
+  --danger: #ff3b30;
+  --success: #34c759;
+  --danger-bg: rgba(255, 59, 48, 0.12);
+  --accent-bg: rgba(10, 132, 255, 0.12);
+  --success-bg: rgba(52, 199, 89, 0.12);
+  --scrollbar-thumb: rgba(0, 0, 0, 0.12);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.20);
+}
+
 /* ─── Mac-style base ─── */
 :root {
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
@@ -19,11 +60,11 @@
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--scrollbar-thumb);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.14);
+  background: var(--scrollbar-thumb-hover);
 }
 
 /* Selection */

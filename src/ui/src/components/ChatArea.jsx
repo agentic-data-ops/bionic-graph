@@ -220,16 +220,16 @@ export default function ChatArea({
   const messages = activeConv?.messages || [];
 
   return (
-    <div className="flex-1 flex flex-col min-w-0 bg-[#1a1a1e]">
-      <div className="px-5 py-3 border-b border-[#2a2a2e] bg-[#1c1c20] flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-[#e5e5e7] truncate tracking-tight">
+    <div className="flex-1 flex flex-col min-w-0 bg-[var(--bg-primary)]">
+      <div className="px-5 py-3 border-b border-[var(--border)] bg-[var(--bg-secondary)] flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-[var(--text-primary)] truncate tracking-tight">
           {activeConv?.title || t('chat.newChat')}
         </h2>
         <div className="flex items-center gap-2 flex-shrink-0 ml-4">
-          <button className="w-7 h-7 rounded-lg bg-[#2a2a2e] hover:bg-[#3a3a3e] flex items-center justify-center text-xs transition-all" onClick={onThemeToggle} title={theme === 'dark' ? 'Light mode' : 'Dark mode'}>
+          <button className="w-7 h-7 rounded-lg bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] flex items-center justify-center text-xs transition-all" onClick={onThemeToggle} title={theme === 'dark' ? 'Light mode' : 'Dark mode'}>
             {theme === 'dark' ? '☀️' : '🌙'}
           </button>
-          <button className="px-2 py-1 rounded-lg bg-[#2a2a2e] text-[#86868b] hover:text-white hover:bg-[#3a3a3e] text-xs font-medium transition-all" onClick={onLanguageToggle}>
+          <button className="px-2 py-1 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] text-xs font-medium transition-all" onClick={onLanguageToggle}>
             {language === 'zh' ? 'EN' : '中文'}
           </button>
         </div>
