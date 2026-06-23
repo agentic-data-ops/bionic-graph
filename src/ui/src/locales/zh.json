@@ -98,5 +98,7 @@
   "knowledgeBase.docList": "文档列表",
   "knowledgeBase.editTitle": "标题",
   "knowledgeBase.editTags": "标签",
-  "knowledgeBase.addTag": "添加标签"
+  "knowledgeBase.addTag": "添加标签",
+  "chat.greedySearch": "贪婪搜索",
+  "chat.exactSearch": "精确搜索"
 }

@@ -88,6 +88,8 @@
   "settings.defaultGraph": "Default Graph",
   "chat.greedy": "Greedy",
   "chat.exact": "Exact",
+  "chat.greedySearch": "Greedy Search",
+  "chat.exactSearch": "Exact Search",
   "chat.kwModeHint": "Switch between greedy (ANY keyword) and exact (ALL keywords) matching",
   "search.placeholder": "Search keywords or paste text for semantic search...",
   "search.keyword": "Keyword",

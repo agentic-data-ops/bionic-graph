@@ -28,8 +28,9 @@ const DEFAULT_SETTINGS = {
   activeProvider: 'default-deepseek',
   defaultGraph: 'default',
   timeTravel: false,
+  timeTravelPoint: '',
   useGraph: false,
-  searchMode: 'keyword',
+  searchMode: 'semantic',
   chatModel: null,
 };
 
@@ -273,6 +274,8 @@ export default function App() {
         onSearchModeChange={(v) => handleUpdateSettings({ searchMode: v })}
         timeTravel={settings.timeTravel}
         onTimeTravelToggle={(v) => handleUpdateSettings({ timeTravel: v })}
+        timeTravelPoint={settings.timeTravelPoint}
+        onTimeTravelPointChange={(v) => handleUpdateSettings({ timeTravelPoint: v })}
         defaultGraph={settings.defaultGraph}
         onDefaultGraphChange={(g) => handleUpdateSettings({ defaultGraph: g })}
         graphs={graphs}

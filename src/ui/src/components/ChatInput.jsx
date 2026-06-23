@@ -13,6 +13,8 @@ const ChatInput = forwardRef(function ChatInput({
   onkwSearchModeChange,
   timeTravel,
   onTimeTravelToggle,
+  timeTravelPoint,
+  onTimeTravelPointChange,
   graphName,
   onGraphNameChange,
   graphs,
@@ -55,7 +57,7 @@ const ChatInput = forwardRef(function ChatInput({
   return (
     <div className="bg-[var(--bg-secondary)] border-t border-[var(--border)] px-4 py-3">
       {/* Mode bar */}
-      <div className="flex items-center gap-2 mb-2.5 flex-wrap">
+      <div className="flex items-center gap-3 mb-2.5 flex-wrap">
         {/* Model selector — leftmost */}
         {providers.length > 0 && activeProvider && (() => {
           const activeProv = providers.find(p => p.id === activeProvider);
@@ -103,6 +105,7 @@ const ChatInput = forwardRef(function ChatInput({
 
         {useGraph && (
           <>
+            {/* Graph selector */}
             <select
               className="bg-[var(--bg-tertiary)] text-[var(--text-primary)] rounded-lg px-2.5 py-1 text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] cursor-pointer appearance-none"
               style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath fill='%2386868b' d='M0 0l4 5 4-5z'/%3E%3C/svg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 6px center', paddingRight: '22px' }}
@@ -111,51 +114,65 @@ const ChatInput = forwardRef(function ChatInput({
             >
               {graphs.map((g) => <option key={g} value={g}>{g}</option>)}
             </select>
-            <label className="flex items-center gap-1.5 cursor-pointer select-none text-xs text-[var(--text-secondary)] font-medium whitespace-nowrap">
-              <input type="checkbox" checked={timeTravel} onChange={(e) => onTimeTravelToggle(e.target.checked)}
-                className="w-3.5 h-3.5 rounded border-[#3a3a3e] bg-[var(--bg-tertiary)] checked:bg-[var(--accent)] checked:border-[#0a84ff] focus:ring-0 cursor-pointer" />
-              {t('chat.timeTravel')}
-            </label>
+
+            {/* Search mode */}
             <div className="flex rounded-lg overflow-hidden ring-1 ring-[var(--bg-hover)]">
-              <button
-                className={`px-2.5 py-1 text-[11px] font-medium transition-all ${searchMode === 'keyword' ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}
-                onClick={() => onSearchModeChange('keyword')}
-              >{t('chat.keyword')}</button>
               <button
                 className={`px-2.5 py-1 text-[11px] font-medium transition-all ${searchMode === 'semantic' ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}
                 onClick={() => onSearchModeChange('semantic')}
               >{t('chat.semantic')}</button>
+              <button
+                className={`px-2.5 py-1 text-[11px] font-medium transition-all ${searchMode === 'keyword' ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}
+                onClick={() => onSearchModeChange('keyword')}
+              >{t('chat.keyword')}</button>
             </div>
+
+            {/* Keyword match mode dropdown */}
             {searchMode === 'keyword' && (
               <div className="relative">
                 <button
                   className="px-2 py-1 text-[10px] rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-all font-medium flex items-center gap-1"
                   onClick={(e) => { e.stopPropagation(); setKwModeOpen(!kwModeOpen); }}
                 >
-                  {kwSearchMode === 'exact' ? t('chat.exact') : t('chat.greedy')}
+                  {kwSearchMode === 'exact' ? t('chat.exactSearch') : t('chat.greedySearch')}
                   <svg className={`w-2.5 h-2.5 transition-transform ${kwModeOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
                 </button>
                 {kwModeOpen && (
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => setKwModeOpen(false)} />
-                    <div className="absolute right-0 top-full mt-1 z-50 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-lg overflow-hidden min-w-[130px]">
+                    <div className="absolute right-0 top-full mt-1 z-50 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-lg overflow-hidden min-w-[150px]">
                       <button
                         className={`w-full text-left px-3 py-2 text-xs font-medium transition-all ${kwSearchMode === 'greedy' ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
                         onClick={() => { onkwSearchModeChange('greedy'); setKwModeOpen(false); }}
-                      >{t('chat.greedy')}</button>
+                      >{t('chat.greedySearch')}</button>
                       <button
                         className={`w-full text-left px-3 py-2 text-xs font-medium transition-all ${kwSearchMode === 'exact' ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
                         onClick={() => { onkwSearchModeChange('exact'); setKwModeOpen(false); }}
-                      >{t('chat.exact')}</button>
+                      >{t('chat.exactSearch')}</button>
                     </div>
                   </>
                 )}
               </div>
             )}
+
+            {/* Time travel */}
+            <label className="flex items-center gap-1.5 cursor-pointer select-none text-xs text-[var(--text-secondary)] font-medium whitespace-nowrap">
+              <input type="checkbox" checked={timeTravel} onChange={(e) => onTimeTravelToggle(e.target.checked)}
+                className="w-3.5 h-3.5 rounded border-[#3a3a3e] bg-[var(--bg-tertiary)] checked:bg-[var(--accent)] checked:border-[#0a84ff] focus:ring-0 cursor-pointer" />
+              {t('chat.timeTravel')}
+            </label>
+            {timeTravel && (
+              <input type="datetime-local"
+                className="bg-[var(--bg-tertiary)] text-[var(--text-primary)] rounded-lg px-2 py-1 text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                value={timeTravelPoint || ''}
+                onChange={(e) => onTimeTravelPointChange?.(e.target.value)}
+              />
+            )}
           </>
         )}
 
       </div>
+
       {/* Input area */}
       <div className="flex items-end gap-2">
         <textarea

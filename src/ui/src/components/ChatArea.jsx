@@ -26,6 +26,7 @@ export default function ChatArea({
   onSearchModeChange,
   timeTravel,
   onTimeTravelToggle,
+  timeTravelPoint,
   defaultGraph,
   onDefaultGraphChange,
   graphs,
@@ -122,7 +123,7 @@ export default function ChatArea({
           if (!isSemantic) {
             const doneSteps = [{ icon: '✅', name: 'Graph search completed', status: 'done', llmOutput: '' }];
             setSearchStream(null);
-            chatInputRef.current?.focus();
+            requestAnimationFrame(() => chatInputRef.current?.focus());
             onUpdateConv({ ...conv, messages: [...updatedMsgs, { ...progressMsg, steps: doneSteps, graphData: res, graphName: defaultGraph }] });
             return;
           }
@@ -177,12 +178,12 @@ export default function ChatArea({
           setSearchStream(null);
           const finalSteps = [step1done, step2done, { icon: '✅', name: 'Filtering completed', status: 'done', llmOutput: filterBuf }];
           onUpdateConv({ ...conv, messages: [...updatedMsgs, { ...progressMsg, steps: finalSteps, graphData: filteredData, graphName: defaultGraph }] });
-          chatInputRef.current?.focus();
+          requestAnimationFrame(() => chatInputRef.current?.focus());
         } catch (e) {
           const failedSteps = (steps || []).map((s) => ({ ...s, status: 'failed' }));
           setSearchStream(null);
           onUpdateConv({ ...conv, messages: [...updatedMsgs, { ...progressMsg, steps: failedSteps }] });
-          chatInputRef.current?.focus();
+          requestAnimationFrame(() => chatInputRef.current?.focus());
         }
       } else {
         // ── LLM mode: streaming chat ──
@@ -214,7 +215,7 @@ export default function ChatArea({
               });
             },
           );
-          chatInputRef.current?.focus();
+          requestAnimationFrame(() => chatInputRef.current?.focus());
         } catch (e) {
           if (e.name === 'AbortError') return;
           onUpdateConv({
@@ -264,7 +265,7 @@ export default function ChatArea({
 
       <div className="flex-1 flex flex-col min-h-0">
         <MessageList messages={messages} searchStream={searchStream} theme={theme}
-          onEdit={(text) => { chatInputRef.current?.setText(text); chatInputRef.current?.focus(); }}
+          onEdit={(text) => { chatInputRef.current?.setText(text); requestAnimationFrame(() => chatInputRef.current?.focus()); }}
           onSaveToKB={onSaveToKB}
         />
       </div>
@@ -282,6 +283,8 @@ export default function ChatArea({
         onSearchModeChange={onSearchModeChange}
         timeTravel={timeTravel}
         onTimeTravelToggle={onTimeTravelToggle}
+        timeTravelPoint={timeTravelPoint}
+        onTimeTravelPointChange={(v) => {}}
         graphName={defaultGraph}
         onGraphNameChange={onDefaultGraphChange}
         graphs={graphs}
