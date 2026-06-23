@@ -4,30 +4,21 @@ import { Network } from 'vis-network';
 import { DataSet } from 'vis-data';
 import { traverse, updateVertexProperties, updateEdgeProperties, deleteVertex, getDocument } from '../api';
 
-const DARK_OPTIONS = {
-  nodes: {
-    shape: 'dot', size: 18,
-    font: { face: '-apple-system, BlinkMacSystemFont, "SF Pro Text", Helvetica, Arial, sans-serif', size: 13, color: '#e5e5e7', strokeWidth: 3, strokeColor: '#1a1a1e' },
-    color: { background: '#3a3a3e', border: '#4a4a4e', highlight: { background: '#0a84ff', border: '#0a84ff' }, hover: { background: '#4a4a4e', border: '#5a5a5e' } },
-    borderWidth: 1.5, borderWidthSelected: 2,
-    shadow: { enabled: true, color: 'rgba(0,0,0,0.3)', size: 6, x: 0, y: 2 },
-  },
-  edges: {
-    width: 1.2,
-    color: { color: '#3a3a3e', highlight: '#0a84ff', hover: '#4a4a4e' },
-    font: { face: '-apple-system, BlinkMacSystemFont, "SF Pro Text", Helvetica, Arial, sans-serif', size: 10, color: '#636366', strokeWidth: 2, strokeColor: '#1c1c20', align: 'middle' },
-    smooth: { type: 'curvedCW', roundness: 0.15 },
-    arrows: { to: { enabled: true, scaleFactor: 0.6 } },
-  },
-  physics: {
-    solver: 'forceAtlas2Based',
-    forceAtlas2Based: { gravitationalConstant: -40, centralGravity: 0.005, springLength: 180, springConstant: 0.02 },
-    stabilization: { iterations: 100 },
-  },
+
+const DARK_OPTS = {
+  nodes: { shape: 'dot', size: 18, font: { face: '-apple-system, BlinkMacSystemFont, "SF Pro Text", Helvetica, Arial, sans-serif', size: 13, color: '#e5e5e7', strokeWidth: 3, strokeColor: '#1a1a1e' }, color: { background: '#3a3a3e', border: '#4a4a4e', highlight: { background: '#0a84ff', border: '#0a84ff' }, hover: { background: '#4a4a4e', border: '#5a5a5e' } }, borderWidth: 1.5, borderWidthSelected: 2, shadow: { enabled: true, color: 'rgba(0,0,0,0.3)', size: 6, x: 0, y: 2 } },
+  edges: { width: 1.2, color: { color: '#3a3a3e', highlight: '#0a84ff', hover: '#4a4a4e' }, font: { face: '-apple-system, BlinkMacSystemFont, "SF Pro Text", Helvetica, Arial, sans-serif', size: 10, color: '#636366', strokeWidth: 2, strokeColor: '#1c1c20', align: 'middle' }, smooth: { type: 'curvedCW', roundness: 0.15 }, arrows: { to: { enabled: true, scaleFactor: 0.6 } } },
+  physics: { solver: 'forceAtlas2Based', forceAtlas2Based: { gravitationalConstant: -40, centralGravity: 0.005, springLength: 180, springConstant: 0.02 }, stabilization: { iterations: 100 } },
   interaction: { hover: true, tooltipDelay: 200, zoomView: true, dragView: true },
   layout: { randomSeed: 42 },
 };
-
+const LIGHT_OPTS = {
+  nodes: { shape: 'dot', size: 18, font: { face: '-apple-system, BlinkMacSystemFont, "SF Pro Text", Helvetica, Arial, sans-serif', size: 13, color: '#1d1d1f', strokeWidth: 0, strokeColor: '#ffffff' }, color: { background: '#d1d1d6', border: '#aeaeb2', highlight: { background: '#0a84ff', border: '#0a84ff' }, hover: { background: '#c7c7cc', border: '#8e8e93' } }, borderWidth: 1.5, borderWidthSelected: 2, shadow: { enabled: false, color: 'rgba(0,0,0,0.08)', size: 3, x: 0, y: 1 } },
+  edges: { width: 1.2, color: { color: '#c7c7cc', highlight: '#0a84ff', hover: '#aeaeb2' }, font: { face: '-apple-system, BlinkMacSystemFont, "SF Pro Text", Helvetica, Arial, sans-serif', size: 10, color: '#8e8e93', strokeWidth: 3, strokeColor: '#ffffff', align: 'middle' }, smooth: { type: 'curvedCW', roundness: 0.15 }, arrows: { to: { enabled: true, scaleFactor: 0.6 } } },
+  physics: { solver: 'forceAtlas2Based', forceAtlas2Based: { gravitationalConstant: -40, centralGravity: 0.005, springLength: 180, springConstant: 0.02 }, stabilization: { iterations: 100 } },
+  interaction: { hover: true, tooltipDelay: 200, zoomView: true, dragView: true },
+  layout: { randomSeed: 42 },
+};
 function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument }) {
   const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
@@ -90,14 +81,12 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument })
       item.properties = editProps;
       item.name = name;
       item.keywords = keywords;
-      item.name = name;
-      item.keywords = keywords;
       setEditing(false);
     } catch (e) {
       setError(e.message || 'Save failed');
     }
     setSaving(false);
-  }, [editLabels, editProps, item, type, graphName]);
+  }, [editLabels, editProps, item, type, graphName, localName, localKeywords]);
 
   return (
     <div className="w-72 bg-[var(--bg-secondary)] border-l border-[var(--border)] flex flex-col h-full overflow-y-auto flex-shrink-0 select-text">
@@ -182,8 +171,8 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument })
           <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-2">Custom Properties</div>
           {editing ? (
             <div className="space-y-1.5">
-              {Object.entries(editProps).filter(([k]) => !k.startsWith('_')).map(([k, v]) => (
-                <div key={k} className="flex items-start gap-1 py-1.5 px-2.5 rounded-lg bg-[var(--bg-tertiary)]">
+              {Object.entries(editProps).map(([k, v], idx) => (
+                <div key={idx} className="flex items-start gap-1 py-1.5 px-2.5 rounded-lg bg-[var(--bg-tertiary)]">
                   <div className="flex-1 flex flex-col gap-1 min-w-0">
                     <input
                       className="w-full px-2 py-1 rounded-md bg-[var(--bg-secondary)] text-[var(--text-primary)] text-[10px] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] font-mono"
@@ -276,7 +265,7 @@ function buildFromData(dataItems) {
   return { nodes, edges };
 }
 
-const GraphViewer = forwardRef(({ data, graph, className }, ref) => {
+const GraphViewer = forwardRef(({ data, graph, className, theme }, ref) => {
   const containerRef = useRef(null);
   const netRef = useRef(null);
   const nodesRef = useRef(null);
@@ -333,8 +322,9 @@ const GraphViewer = forwardRef(({ data, graph, className }, ref) => {
     const container = containerRef.current;
     if (!container) return;
 
-    const net = new Network(container, { nodes, edges }, DARK_OPTIONS);
-
+    const isLight = (theme || "dark") === "light";
+    const net = new Network(container, { nodes, edges }, isLight ? LIGHT_OPTS : DARK_OPTS);
+    // Old inline opts removed color: isDark ? "#e5e5e7" : "#1d1d1f", strokeWidth: isDark ? 3 : 0, strokeColor: isDark ? "#1a1a1e" : "#ffffff" },
     net.on('click', (evt) => {
       const curData = dataRef.current;
       if (evt.nodes.length) {
@@ -374,7 +364,7 @@ const GraphViewer = forwardRef(({ data, graph, className }, ref) => {
     });
 
     netRef.current = net;
-  }, [data, graph]);
+  }, [data, graph, theme]);
 
   if (!data?.data?.length) {
     return <div className="flex items-center justify-center text-[var(--text-tertiary)] text-sm min-h-[200px]">No graph data</div>;

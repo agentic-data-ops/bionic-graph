@@ -37,9 +37,21 @@ pub enum EntityType {
 /// - Spreads activation to post-synaptic neurons on firing
 /// - Enters a refractory period after firing
 /// - Links to one or more knowledge graph vertices for retrieval
-///
 /// Supports time-travel via `version`, `updated_at`, and `is_deleted` fields.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Search mode for keyword matching.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum SearchMode {
+    Greedy,
+    Exact,
+}
+
+impl Default for SearchMode {
+    fn default() -> Self {
+        Self::Greedy
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Neuron {
     pub id: NeuronId,
     /// Human-readable name of the concept this neuron represents.
@@ -141,19 +153,34 @@ impl Neuron {
 
     /// Check if any keyword matches the given query tokens.
     /// Returns the maximum match score (0.0 = no match, 1.0 = exact keyword match).
-    pub fn match_keywords(&self, query_tokens: &[&str]) -> f32 {
+    pub fn match_keywords(&self, query_tokens: &[&str], mode: &SearchMode) -> f32 {
         let lower_keywords: Vec<String> = self.keywords.iter().map(|k| k.to_lowercase()).collect();
-        for token in query_tokens {
-            let lower_token = token.to_lowercase();
-            if lower_keywords.iter().any(|k| k == &lower_token) {
-                return 1.0;
+        let lower_tokens: Vec<String> = query_tokens.iter().map(|t| t.to_lowercase()).collect();
+        match mode {
+            SearchMode::Exact => {
+                for token in &lower_tokens {
+                    let any_match = lower_keywords.iter().any(|k| {
+                        k == token || k.contains(token.as_str()) || token.contains(k.as_str())
+                    });
+                    if !any_match {
+                        return 0.0;
+                    }
+                }
+                lower_tokens.iter().filter(|t| lower_keywords.iter().any(|k| k == *t)).count() as f32 / lower_tokens.len().max(1) as f32
             }
-            // Also check partial matches
-            if lower_keywords.iter().any(|k| k.contains(&lower_token) || lower_token.contains(k.as_str())) {
-                return 0.8;
+            SearchMode::Greedy => {
+                for token in query_tokens {
+                    let lower_token = token.to_lowercase();
+                    if lower_keywords.iter().any(|k| k == &lower_token) {
+                        return 1.0;
+                    }
+                    if lower_keywords.iter().any(|k| k.contains(&lower_token) || lower_token.contains(k.as_str())) {
+                        return 0.8;
+                    }
+                }
+                0.0
             }
         }
-        0.0
     }
 
     /// Advance the neuron by one tick.

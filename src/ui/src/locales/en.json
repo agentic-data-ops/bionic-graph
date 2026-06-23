@@ -86,6 +86,7 @@
   "settings.addProvider": "Add Provider",
   "settings.noProviders": "No providers configured. Add one to start chatting.",
   "settings.defaultGraph": "Default Graph",
+  "chat.kwModeHint": "Greedy: match ANY keyword | Exact: match ALL keywords",
   "search.placeholder": "Search keywords or paste text for semantic search...",
   "search.keyword": "Keyword",
   "search.semantic": "Semantic",

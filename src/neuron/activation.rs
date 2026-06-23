@@ -4,9 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::graph::{EdgeId, VertexId};
 
-use super::neuron::{Neuron, NeuronId, Synapse};
-
-/// The result of one tick cycle in the spreading activation network.
+use super::neuron::{Neuron, NeuronId, Synapse, SearchMode};
 #[derive(Debug, Clone, Default)]
 pub struct TickResult {
     /// Neurons that fired this tick.
@@ -24,6 +22,9 @@ pub struct ActivationConfig {
     pub max_ticks: usize,
     /// Minimum activation for a neuron to be considered "hot".
     pub hot_threshold: f32,
+    /// Search mode: Greedy (any keyword match) or Exact (all keywords).
+    #[serde(default)]
+    pub search_mode: SearchMode,
     /// Minimum strength for a synapse to pass activation.
     pub min_synapse_strength: f32,
     /// Whether to run until no more neurons fire (auto-stabilize).
@@ -35,6 +36,7 @@ impl Default for ActivationConfig {
         Self {
             max_ticks: 20,
             hot_threshold: 0.3,
+            search_mode: SearchMode::Greedy,
             min_synapse_strength: 0.01,
             auto_stabilize: true,
         }
@@ -124,7 +126,7 @@ pub fn search(
 ) -> (Vec<(VertexId, u32)>, Vec<(EdgeId, u32)>, Vec<NeuronId>, Vec<NeuronId>, usize) {
     // Step 1: Activate input neurons by keyword matching
     for neuron in neurons.values_mut() {
-        let score = neuron.match_keywords(query_tokens);
+        let score = neuron.match_keywords(query_tokens, &config.search_mode);
         if score > 0.0 {
             neuron.activation = score;
         }
@@ -244,9 +246,9 @@ mod tests {
     fn test_keyword_activation() {
         let mut n = Neuron::new(1, "test");
         n.keywords = vec!["hello".to_string(), "world".to_string()];
-        assert_eq!(n.match_keywords(&["hello"]), 1.0);
-        assert_eq!(n.match_keywords(&["world"]), 1.0);
-        assert_eq!(n.match_keywords(&["nope"]), 0.0);
+        assert_eq!(n.match_keywords(&["hello"], &SearchMode::Greedy), 1.0);
+        assert_eq!(n.match_keywords(&["world"], &SearchMode::Greedy), 1.0);
+        assert_eq!(n.match_keywords(&["nope"], &SearchMode::Greedy), 0.0);
     }
 
     #[test]

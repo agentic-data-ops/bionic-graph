@@ -43,7 +43,7 @@ function SearchStep({ step }) {
   );
 }
 
-function ChatMessage({ message, graphRef, onMaximizeRef }) {
+function ChatMessage({ message, graphRef, onMaximizeRef, theme }) {
   const { t } = useTranslation();
   if (message.type === 'user') {
     return <div className="flex justify-end mb-3 message-enter"><div className="max-w-[72%] bg-[var(--accent)] text-white rounded-2xl rounded-br-md px-4 py-2.5 text-sm leading-relaxed shadow-sm select-text">{message.content}</div></div>;
@@ -83,7 +83,7 @@ function ChatMessage({ message, graphRef, onMaximizeRef }) {
                   </svg>
                 </button>
               </div>
-              <div className="h-[420px] relative"><GraphViewer ref={graphRef} data={message.graphData} graph={message.graphName} /></div>
+              <div className="h-[420px] relative"><GraphViewer ref={graphRef} data={message.graphData} graph={message.graphName} theme={theme} /></div>
             </div>
           )}
         </div>
@@ -103,7 +103,7 @@ function ChatMessage({ message, graphRef, onMaximizeRef }) {
               </svg>
             </button>
           </div>
-          <div className="h-[420px] relative"><GraphViewer ref={graphRef} data={message.data} graph={message.graphName} /></div>
+          <div className="h-[420px] relative"><GraphViewer ref={graphRef} data={message.data} graph={message.graphName} theme={theme} /></div>
         </div>
       </div>
     );
@@ -111,7 +111,7 @@ function ChatMessage({ message, graphRef, onMaximizeRef }) {
   return null;
 }
 
-export default function MessageList({ messages, searchStream }) {
+export default function MessageList({ messages, searchStream, theme }) {
   const { t } = useTranslation();
   const bottomRef = useRef(null);
   const inlineRefs = useRef({});
@@ -160,7 +160,7 @@ export default function MessageList({ messages, searchStream }) {
           </div>
         )}
         {allMessages.map((msg) => (
-          <ChatMessage key={msg.id} message={msg}
+          <ChatMessage key={msg.id} message={msg} theme={theme}
             graphRef={(el) => { if (el) inlineRefs.current[msg.id] = el; }}
             onMaximizeRef={(graphName) => handleMaximize(msg.id, graphName)}
           />
@@ -180,7 +180,7 @@ export default function MessageList({ messages, searchStream }) {
             </button>
           </div>
           <div className="flex-1 relative">
-            <GraphViewer ref={fullscreenRef}
+            <GraphViewer ref={fullscreenRef} theme={theme}
               data={{ success: true, data: [
                 ...(maximized.nodes || []).map((n) => n._original || { type: 'vertex', id: n.id, labels: [], properties: { name: n.label } }),
                 ...(maximized.edges || []).map((e) => e._original || { type: 'edge', id: e.id, source: e.from, target: e.to, label: e.label || '', properties: {} }),

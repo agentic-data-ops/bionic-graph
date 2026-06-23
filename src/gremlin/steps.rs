@@ -50,9 +50,10 @@ pub fn execute_query_with_llm(
         };
 
         current = match step {
-            TraversalStep::Search { keywords } => {
+            TraversalStep::Search { keywords, mode } => {
                 let mut nn = neural_network.lock().unwrap();
                 let query_str = keywords.join(" ");
+                nn.set_search_mode(mode.as_deref());
                 let (ranked_vertices, ranked_edges, fired, _hot, ticks) = nn.search(&query_str);
                 ticks_used = Some(ticks);
                 neurons_fired = Some(fired);
@@ -62,9 +63,7 @@ pub fn execute_query_with_llm(
                     .into_iter()
                     .take(100)
                     .map(|(vid, _score)| {
-                        log::info!("SEARCH: looking up vertex #{}", vid);
                         if let Some(vertex) = g.get_vertex(vid) {
-                            log::info!("SEARCH: found vertex #{}, name='{}'", vid, vertex.name);
                             let props: std::collections::HashMap<String, Value> = vertex
                                 .properties
                                 .iter()

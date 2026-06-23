@@ -234,9 +234,8 @@ export default function App() {
     setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
   }, []);
 
-  const handleLanguageToggle = useCallback(() => {
-    const next = i18n.language === 'zh' ? 'en' : 'zh';
-    i18n.changeLanguage(next);
+  const handleLanguageToggle = useCallback((lang) => {
+    i18n.changeLanguage(lang || (i18n.language === 'zh' ? 'en' : 'zh'));
   }, [i18n]);
 
   // Initialize first conversation if none

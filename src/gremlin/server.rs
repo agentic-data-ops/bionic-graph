@@ -449,6 +449,7 @@ async fn search_handler(
     };
     let gremlin_query = GremlinQuery::new(vec![
         super::query::TraversalStep::Search {
+            mode: body.get("mode").and_then(|v| v.as_str().map(|s| s.to_string())),
             keywords: query_text.split_whitespace().map(|s| s.to_string()).collect(),
         },
     ]);

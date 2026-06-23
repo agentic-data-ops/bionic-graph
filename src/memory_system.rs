@@ -198,6 +198,7 @@ impl MemorySystem {
     pub fn search(&self, query: &str) -> QueryResponse {
         let gremlin_query = GremlinQuery::new(vec![
             crate::gremlin::query::TraversalStep::Search {
+                mode: None,
                 keywords: query
                     .split_whitespace()
                     .map(|s| s.to_string())

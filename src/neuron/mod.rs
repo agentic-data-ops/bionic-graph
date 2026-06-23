@@ -4,6 +4,7 @@ pub mod network;
 pub mod neuron;
 
 pub use activation::*;
+pub use neuron::SearchMode;
 pub use learning::*;
 pub use network::NeuralNetwork;
 pub use neuron::*;

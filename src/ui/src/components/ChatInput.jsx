@@ -1,7 +1,7 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, forwardRef, useImperativeHandle } from 'react';
 import { useTranslation } from 'react-i18next';
 
-export default function ChatInput({
+const ChatInput = forwardRef(function ChatInput({
   providers,
   activeProvider,
   onProviderChange,
@@ -9,6 +9,8 @@ export default function ChatInput({
   onGraphToggle,
   searchMode,
   onSearchModeChange,
+  kwSearchMode,
+  onkwSearchModeChange,
   timeTravel,
   onTimeTravelToggle,
   graphName,
@@ -18,10 +20,11 @@ export default function ChatInput({
   onChatModelChange,
   onSend,
   disabled,
-}) {
+}, ref) {
   const { t } = useTranslation();
   const [text, setText] = useState('');
   const textareaRef = useRef(null);
+  useImperativeHandle(ref, () => ({ focus: () => textareaRef.current?.focus() }), []);
 
   useEffect(() => {
     const ta = textareaRef.current;
@@ -119,6 +122,13 @@ export default function ChatInput({
                 onClick={() => onSearchModeChange('semantic')}
               >{t('chat.semantic')}</button>
             </div>
+            {searchMode === 'keyword' && (
+              <button
+                className={`px-2 py-1 text-[10px] font-mono rounded-lg transition-all ${kwSearchMode === 'exact' ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}
+                onClick={() => onkwSearchModeChange(kwSearchMode === 'exact' ? 'greedy' : 'exact')}
+                title={t('chat.kwModeHint')}
+              >{kwSearchMode === 'exact' ? 'ALL' : 'ANY'}</button>
+            )}
           </>
         )}
 
@@ -156,4 +166,6 @@ export default function ChatInput({
       )}
     </div>
   );
-}
+});
+
+export default ChatInput;

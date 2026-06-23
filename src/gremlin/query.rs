@@ -9,6 +9,7 @@ pub enum TraversalStep {
     #[serde(rename = "search")]
     Search {
         keywords: Vec<String>,
+        mode: Option<String>,
     },
 
     /// Start with all vertices, or specific vertices by ID.
@@ -452,7 +453,7 @@ mod tests {
     #[test]
     fn test_search_step() {
         roundtrip(
-            TraversalStep::Search { keywords: vec!["AI".into(), "engineer".into()] },
+            TraversalStep::Search { keywords: vec!["AI".into(), "engineer".into()], mode: None },
             r#"{"step":"search","keywords":["AI","engineer"]}"#,
         );
     }

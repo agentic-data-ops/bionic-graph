@@ -81,6 +81,13 @@ impl NeuralNetwork {
     }
 
     /// Number of neurons in the network.
+    pub fn set_search_mode(&mut self, mode: Option<&str>) {
+        self.activation_config.search_mode = match mode {
+            Some("exact") => crate::neuron::SearchMode::Exact,
+            _ => crate::neuron::SearchMode::Greedy,
+        };
+    }
+
     pub fn neuron_count(&self) -> usize {
         self.neurons.len()
     }

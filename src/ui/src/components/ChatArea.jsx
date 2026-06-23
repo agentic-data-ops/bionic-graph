@@ -37,7 +37,10 @@ export default function ChatArea({
   onLanguageToggle,
 }) {
   const { t } = useTranslation();
+  const [langOpen, setLangOpen] = useState(false);
 
+  const chatInputRef = useRef(null);
+  const [kwSearchMode, setKwSearchMode] = useState("greedy");
   const [searchStream, setSearchStream] = useState(null);
 
   // Reset search stream when active conversation changes
@@ -111,11 +114,12 @@ export default function ChatArea({
           }
 
           // Step 2 (or only step for keyword): Search graph
-          const res = await graphSearch(keywordsArr, defaultGraph);
+          const res = await graphSearch(keywordsArr, defaultGraph, kwSearchMode);
 
           if (!isSemantic) {
             const doneSteps = [{ icon: '✅', name: 'Graph search completed', status: 'done', llmOutput: '' }];
             setSearchStream(null);
+            chatInputRef.current?.focus();
             onUpdateConv({ ...conv, messages: [...updatedMsgs, { ...progressMsg, steps: doneSteps, graphData: res, graphName: defaultGraph }] });
             return;
           }
@@ -229,17 +233,37 @@ export default function ChatArea({
           <button className="w-7 h-7 rounded-lg bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] flex items-center justify-center text-xs transition-all" onClick={onThemeToggle} title={theme === 'dark' ? 'Light mode' : 'Dark mode'}>
             {theme === 'dark' ? '☀️' : '🌙'}
           </button>
-          <button className="px-2 py-1 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] text-xs font-medium transition-all" onClick={onLanguageToggle}>
-            {language === 'zh' ? 'EN' : '中文'}
-          </button>
+          <div className="relative">
+            <button className="px-2 py-1 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] text-xs font-medium transition-all" onClick={() => setLangOpen(!langOpen)}>
+              LANG
+            </button>
+            {langOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setLangOpen(false)} />
+                <div className="absolute right-0 top-full mt-1 z-50 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-lg overflow-hidden min-w-[120px]">
+                  <button
+                    className={`w-full text-left px-3 py-2 text-xs font-medium transition-all ${language === 'zh' ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
+                    onClick={() => { onLanguageToggle('zh'); setLangOpen(false); }}
+                  >中文</button>
+                  <button
+                    className={`w-full text-left px-3 py-2 text-xs font-medium transition-all ${language === 'en' ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
+                    onClick={() => { onLanguageToggle('en'); setLangOpen(false); }}
+                  >English</button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
       <div className="flex-1 flex flex-col min-h-0">
-        <MessageList messages={messages} searchStream={searchStream} />
+        <MessageList messages={messages} searchStream={searchStream} theme={theme} />
       </div>
 
       <ChatInput
+        ref={chatInputRef}
+        kwSearchMode={kwSearchMode}
+        onkwSearchModeChange={setKwSearchMode}
         providers={providers}
         activeProvider={activeProvider}
         onProviderChange={onProviderChange}
