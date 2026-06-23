@@ -33,6 +33,8 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument })
   const [editing, setEditing] = useState(false);
   const [editLabels, setEditLabels] = useState('');
   const [editProps, setEditProps] = useState({});
+  const [localName, setLocalName] = useState("");
+  const [localKeywords, setLocalKeywords] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [docName, setDocName] = useState('');
@@ -56,7 +58,9 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument })
 
   const startEdit = useCallback(() => {
     setEditLabels(labels.join(', '));
-    setEditProps({ _name: item.name || '', _keywords: (item.keywords || []).join(', '), ...Object.fromEntries(Object.entries(props).map(([k, v]) => [k, String(v)])) });
+    setLocalName(item.name || '');
+    setLocalKeywords((item.keywords || []).join(', '));
+    setEditProps(Object.fromEntries(Object.entries(props).map(([k, v]) => [k, String(v)])));
     setError('');
     setEditing(true);
   }, [labels, props]);
@@ -74,20 +78,18 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument })
       const newProps = Object.fromEntries(
         Object.entries(editProps).map(([k, v]) => [k, v])
       );
-      const name = editProps._name || item.name || '';
-      const keywords = editProps._keywords ? editProps._keywords.split(',').map(s => s.trim()).filter(Boolean) : (item.keywords || []);
-      // Remove internal fields before sending
-      const { _name, _keywords, ...customProps } = editProps;
+      const name = localName || item.name || '';
+      const keywords = localKeywords.split(',').map(s => s.trim()).filter(Boolean);
       if (type === 'vertex') {
-        await updateVertexProperties(item.id, newLabels, customProps, graphName, name, keywords);
+        await updateVertexProperties(item.id, newLabels, editProps, graphName, name, keywords);
       } else {
-        // Edge: first label in the CSV is the new label
         const newLabel = newLabels[0] || item.label || '';
-        await updateEdgeProperties(item.id, newLabel, newProps, graphName);
+        await updateEdgeProperties(item.id, newLabel, editProps, graphName);
       }
-      // Update local _original so the panel shows fresh data
       item.labels = newLabels;
-      item.properties = customProps;
+      item.properties = editProps;
+      item.name = name;
+      item.keywords = keywords;
       item.name = name;
       item.keywords = keywords;
       setEditing(false);
@@ -150,8 +152,8 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument })
           {editing ? (
             <input
               className="w-full px-2.5 py-1.5 rounded-lg bg-[#2a2a2e] text-[#e5e5e7] text-xs border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff]"
-              value={editProps._name || ''}
-              onChange={(e) => setEditProps({ ...editProps, _name: e.target.value })}
+              value={localName}
+              onChange={(e) => setLocalName(e.target.value)}
             />
           ) : (
             <div className="text-xs text-[#e5e5e7] font-medium">{item.name || '—'}</div>
@@ -163,8 +165,8 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument })
           {editing ? (
             <input
               className="w-full px-2.5 py-1.5 rounded-lg bg-[#2a2a2e] text-[#e5e5e7] text-xs border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff]"
-              value={editProps._keywords || ''}
-              onChange={(e) => setEditProps({ ...editProps, _keywords: e.target.value })}
+              value={localKeywords}
+              onChange={(e) => setLocalKeywords(e.target.value)}
               placeholder="comma-separated"
             />
           ) : (
@@ -180,7 +182,7 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument })
           <div className="text-[10px] font-semibold text-[#636366] uppercase tracking-wider mb-2">Custom Properties</div>
           {editing ? (
             <div className="space-y-1.5">
-              {Object.entries(editProps).map(([k, v]) => (
+              {Object.entries(editProps).filter(([k]) => !k.startsWith('_')).map(([k, v]) => (
                 <div key={k} className="flex items-start gap-1 py-1.5 px-2.5 rounded-lg bg-[#2a2a2e]">
                   <div className="flex-1 flex flex-col gap-1 min-w-0">
                     <input
@@ -265,7 +267,7 @@ function buildFromData(dataItems) {
   for (const item of dataItems) {
     if (item.type === 'vertex' && !vSet.has(item.id)) {
       vSet.add(item.id);
-      nodes.push({ id: item.id, label: item.properties?.name || `#${item.id}`, _original: item });
+      nodes.push({ id: item.id, label: item.name || `#${item.id}`, _original: item });
     } else if (item.type === 'edge') {
       const key = `${item.source}-${item.target}`;
       if (!eSet.has(key)) { eSet.add(key); edges.push({ id: item.id, from: item.source, to: item.target, label: item.label || '', _original: item }); }
@@ -361,7 +363,7 @@ const GraphViewer = forwardRef(({ data, graph, className }, ref) => {
         if (!res?.data) return;
         for (const item of res.data) {
           if (item.type === 'vertex' && !nodes.get(item.id)) {
-            nodes.add({ id: item.id, label: item.properties?.name || `#${item.id}`, _original: item });
+            nodes.add({ id: item.id, label: item.name || `#${item.id}`, _original: item });
           } else if (item.type === 'edge') {
             const existing = edges.get({ filter: (e) => e.from === item.source && e.to === item.target });
             if (existing.length === 0) edges.add({ id: item.id, from: item.source, to: item.target, label: item.label || '', _original: item });

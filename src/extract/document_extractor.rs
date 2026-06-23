@@ -175,6 +175,12 @@ pub async fn extract_document_full(
     let mut name_to_vid: HashMap<String, VertexId> = HashMap::new();
     let mut vertex_count = 0usize;
 
+    // Pre-compute starting nid to avoid lock-acquire race
+    let start_nid = {
+        let nn = neural.lock().map_err(|e| e.to_string())?;
+        (nn.neuron_count() as u64) + 1
+    };
+
     for (i, entity) in entities.iter().enumerate() {
         let name = entity.name.as_deref().unwrap_or("unknown");
         let type_label = entity.type_.as_deref().unwrap_or("entity");
@@ -190,10 +196,11 @@ pub async fn extract_document_full(
         }
         drop(g);
 
+        let nid = start_nid + i as u64;
+
         // Create a searchable neuron
         {
             let mut nn = neural.lock().map_err(|e| e.to_string())?;
-            let nid = (nn.neuron_count() as u64) + 1;
             let mut neuron = crate::neuron::Neuron::for_vertex(nid, type_label, vid);
             neuron.keywords = vec![name.to_string(), type_label.to_string()];
             nn.add_neuron(neuron);
@@ -213,6 +220,11 @@ pub async fn extract_document_full(
     let total_relations = relations.len();
     let mut edge_count = 0usize;
 
+    let edge_start_nid = {
+        let nn = neural.lock().map_err(|e| e.to_string())?;
+        (nn.neuron_count() as u64) + 1
+    };
+
     for (i, relation) in relations.iter().enumerate() {
         let src_name = relation.source.as_deref().unwrap_or("");
         let tgt_name = relation.target.as_deref().unwrap_or("");
@@ -223,8 +235,8 @@ pub async fn extract_document_full(
             if let Ok(eid) = g.create_edge(rel_label.to_string(), src_vid, tgt_vid) {
                 drop(g);
                 // Create edge neuron + auto-synapse
+                let nid = edge_start_nid + edge_count as u64;
                 let mut nn = neural.lock().map_err(|e| e.to_string())?;
-                let nid = (nn.neuron_count() as u64) + 1;
                 let mut neuron = crate::neuron::Neuron::for_edge(nid, rel_label, eid);
                 neuron.keywords = vec![rel_label.to_string(), src_name.to_string(), tgt_name.to_string()];
                 nn.add_neuron(neuron);

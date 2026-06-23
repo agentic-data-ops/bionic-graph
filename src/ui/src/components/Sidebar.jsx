@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 
 export default function Sidebar({
@@ -11,7 +11,8 @@ export default function Sidebar({
   onOpenSettings,
 }) {
   const { t } = useTranslation();
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem('bgraph-sidebar-collapsed') === 'true');
+  useEffect(() => { localStorage.setItem('bgraph-sidebar-collapsed', collapsed); }, [collapsed]);
 
   return (
     <aside className={`${collapsed ? 'w-12' : 'w-64'} flex flex-col h-full bg-[#1c1c20] border-r border-[#2a2a2e] overflow-hidden transition-all duration-200 flex-shrink-0`}>

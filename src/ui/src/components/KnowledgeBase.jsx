@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import {
   listDocuments, addDocument, updateDocument, deleteDocument, getDocumentContent,
   addVertex, addEdge, deleteVertex, graphSearch, listGraphs,
-  chatCompletion, parseSSEStream,
+  startDocumentExtraction, getExtractionTask,
 } from '../api';
 
 function Modal({ title, children, onClose }) {
@@ -199,7 +199,7 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
   }, []);
 
   const handleImportText = useCallback(async () => {
-    if (!importContent.trim() || !provider) return;
+    if (!importContent.trim()) return;
     setImporting(true);
     setImportSteps([]);
     try {
@@ -213,7 +213,7 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
 
   const handleFileUpload = useCallback(async (e) => {
     const file = e.target.files?.[0];
-    if (!file || !provider) return;
+    if (!file) return;
     const content = await file.text();
     setImporting(true);
     setImportSteps([]);

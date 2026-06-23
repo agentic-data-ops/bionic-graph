@@ -57,30 +57,63 @@ pub fn execute_query_with_llm(
                 ticks_used = Some(ticks);
                 neurons_fired = Some(fired);
 
+                let g = graph.lock().unwrap();
                 let mut results: Vec<TraversalResult> = ranked_vertices
                     .into_iter()
                     .take(100)
-                    .map(|(vid, _score)| TraversalResult::VertexResult(VertexResult {
-                        element_type: "vertex".to_string(),
-                        id: vid,
-                        name: String::new(),
-                        keywords: Vec::new(),
-                document: String::new(),
-                        labels: Vec::new(),
-                        properties: std::collections::HashMap::new(),
-                    }))
+                    .map(|(vid, _score)| {
+                        log::info!("SEARCH: looking up vertex #{}", vid);
+                        if let Some(vertex) = g.get_vertex(vid) {
+                            log::info!("SEARCH: found vertex #{}, name='{}'", vid, vertex.name);
+                            let props: std::collections::HashMap<String, Value> = vertex
+                                .properties
+                                .iter()
+                                .map(|(k, pv)| (k.clone(), property_to_json(pv)))
+                                .collect();
+                            TraversalResult::VertexResult(VertexResult {
+                                element_type: "vertex".to_string(),
+                                id: vertex.id,
+                                name: vertex.name.clone(),
+                                keywords: vertex.keywords.clone(),
+                                document: vertex.document.clone(),
+                                labels: vertex.labels.clone(),
+                                properties: props,
+                            })
+                        } else {
+                            TraversalResult::VertexResult(VertexResult {
+                                element_type: "vertex".to_string(),
+                                id: vid,
+                                name: String::new(),
+                                keywords: Vec::new(),
+                                document: String::new(),
+                                labels: Vec::new(),
+                                properties: std::collections::HashMap::new(),
+                            })
+                        }
+                    })
                     .collect();
 
                 // Add edge results from search
-                let g = graph.lock().unwrap();
                 for (eid, _score) in ranked_edges {
                     if let Some(e) = g.get_edge(eid) {
-                        results.push(edge_to_result(e));
+                        let eprops: std::collections::HashMap<String, Value> = e
+                            .properties
+                            .iter()
+                            .map(|(k, pv)| (k.clone(), property_to_json(pv)))
+                            .collect();
+                        results.push(TraversalResult::EdgeResult(EdgeResult {
+                            element_type: "edge".to_string(),
+                            id: e.id,
+                            label: e.label.clone(),
+                            source: e.source,
+                            target: e.target,
+                            properties: eprops,
+                        }));
                     }
                 }
                 drop(g);
 
-                fill_vertex_details(&graph.lock().unwrap(), results)
+                Ok(results)
             }
 
             TraversalStep::V { ids } => {
