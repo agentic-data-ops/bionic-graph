@@ -195,6 +195,7 @@ pub struct VertexResult {
     pub id: u64,
     pub name: String,
     pub keywords: Vec<String>,
+    pub document: String,
     pub labels: Vec<String>,
     pub properties: std::collections::HashMap<String, serde_json::Value>,
 }

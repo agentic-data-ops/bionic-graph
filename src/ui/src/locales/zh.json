@@ -54,7 +54,7 @@
   "graph.modify": "修改",
   "graph.delete": "删除",
   "graph.addProperty": "添加属性",
-  "graph.confirmDelete": "删除顶点 #{id} 及所有关联边？",
+  "graph.confirmDelete": "删除顶点 #{{id}} ({{name}}) 及所有关联边？",
   "graph.noData": "暂无数据，输入搜索开始。",
   "graph.loading": "加载中...",
   "chat.newChat": "新建对话",

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, forwardRef, useImperativeHandle, useCallba
 import { useTranslation } from 'react-i18next';
 import { Network } from 'vis-network';
 import { DataSet } from 'vis-data';
-import { traverse, updateVertexProperties, updateEdgeProperties, deleteVertex } from '../api';
+import { traverse, updateVertexProperties, updateEdgeProperties, deleteVertex, getDocument } from '../api';
 
 const DARK_OPTIONS = {
   nodes: {
@@ -28,13 +28,25 @@ const DARK_OPTIONS = {
   layout: { randomSeed: 42 },
 };
 
-function InfoPanel({ item, type, onClose, graphName, onDelete }) {
+function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument }) {
   const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const [editLabels, setEditLabels] = useState('');
   const [editProps, setEditProps] = useState({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [docName, setDocName] = useState('');
+  const [docIdState, setDocIdState] = useState('');
+
+  // Fetch document name when document ID changes
+  useEffect(() => {
+    const docId = item?.document;
+    if (!docId || docId === docIdState) return;
+    setDocIdState(docId);
+    getDocument(docId).then((doc) => {
+      if (doc && doc.title) setDocName(doc.title);
+    }).catch(() => {});
+  }, [item?.document]);
   const [newPropKey, setNewPropKey] = useState('');
   const [newPropVal, setNewPropVal] = useState('');
 
@@ -75,7 +87,9 @@ function InfoPanel({ item, type, onClose, graphName, onDelete }) {
       }
       // Update local _original so the panel shows fresh data
       item.labels = newLabels;
-      item.properties = newProps;
+      item.properties = customProps;
+      item.name = name;
+      item.keywords = keywords;
       setEditing(false);
     } catch (e) {
       setError(e.message || 'Save failed');
@@ -91,8 +105,19 @@ function InfoPanel({ item, type, onClose, graphName, onDelete }) {
           <span className="text-[#48484a] font-mono ml-2 normal-case">#{item.id}</span>
         </span>
         <div className="flex items-center gap-1">
-          {!editing && (
-            <button className="px-2 py-1 rounded-lg bg-[#2a2a2e] text-[#86868b] hover:text-white hover:bg-[#3a3a3e] text-xs font-medium transition-all" onClick={startEdit}>{t('graph.modify')}</button>
+          {!editing && type === 'vertex' && (
+            <>
+              <button className="w-5 h-5 rounded-md bg-[#2a2a2e] hover:bg-[#3a3a3e] flex items-center justify-center text-[#636366] hover:text-white text-[11px]" onClick={startEdit} title={t('graph.modify')}>
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                </svg>
+              </button>
+              <button className="w-5 h-5 rounded-md bg-[#2a2a2e] hover:bg-[#ff453a] flex items-center justify-center text-[#636366] hover:text-white" onClick={() => { if (confirm(t('graph.confirmDelete', { id: item.id, name: item.name || item.id }))) onDelete?.(item.id); }} title={t('graph.delete')}>
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+              </button>
+            </>
           )}
           <button className="w-5 h-5 rounded-md bg-[#2a2a2e] hover:bg-[#3a3a3e] flex items-center justify-center text-[#636366] hover:text-white" onClick={onClose}>
             <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}>
@@ -132,9 +157,9 @@ function InfoPanel({ item, type, onClose, graphName, onDelete }) {
             <div className="text-xs text-[#e5e5e7] font-medium">{item.name || '—'}</div>
           )}
         </div>
-        {/* Tags (built-in) */}
+        {/* Keywords (built-in) */}
         <div>
-          <div className="text-[10px] font-semibold text-[#636366] uppercase tracking-wider mb-2">Tags</div>
+          <div className="text-[10px] font-semibold text-[#636366]  uppercase tracking-wider mb-2">Keywords</div>
           {editing ? (
             <input
               className="w-full px-2.5 py-1.5 rounded-lg bg-[#2a2a2e] text-[#e5e5e7] text-xs border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff]"
@@ -212,17 +237,7 @@ function InfoPanel({ item, type, onClose, graphName, onDelete }) {
             <div className="flex items-center gap-2 text-xs"><span className="text-[#636366] font-medium w-14">target</span><span className="text-[#e5e5e7] font-mono">{item.target}</span></div>
           </div>
         )}
-        {/* Delete button for vertices */}
-        {!editing && type === 'vertex' && (
-          <div>
-            <button
-              className="w-full py-1.5 rounded-lg bg-[#ff453a]/15 text-[#ff453a] hover:bg-[#ff453a]/25 text-xs font-medium transition-all"
-              onClick={() => { if (confirm(t('graph.confirmDelete', { id: item.id }))) onDelete?.(item.id); }}
-            >
-              {t('graph.delete')}
-            </button>
-          </div>
-        )}
+
         {/* Edit buttons */}
         {editing && (
           <div className="space-y-2">
@@ -372,6 +387,7 @@ const GraphViewer = forwardRef(({ data, graph, className }, ref) => {
           type={selected.type}
           graphName={graph}
           onClose={() => setSelected(null)}
+          onShowDocument={(docId) => { console.log("Show document:", docId); }}
           onDelete={async (vid) => {
             try {
               await deleteVertex(vid, graph);

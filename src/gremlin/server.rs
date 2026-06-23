@@ -688,21 +688,18 @@ async fn delete_document_handler(
     let doc = state.document_manager.get(&id)
         .ok_or_else(|| (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Document not found"}))))?;
 
-    let doc_title = doc.title.clone();
+    let _doc_title = doc.title.clone();
 
     // Clean up graph vertices associated with this document
     let deleted_vertices = {
         let gm = state.graph_manager.lock().unwrap();
         if let Some(handle) = gm.get("default") {
             let mut g = handle.graph.lock().unwrap();
-            use crate::graph::PropertyValue;
-            // Find vertices with matching source_file
+            // Find vertices with matching document ID
             let to_delete: Vec<u64> = g.vertex_ids()
                 .filter_map(|vid| {
                     let v = g.get_vertex(*vid)?;
-                    if v.properties.get("source_file")
-                        .map_or(false, |pv| matches!(pv, PropertyValue::String(s) if s == &doc_title))
-                    {
+                    if v.document == id {
                         Some(*vid)
                     } else {
                         None

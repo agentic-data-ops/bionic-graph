@@ -56,6 +56,7 @@ pub struct VersionRecord {
     pub updated_at: i64,
     pub name: String,
     pub keywords: Vec<String>,
+    pub document: String,
     pub labels: Vec<String>,
     pub properties: HashMap<String, PropertyValue>,
 }
@@ -71,6 +72,7 @@ pub struct Vertex {
     pub id: VertexId,
     pub name: String,
     pub keywords: Vec<String>,
+    pub document: String,
     pub labels: Vec<String>,
     pub properties: HashMap<String, PropertyValue>,
 
@@ -91,6 +93,7 @@ impl Vertex {
             id,
             name: String::new(),
             keywords: Vec::new(),
+            document: String::new(),
             labels,
             properties: HashMap::new(),
             _version: 1,
@@ -112,6 +115,7 @@ impl Vertex {
             id,
             name: String::new(),
             keywords: Vec::new(),
+            document: String::new(),
             labels: record.labels.clone(),
             properties: record.properties.clone(),
             _version: record.version,
@@ -139,6 +143,7 @@ impl Vertex {
                 updated_at: self._updated_at,
                 name: self.name.clone(),
                 keywords: self.keywords.clone(),
+                document: self.document.clone(),
                 labels: self.labels.clone(),
                 properties: self.properties.clone(),
             });
@@ -157,6 +162,7 @@ impl Vertex {
                 updated_at: self._updated_at,
                 name: self.name.clone(),
                 keywords: self.keywords.clone(),
+                document: self.document.clone(),
                 labels: self.labels.clone(),
                 properties: self.properties.clone(),
             });
@@ -176,6 +182,7 @@ impl Vertex {
                     updated_at: self._updated_at,
                     name: self.name.clone(),
                     keywords: self.keywords.clone(),
+                document: self.document.clone(),
                     labels: self.labels.clone(),
                     properties: self.properties.clone(),
                 });
@@ -196,6 +203,7 @@ impl Vertex {
                     updated_at: self._updated_at,
                     name: self.name.clone(),
                     keywords: self.keywords.clone(),
+                document: self.document.clone(),
                     labels: self.labels.clone(),
                     properties: self.properties.clone(),
                 });

@@ -466,10 +466,7 @@ fn insert_entity_to_graph(
     let mut g = graph.lock().map_err(|e| e.to_string())?;
     let vid = g.create_vertex(labels);
     if let Some(v) = g.get_vertex_mut(vid) {
-        v.properties.insert(
-            "name".to_string(),
-            PropertyValue::String(entity.id.clone()),
-        );
+        v.name = entity.id.clone();
         v.properties.insert(
             "extracted_id".to_string(),
             PropertyValue::String(entity.id.clone()),

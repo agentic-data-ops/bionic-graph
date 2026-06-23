@@ -94,6 +94,7 @@ pub async fn extract_document_full(
     config: &ExtractionConfig,
     content: &str,
     doc_title: &str,
+    doc_id: &str,
     graph: &Arc<Mutex<Graph>>,
     neural: &Arc<Mutex<NeuralNetwork>>,
     on_step: StepCallback,
@@ -183,9 +184,9 @@ pub async fn extract_document_full(
         let mut g = graph.lock().map_err(|e| e.to_string())?;
         let vid = g.create_vertex(labels.clone());
         if let Some(v) = g.get_vertex_mut(vid) {
-            v.properties.insert("name".to_string(), PropertyValue::String(name.to_string()));
+            v.name = name.to_string();
+            v.document = doc_id.to_string();
             v.properties.insert("description".to_string(), PropertyValue::String(description.to_string()));
-            v.properties.insert("source_file".to_string(), PropertyValue::String(doc_title.to_string()));
         }
         drop(g);
 

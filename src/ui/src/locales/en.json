@@ -54,7 +54,7 @@
   "graph.modify": "Modify",
   "graph.delete": "Delete",
   "graph.addProperty": "Add Property",
-  "graph.confirmDelete": "Delete vertex #{id} and all connected edges?",
+  "graph.confirmDelete": "Delete vertex #{{id}} ({{name}}) and all connected edges?",
   "graph.noData": "No data. Enter a search to begin.",
   "graph.loading": "Loading...",
   "chat.newChat": "New Chat",

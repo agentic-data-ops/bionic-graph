@@ -416,6 +416,7 @@ impl ExtractionTaskManager {
                 &config,
                 &doc_content,
                 &doc_title,
+                &doc_id,
                 &graph,
                 &neural,
                 on_step,

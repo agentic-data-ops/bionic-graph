@@ -65,6 +65,7 @@ pub fn execute_query_with_llm(
                         id: vid,
                         name: String::new(),
                         keywords: Vec::new(),
+                document: String::new(),
                         labels: Vec::new(),
                         properties: std::collections::HashMap::new(),
                     }))
@@ -918,6 +919,7 @@ fn vertex_to_result(g: &Graph, id: VertexId) -> TraversalResult {
         id: v.id,
         name: v.name.clone(),
         keywords: v.keywords.clone(),
+                document: v.document.clone(),
         labels: v.labels.clone(),
         properties: props,
     })
@@ -953,6 +955,7 @@ fn vertex_from_snapshot(v: &crate::graph::Vertex) -> TraversalResult {
         id: v.id,
         name: v.name.clone(),
         keywords: v.keywords.clone(),
+                document: v.document.clone(),
         labels: v.labels.clone(),
         properties: props,
     })

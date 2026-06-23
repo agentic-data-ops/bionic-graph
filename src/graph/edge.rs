@@ -54,6 +54,7 @@ impl Edge {
                 updated_at: self._updated_at,
                 name: String::new(),
                 keywords: Vec::new(),
+                document: String::new(),
                 labels: vec![self.label.clone()],
                 properties: self.properties.clone(),
             });
@@ -73,6 +74,7 @@ impl Edge {
                     updated_at: self._updated_at,
                     name: String::new(),
                     keywords: Vec::new(),
+                document: String::new(),
                     labels: vec![self.label.clone()],
                     properties: self.properties.clone(),
                 });
