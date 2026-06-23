@@ -48,7 +48,7 @@ App.jsx
 ├── Sidebar.jsx          — 对话列表 + 知识库入口 + 设置入口
 ├── ChatArea.jsx         — 聊天主区域
 │   ├── MessageList.jsx  — 消息列表 (用户/助手/搜索进度/图谱结果)
-│   └── ChatInput.jsx    — 输入框 + 模型选择 + 图谱开关 + 搜索模式切换
+│   └── ChatInput.jsx    — 输入框 + 模型选择 + 图谱/时间旅行/搜索模式控制栏
 ├── KnowledgeBase.jsx    — 知识库弹窗 (文件管理 + LLM 提取)
 └── SettingsDialog.jsx   — 设置弹窗 (供应商/图库/搜索/通用)
 ```
@@ -129,15 +129,18 @@ App.jsx
 - **`NeuralConfig` is nested** — settings.json uses `activate`/`search`/`learn` groups. `NeuralConfig::default()` auto-populates missing groups (`#[serde(default)]`).
 - **`Neuron::match_keywords()` takes `&ScoreConfig`** — not `&SearchMode`. ScoreConfig carries search mode, exact/partial scores, and fuzzy matching params.
 - **`fuzzy_match_enabled` defaults to `true`** — Levenshtein-distance fuzzy matching is on by default for greedy searches.
-- **Message action icons** — hover over user messages for 📋 copy / ✏️ edit; hover over assistant messages for 📋 copy / 💾 save-to-KB.
+- **Message action icons** — always visible below each message. User msgs: copy (SVG, 2s checkmark feedback) + edit. Assistant msgs: copy + save-to-KB.
 - **`ChatInput` exposes `setText()`** — via `useImperativeHandle` for the edit-message feature.
+- **ChatInput toolbar layout** — [模型选择器] [图谱开关] [图库选择] [语义|关键词] [贪婪搜索▼] [时间旅行✓] [📅日期选择]
+- **Search mode default is `semantic`** — persisted to localStorage. Semantic mode forces greedy for API call.
+- **Time travel datetime picker** — checkbox + `<input type="datetime-local">` for snapshot point.
 
 ## Implemented Plans
 - `2024-06-23-search-mode-theme-doc-fields.md` — Search modes (greedy/exact), CSS theme system, `document` built-in field, Vis-network light/dark options, Playwright e2e test, Playwright install
 - `007-settings-neural-config-search-ui.md` — NeuralConfig → activate/search/learn groups, configurable search scores + fuzzy matching, /settings/neural API, settings "搜索" tab, message action icons, chat UX fixes
+- `008-chat-input-toolbar-layout.md` — ChatInput toolbar reorg, message action SVG icons, semantic default, auto-focus fix, time travel datetime picker
 - `001-arch-verify.md` — Full feature verification (151 tests, 0 failed)
 - `002-section-paragraph-graph.md` — Section/paragraph graph structure
 - `003-keyword-semantic-search.md` — keywordSearch + semanticSearch + global LLM config
 - `005-ui-rewrite-knowledgebase-visnetwork.md` — Frontend rewrite + knowledge base + vis-network migration
 - `2024-06-23-vertex-redolog-overhaul.md` — Vertex built-in name/keywords, RedologWal atomic WAL, directory restructure, graceful shutdown, frontend improvements
-- `007-settings-neural-config-search-ui.md` — NeuralConfig → activate/search/learn groups, configurable search scores + fuzzy matching, /settings/neural API, settings "搜索" tab, message action icons, chat UX fixes
