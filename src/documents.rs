@@ -1,9 +1,9 @@
-use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 
+#[allow(dead_code)]
 const DOCUMENTS_DIR: &str = "data/documents";
 
 /// Document metadata.
@@ -70,16 +70,39 @@ impl DocumentManager {
         self.index.lock().unwrap().documents.iter().find(|d| d.id == id).cloned()
     }
 
-    /// Get document content.
+    /// Get document content. Searches YYMMDD subdirectories for the file.
     pub fn get_content(&self, id: &str) -> Option<String> {
+        // Scan date subdirectories for the file
+        if let Ok(entries) = fs::read_dir(&self.docs_dir) {
+            for entry in entries.flatten() {
+                let date_dir = entry.path();
+                if date_dir.is_dir() {
+                    let file_path = date_dir.join(format!("{}.md", id));
+                    if file_path.exists() {
+                        if let Ok(content) = fs::read_to_string(&file_path) {
+                            return Some(content);
+                        }
+                    }
+                }
+            }
+        }
+        // Fallback: flat directory (for backward compat)
         let path = self.docs_dir.join(format!("{}.md", id));
         fs::read_to_string(&path).ok()
     }
 
+    fn date_dir(&self) -> PathBuf {
+        let now = chrono::Utc::now();
+        let yymmdd = now.format("%y%m%d").to_string();
+        self.docs_dir.join(&yymmdd)
+    }
+
     /// Add a new document. Stores content to file and metadata to index.
     pub fn add(&self, id: &str, title: &str, content: &str, tags: &[String], graph_name: &str) -> Document {
-        // Save content
-        let file_path = self.docs_dir.join(format!("{}.md", id));
+        // Save content under YYMMDD subdirectory
+        let date_dir = self.date_dir();
+        fs::create_dir_all(&date_dir).ok();
+        let file_path = date_dir.join(format!("{}.md", id));
         fs::write(&file_path, content).ok();
 
         let now = chrono::Utc::now().to_rfc3339();
@@ -120,6 +143,17 @@ impl DocumentManager {
 
     /// Delete a document and its content file.
     pub fn delete(&self, id: &str) -> bool {
+        // Try to remove from date subdirectories
+        if let Ok(entries) = fs::read_dir(&self.docs_dir) {
+            for entry in entries.flatten() {
+                let date_dir = entry.path();
+                if date_dir.is_dir() {
+                    let file_path = date_dir.join(format!("{}.md", id));
+                    fs::remove_file(&file_path).ok();
+                }
+            }
+        }
+        // Also remove flat file (backward compat)
         let file_path = self.docs_dir.join(format!("{}.md", id));
         fs::remove_file(&file_path).ok();
 

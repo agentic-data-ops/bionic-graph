@@ -52,6 +52,8 @@ impl Edge {
             self._history.push(VersionRecord {
                 version: self._version,
                 updated_at: self._updated_at,
+                name: String::new(),
+                keywords: Vec::new(),
                 labels: vec![self.label.clone()],
                 properties: self.properties.clone(),
             });
@@ -69,6 +71,8 @@ impl Edge {
                 self._history.push(VersionRecord {
                     version: self._version,
                     updated_at: self._updated_at,
+                    name: String::new(),
+                    keywords: Vec::new(),
                     labels: vec![self.label.clone()],
                     properties: self.properties.clone(),
                 });

@@ -193,6 +193,8 @@ pub struct VertexResult {
     #[serde(rename = "type")]
     pub element_type: String,
     pub id: u64,
+    pub name: String,
+    pub keywords: Vec<String>,
     pub labels: Vec<String>,
     pub properties: std::collections::HashMap<String, serde_json::Value>,
 }

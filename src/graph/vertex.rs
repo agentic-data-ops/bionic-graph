@@ -54,6 +54,8 @@ impl From<bool> for PropertyValue {
 pub struct VersionRecord {
     pub version: u64,
     pub updated_at: i64,
+    pub name: String,
+    pub keywords: Vec<String>,
     pub labels: Vec<String>,
     pub properties: HashMap<String, PropertyValue>,
 }
@@ -67,6 +69,8 @@ pub struct VersionRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Vertex {
     pub id: VertexId,
+    pub name: String,
+    pub keywords: Vec<String>,
     pub labels: Vec<String>,
     pub properties: HashMap<String, PropertyValue>,
 
@@ -85,6 +89,8 @@ impl Vertex {
     pub fn new(id: VertexId, labels: Vec<String>) -> Self {
         Self {
             id,
+            name: String::new(),
+            keywords: Vec::new(),
             labels,
             properties: HashMap::new(),
             _version: 1,
@@ -94,10 +100,18 @@ impl Vertex {
         }
     }
 
+    pub fn named(id: VertexId, labels: Vec<String>, name: String) -> Self {
+        let mut v = Self::new(id, labels);
+        v.name = name;
+        v
+    }
+
     /// Create a vertex from a historical snapshot at a given point in time.
     pub fn from_history(id: VertexId, record: &VersionRecord) -> Self {
         Self {
             id,
+            name: String::new(),
+            keywords: Vec::new(),
             labels: record.labels.clone(),
             properties: record.properties.clone(),
             _version: record.version,
@@ -109,12 +123,22 @@ impl Vertex {
 
     /// Update properties — bumps version, saves snapshot to history.
     /// If `record_history` is false, directly overwrites without versioning.
+    pub fn set_name(&mut self, name: String) {
+        self.name = name;
+    }
+
+    pub fn set_keywords(&mut self, keywords: Vec<String>) {
+        self.keywords = keywords;
+    }
+
     pub fn update_properties(&mut self, new_props: HashMap<String, PropertyValue>, record_history: bool) {
         if record_history {
             let now = now_micros();
             self._history.push(VersionRecord {
                 version: self._version,
                 updated_at: self._updated_at,
+                name: self.name.clone(),
+                keywords: self.keywords.clone(),
                 labels: self.labels.clone(),
                 properties: self.properties.clone(),
             });
@@ -131,6 +155,8 @@ impl Vertex {
             self._history.push(VersionRecord {
                 version: self._version,
                 updated_at: self._updated_at,
+                name: self.name.clone(),
+                keywords: self.keywords.clone(),
                 labels: self.labels.clone(),
                 properties: self.properties.clone(),
             });
@@ -148,6 +174,8 @@ impl Vertex {
                 self._history.push(VersionRecord {
                     version: self._version,
                     updated_at: self._updated_at,
+                    name: self.name.clone(),
+                    keywords: self.keywords.clone(),
                     labels: self.labels.clone(),
                     properties: self.properties.clone(),
                 });
@@ -166,6 +194,8 @@ impl Vertex {
                 self._history.push(VersionRecord {
                     version: self._version,
                     updated_at: self._updated_at,
+                    name: self.name.clone(),
+                    keywords: self.keywords.clone(),
                     labels: self.labels.clone(),
                     properties: self.properties.clone(),
                 });

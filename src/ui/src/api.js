@@ -39,8 +39,8 @@ export async function gremlin(steps, graph = 'default') {
   });
 }
 
-export async function graphSearch(keywords, graph = 'default') {
-  return gremlin([{ step: 'search', keywords }], graph);
+export async function graphSearch(tags, graph = 'default') {
+  return gremlin([{ step: 'search', tags }], graph);
 }
 
 export async function compact(beforeTs, graph = 'default') {
@@ -200,10 +200,10 @@ export async function listDocuments() {
   return api('/documents');
 }
 
-export async function addDocument(title, content, tags = [], graphName = '') {
+export async function addDocument(title, content, keywords = [], graphName = '') {
   return api('/documents', {
     method: 'POST',
-    body: JSON.stringify({ title, content, tags, graph_name: graphName }),
+    body: JSON.stringify({ title, content, keywords, graph_name: graphName }),
   });
 }
 
@@ -217,10 +217,10 @@ export async function getDocumentContent(id) {
   return res.text();
 }
 
-export async function updateDocument(id, title, tags = [], graphName) {
+export async function updateDocument(id, title, keywords = [], graphName) {
   return api(`/documents/${encodeURIComponent(id)}`, {
     method: 'PUT',
-    body: JSON.stringify({ title, tags, graph_name: graphName || undefined }),
+    body: JSON.stringify({ title, keywords, graph_name: graphName || undefined }),
   });
 }
 
@@ -285,11 +285,27 @@ export async function listExtractionTasks() {
 
 // ─── Vertex Management ───────────────────────────────────────────
 
-export async function addVertex(labels, properties = {}, graph = 'default') {
+export async function addVertex(labels, properties = {}, graph = 'default', name = '', keywords = []) {
   return api('/vertices', {
     method: 'POST',
     headers: { 'X-Graph-Name': graph },
-    body: JSON.stringify({ labels, properties }),
+    body: JSON.stringify({ name, keywords, labels, properties }),
+  });
+}
+
+export async function updateVertexProperties(id, labels, properties, graph = 'default', name, keywords) {
+  return api(`/vertices/${id}`, {
+    method: 'PUT',
+    headers: { 'X-Graph-Name': graph },
+    body: JSON.stringify({ name, keywords, labels, properties }),
+  });
+}
+
+export async function updateEdgeProperties(id, label, properties, graph = 'default') {
+  return api(`/edges/${id}`, {
+    method: 'PUT',
+    headers: { 'X-Graph-Name': graph },
+    body: JSON.stringify({ label, properties }),
   });
 }
 

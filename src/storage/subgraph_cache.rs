@@ -4,8 +4,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::index::SubgraphIndex;
 use super::subgraph::{Subgraph, SubgraphId};
-use crate::storage::SubgraphMeta;
-
 /// Default maximum number of subgraphs to keep in memory.
 pub const DEFAULT_CACHE_CAPACITY: usize = 1000;
 
@@ -15,6 +13,7 @@ pub const DEFAULT_CACHE_CAPACITY: usize = 1000;
 struct CachedEntry {
     subgraph: Subgraph,
     dirty: bool,
+    #[allow(dead_code)]
     size_bytes: u64,
 }
 
@@ -179,7 +178,7 @@ impl SubgraphCache {
     /// Evict a specific subgraph (write back if dirty, then remove from cache).
     /// Returns `true` if eviction happened.
     pub fn evict(&mut self, id: SubgraphId) -> bool {
-        if let Some(mut entry) = self.entries.remove(&id) {
+        if let Some(entry) = self.entries.remove(&id) {
             if entry.dirty {
                 let path = subgraph_path(&self.data_dir, id);
                 if let Err(e) = std::fs::write(&path, entry.subgraph.to_bytes()) {

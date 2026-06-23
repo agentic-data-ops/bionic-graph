@@ -103,6 +103,23 @@ impl Graph {
         id
     }
 
+    /// Restore a vertex with a specific ID (used by WAL recovery).
+    /// Returns an error if a vertex with this ID already exists.
+    pub fn restore_vertex(&mut self, id: VertexId, labels: Vec<String>) -> Result<VertexId, GraphError> {
+        if self.vertices.contains_key(&id) {
+            return Err(GraphError::VertexNotFound(id)); // reuse error type
+        }
+        let vertex = Vertex::new(id, labels.clone());
+        for label in labels {
+            self.vertex_labels.entry(label).or_default().insert(id);
+        }
+        self.vertices.insert(id, vertex);
+        if id >= self.next_vertex_id {
+            self.next_vertex_id = id + 1;
+        }
+        Ok(id)
+    }
+
     /// Remove a vertex and all its incident edges.
     ///
     /// When `force` is `false`, attempts soft-delete if time-travel is enabled.
@@ -231,6 +248,33 @@ impl Graph {
         self.forward.entry(source).or_default().push(id);
         self.backward.entry(target).or_default().push(id);
         self.edges.insert(id, edge);
+        Ok(id)
+    }
+
+    /// Restore an edge with a specific ID (used by WAL recovery).
+    pub fn restore_edge(
+        &mut self,
+        id: EdgeId,
+        label: String,
+        source: VertexId,
+        target: VertexId,
+    ) -> Result<EdgeId, GraphError> {
+        if !self.vertices.contains_key(&source) {
+            return Err(GraphError::VertexNotFound(source));
+        }
+        if !self.vertices.contains_key(&target) {
+            return Err(GraphError::VertexNotFound(target));
+        }
+        if self.edges.contains_key(&id) {
+            return Ok(id); // already exists, no-op
+        }
+        let edge = Edge::new(id, label, source, target);
+        self.forward.entry(source).or_default().push(id);
+        self.backward.entry(target).or_default().push(id);
+        self.edges.insert(id, edge);
+        if id >= self.next_edge_id {
+            self.next_edge_id = id + 1;
+        }
         Ok(id)
     }
 

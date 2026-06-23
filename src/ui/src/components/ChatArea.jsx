@@ -29,8 +29,8 @@ export default function ChatArea({
   defaultGraph,
   onDefaultGraphChange,
   graphs,
-  tempModel,
-  onTempModelChange,
+  chatModel,
+  onChatModelChange,
   theme,
   onThemeToggle,
   language,
@@ -58,7 +58,8 @@ export default function ChatArea({
       if (useGraph) {
         // ── Graph mode: keyword or semantic search ──
         const isSemantic = searchMode === 'semantic';
-        const provider = providers.find((p) => p.id === activeProvider);
+        const provider = { ...providers.find((p) => p.id === activeProvider) };
+        if (chatModel) provider.model = chatModel;
 
         const steps = isSemantic
           ? [
@@ -176,8 +177,9 @@ export default function ChatArea({
         }
       } else {
         // ── LLM mode: streaming chat ──
-        const provider = providers.find((p) => p.id === activeProvider);
+        const provider = { ...providers.find((p) => p.id === activeProvider) };
         if (!provider) return;
+        if (chatModel) provider.model = chatModel;
 
         // Build message list for LLM — skip assistant placeholders with empty content
         // Only send user/assistant messages with content to the LLM
@@ -212,7 +214,7 @@ export default function ChatArea({
         }
       }
     },
-    [activeConv, useGraph, searchMode, defaultGraph, providers, activeProvider, onUpdateConv]
+    [activeConv, useGraph, searchMode, defaultGraph, providers, activeProvider, onUpdateConv, chatModel]
   );
 
   const messages = activeConv?.messages || [];
@@ -250,6 +252,8 @@ export default function ChatArea({
         graphName={defaultGraph}
         onGraphNameChange={onDefaultGraphChange}
         graphs={graphs}
+        chatModel={chatModel}
+        onChatModelChange={onChatModelChange}
         onSend={handleSend}
         disabled={!!searchStream}
       />

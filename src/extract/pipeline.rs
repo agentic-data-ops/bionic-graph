@@ -256,7 +256,7 @@ async fn extract_sections_core(
                             log::error!("Parse error in batch '{}': {}. Falling back to per-section extraction.", first_heading, e);
                             // Fallback: process each section individually
                             let mut fallback = Vec::new();
-                            for (bi, (_, sec)) in batch_refs.iter().enumerate() {
+                            for (_bi, (_, sec)) in batch_refs.iter().enumerate() {
                                 let user_msg = build_user_message(sec, None);
                                 match chat_completion_with_retry(&config, SYSTEM_PROMPT, &user_msg).await {
                                     Ok(r) => {
@@ -366,7 +366,7 @@ async fn extract_sections_core(
                                                 let nid = (nn.neuron_count() as u64) + 1;
                                                 let mut neuron = crate::neuron::Neuron::for_edge(nid, &relation.label, eid);
                                                 // Keywords: relation label + source name + target name
-                                                let mut keywords = vec![
+                                                let keywords = vec![
                                                     relation.label.clone(),
                                                     relation.source.clone(),
                                                     relation.target.clone(),
@@ -576,6 +576,7 @@ fn insert_paragraphs_for_section(
 
 // ─── Graph helpers (MemorySystem variant) ───────────────────────────
 
+#[allow(dead_code)]
 fn insert_entity(memory: &MemorySystem, entity: &ExtractedEntity) -> Result<(), String> {
     let labels = if entity.labels.is_empty() {
         vec!["entity".to_string()]
@@ -587,8 +588,9 @@ fn insert_entity(memory: &MemorySystem, entity: &ExtractedEntity) -> Result<(), 
     Ok(())
 }
 
+#[allow(dead_code)]
 fn insert_relation(
-    memory: &MemorySystem,
+    _memory: &MemorySystem,
     relation: &ExtractedRelation,
     known_entities: &HashSet<String>,
 ) -> Result<(), String> {

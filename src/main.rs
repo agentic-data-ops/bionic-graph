@@ -80,7 +80,7 @@ async fn main() {
         let names = graph_manager.list();
         for name in &names {
             if let Some(handle) = graph_manager.get(name) {
-                let mut g = handle.graph.lock().unwrap();
+                let g = handle.graph.lock().unwrap();
                 // Simple auto-index: create neurons from vertex labels
                 let mut label_groups: std::collections::HashMap<String, Vec<u64>> =
                     std::collections::HashMap::new();
@@ -98,7 +98,10 @@ async fn main() {
                     let mut neuron = bionic_graph::neuron::Neuron::new(nid, &label)
                         .with_keywords(vec![label.clone()]);
                     neuron.vertex_refs = vrefs;
-                    nn.add_neuron(neuron);
+                    nn.add_neuron(neuron.clone());
+                    if let Ok(mut wal) = handle.redolog_wal.lock() {
+                        let _ = wal.append_add_neuron(&neuron);
+                    }
                 }
                 log::info!("Auto-indexed graph '{}' in neural network", name);
             }
@@ -145,9 +148,37 @@ async fn main() {
         .await
         .expect("Failed to bind address");
 
+    // Graceful shutdown: save all data on SIGINT (Ctrl+C) or SIGTERM
+    // 1) Stop accepting new connections, finish in-flight requests
+    let gm_save = gm.clone();
     axum::serve(listener, app)
+        .with_graceful_shutdown(async {
+            #[cfg(unix)]
+            {
+                let mut term = tokio::signal::unix::signal(
+                    tokio::signal::unix::SignalKind::terminate(),
+                )
+                .expect("Failed to install SIGTERM handler");
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {},
+                    _ = term.recv() => {},
+                }
+            }
+            #[cfg(not(unix))]
+            tokio::signal::ctrl_c()
+                .await
+                .expect("Failed to install Ctrl+C handler");
+            log::info!("Shutdown signal received — finishing requests...");
+        })
         .await
         .expect("Server error");
+
+    // 2) All requests done — safe to save without concurrent mutations
+    log::info!("Saving all graphs...");
+    if let Ok(gm) = gm_save.lock() {
+        gm.save_all();
+    }
+    log::info!("All data saved. Goodbye.");
 }
 
 fn log_info_banner(addr: &SocketAddr) {

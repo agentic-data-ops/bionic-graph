@@ -59,7 +59,7 @@ pub fn tick(
     // Phase B: Fired neurons spread activation
 
     // Phase A: Store pre-tick activations to know who *just* fired
-    let pre_tick_activations: HashMap<NeuronId, f32> =
+    let _pre_tick_activations: HashMap<NeuronId, f32> =
         neurons.iter().map(|(&id, n)| (id, n.activation)).collect();
 
     // Phase B: Run tick on all neurons (returns who fires this tick)

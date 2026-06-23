@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import Sidebar from './components/Sidebar';
 import ChatArea from './components/ChatArea';
@@ -30,6 +30,7 @@ const DEFAULT_SETTINGS = {
   timeTravel: false,
   useGraph: false,
   searchMode: 'semantic',
+  chatModel: null,
 };
 
 function loadSettings() {
@@ -76,9 +77,6 @@ export default function App() {
   const [activeConvId, setActiveConvId] = useState(
     () => conversations[0]?.id || null
   );
-
-  // ── Temporary model switch (resets on refresh) ──
-  const [tempModel, setTempModel] = useState(null);
 
   // ── UI state ──
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -148,7 +146,9 @@ export default function App() {
   }, [settings]);
 
   // ── Sync providers to backend when they change ──
+  const mounted = useRef(false);
   useEffect(() => {
+    if (!mounted.current) { mounted.current = true; return; }
     const providers = settings.providers.map((p) => ({
       name: p.name,
       api_base_url: p.apiBase,
@@ -278,8 +278,8 @@ export default function App() {
         defaultGraph={settings.defaultGraph}
         onDefaultGraphChange={(g) => handleUpdateSettings({ defaultGraph: g })}
         graphs={graphs}
-        tempModel={tempModel}
-        onTempModelChange={setTempModel}
+        chatModel={settings.chatModel}
+        onChatModelChange={(m) => handleUpdateSettings({ chatModel: m })}
         theme={theme}
         onThemeToggle={handleThemeToggle}
         language={i18n.language}

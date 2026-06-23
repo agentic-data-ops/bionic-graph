@@ -194,35 +194,8 @@ export default function SettingsDialog({
             </div>
           ) : (
             <div>
-              <label className="block text-xs text-[#636366] font-medium mb-2 tracking-tight">{t('settings.providers')}</label>
-              {providers.length === 0 && (
-                <p className="text-[#636366] text-sm text-center py-8 tracking-tight">{t('settings.noProviders')}</p>
-              )}
-              <div className="space-y-1 max-h-48 overflow-y-auto mb-3">
-                {providers.map((p) => (
-                  <div key={p.id} className="flex items-center justify-between py-2.5 px-3 rounded-xl hover:bg-[#2a2a2e] transition-all group">
-                    <div>
-                      <div className="text-sm text-[#e5e5e7] font-medium">{p.name}</div>
-                      <div className="text-xs text-[#636366] mt-0.5">
-                        {(p.defaultModel || p.model)} <span className="mx-1">{'\u00b7'}</span> {p.apiBase.replace(/^https?:\/\//, '').replace(/\/+$/, '')}
-                        {p.models?.length > 1 && <span className="ml-1 text-[#48484a]">(+{p.models.length - 1} more)</span>}
-                      </div>
-                    </div>
-                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button className="px-2.5 py-1 text-xs text-[#636366] hover:text-white hover:bg-[#3a3a3e] rounded-lg transition-all" onClick={() => {
-                        setEditingProvider({ ...p, newModelInput: '' });
-                      }}>{t('settings.edit')}</button>
-                      <button className="px-2.5 py-1 text-xs text-[#ff453a] hover:bg-[#3a2a2e] rounded-lg transition-all" onClick={() => handleDeleteProvider(p.id)}>{t('settings.delete')}</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <button className="w-full py-2.5 rounded-xl bg-[#2a2a2e] text-[#86868b] hover:text-white hover:bg-[#3a3a3e] text-sm font-medium transition-all" onClick={handleAddProvider}>
-                + {t('settings.addProvider')}
-              </button>
-
               {/* Default model selector */}
-              <div className="mt-4">
+              <div className="mb-4">
                 <label className="block text-xs text-[#636366] font-medium mb-1.5 tracking-tight">{t('settings.defaultModel')}</label>
                 <select className="w-full px-3 py-2 rounded-xl bg-[#2a2a2e] text-[#e5e5e7] text-sm border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff] appearance-none cursor-pointer"
                   style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23636366' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px center', paddingRight: '32px' }}
@@ -254,6 +227,33 @@ export default function SettingsDialog({
                   ))}
                 </select>
               </div>
+
+              <label className="block text-xs text-[#636366] font-medium mb-2 tracking-tight">{t('settings.providers')}</label>
+              {providers.length === 0 && (
+                <p className="text-[#636366] text-sm text-center py-8 tracking-tight">{t('settings.noProviders')}</p>
+              )}
+              <div className="space-y-1 max-h-48 overflow-y-auto mb-3">
+                {providers.map((p) => (
+                  <div key={p.id} className="flex items-center justify-between py-2.5 px-3 rounded-xl hover:bg-[#2a2a2e] transition-all group">
+                    <div>
+                      <div className="text-sm text-[#e5e5e7] font-medium">{p.name}</div>
+                      <div className="text-xs text-[#636366] mt-0.5">
+                        {(p.defaultModel || p.model)} <span className="mx-1">{'\u00b7'}</span> {p.apiBase.replace(/^https?:\/\//, '').replace(/\/+$/, '')}
+                        {p.models?.length > 1 && <span className="ml-1 text-[#48484a]">(+{p.models.length - 1} more)</span>}
+                      </div>
+                    </div>
+                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button className="px-2.5 py-1 text-xs text-[#636366] hover:text-white hover:bg-[#3a3a3e] rounded-lg transition-all" onClick={() => {
+                        setEditingProvider({ ...p, newModelInput: '' });
+                      }}>{t('settings.edit')}</button>
+                      <button className="px-2.5 py-1 text-xs text-[#ff453a] hover:bg-[#3a2a2e] rounded-lg transition-all" onClick={() => handleDeleteProvider(p.id)}>{t('settings.delete')}</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <button className="w-full py-2.5 rounded-xl bg-[#2a2a2e] text-[#86868b] hover:text-white hover:bg-[#3a3a3e] text-sm font-medium transition-all" onClick={handleAddProvider}>
+                + {t('settings.addProvider')}
+              </button>
             </div>
           )}
         </div>
@@ -262,6 +262,7 @@ export default function SettingsDialog({
       {/* ─── Graphs ─── */}
       {tab === 'graphs' && (
         <div>
+          <label className="block text-xs text-[#636366] font-medium mb-2 tracking-tight">{t('settings.graphList')}</label>
 
           <div className="space-y-1 max-h-36 overflow-y-auto mb-3">
             {graphs.map((g) => (

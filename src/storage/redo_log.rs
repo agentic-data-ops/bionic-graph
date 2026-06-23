@@ -1,5 +1,5 @@
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -333,7 +333,6 @@ impl RedoLog {
                 "{:020}.done",
                 self.last_checkpoint_seq
             ));
-            let closed_path = self.path.with_extension("closed");
             // Need to copy since we can't rename an open handle portably
             // Simpler approach: just close and don't worry about the old file
             // The old file will be cleaned up on next startup

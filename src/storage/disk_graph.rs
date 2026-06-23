@@ -5,7 +5,7 @@ use crate::graph::graph::GraphError;
 use crate::graph::{Vertex, VertexId, PropertyValue};
 
 use super::index::{IndexBundle, LabelIndex, SubgraphIndex, VertexIndex};
-use super::partition::{self, PartitionConfig};
+use super::partition::PartitionConfig;
 use super::redo_log::{
     AddCrossEdgePayload, AddEdgePayload, AddVertexPayload, RedoLog, RedoOperation,
     RemoveEdgePayload, RemoveVertexPayload,
@@ -334,7 +334,7 @@ impl DiskGraph {
     // ─── Subgraph Management ───────────────────────────────────
 
     /// Find a subgraph to place a new vertex in, creating one if needed.
-    fn find_or_create_subgraph(&mut self, labels: &[String]) -> SubgraphId {
+    fn find_or_create_subgraph(&mut self, _labels: &[String]) -> SubgraphId {
         let current: Vec<(SubgraphId, usize)> = self
             .subgraph_index
             .iter()

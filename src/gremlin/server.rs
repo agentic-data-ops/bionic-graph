@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use axum::{
@@ -11,15 +10,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tower_http::cors::CorsLayer;
 use crate::ui_serve::{ui_handler, ui_root_handler};
-use uuid::Uuid;
-
 use crate::config::{Settings, save_settings};
 use crate::graph_manager::GraphManager;
 use crate::extract::{ExtractionTaskManager, ExtractionConfig, TaskResponse};
 
 use crate::documents::DocumentManager;
 
-use super::query::{GremlinQuery, QueryResponse, TraversalResult};
+use super::query::{GremlinQuery, QueryResponse};
 use super::steps::{execute_query, execute_query_with_llm};
 
 // ─── AppState ────────────────────────────────────────────────────
@@ -58,6 +55,9 @@ struct HealthResponse {
 
 #[derive(Deserialize)]
 struct AddVertexRequest {
+    name: String,
+    #[serde(default)]
+    keywords: Vec<String>,
     labels: Vec<String>,
     #[serde(default)]
     properties: std::collections::HashMap<String, serde_json::Value>,
@@ -132,8 +132,10 @@ pub fn build_router(state: AppState) -> Router {
         // Compaction
         .route("/compact", post(compact_handler))
 
-        // Vertex management
+        // Vertex/Edge management
         .route("/vertices/:id", delete(delete_vertex_handler))
+        .route("/vertices/:id", put(update_vertex_handler))
+        .route("/edges/:id", put(update_edge_handler))
 
         // Settings
         .route("/settings", get(get_settings_handler))
@@ -281,25 +283,37 @@ async fn add_vertex_handler(
     let mut g = handle.graph.lock().unwrap();
     let props: std::collections::HashMap<String, crate::graph::PropertyValue> = req
         .properties.into_iter().map(|(k, v)| (k, json_to_property(&v))).collect();
-    // Extract name for neuron keywords before props is moved
-    let name_keyword = props.get("name").and_then(|pv| {
-        if let crate::graph::PropertyValue::String(n) = pv { Some(n.clone()) } else { None }
-    });
     let id = g.create_vertex(labels.clone());
     if let Some(v) = g.get_vertex_mut(id) {
-        v.properties = props;
+        v.name = req.name.clone();
+        v.keywords = req.keywords.clone();
+        // Remove built-in fields from custom properties
+        let mut clean_props = props;
+        clean_props.remove("name");
+        clean_props.remove("keywords");
+        v.properties = clean_props;
+    }
+    // Graph WAL
+    if let Ok(mut wal) = handle.redolog_wal.lock() {
+        let _ = wal.append_add_vertex(id, &labels);
     }
     // Auto-create a neuron for this vertex (keywords include name for search)
     let nn_label = labels.first().cloned().unwrap_or_else(|| "entity".to_string());
     let mut keywords = labels.clone();
-    if let Some(name) = name_keyword {
-        keywords.push(name);
+    keywords.push(req.name.clone());
+    for kw in &req.keywords {
+        keywords.push(kw.clone());
     }
-    let neuron = crate::neuron::neuron::Neuron::for_vertex(
-        (handle.neural_network.lock().unwrap().neuron_count() as u64) + 1,
-        &nn_label, id,
-    ).with_keywords(keywords);
-    handle.neural_network.lock().unwrap().add_neuron(neuron);
+    {
+        let mut nn = handle.neural_network.lock().unwrap();
+        let nid = nn.neuron_count() as u64 + 1;
+        let neuron = crate::neuron::neuron::Neuron::for_vertex(nid, &nn_label, id)
+            .with_keywords(keywords.clone());
+        nn.add_neuron(neuron.clone());
+        if let Ok(mut wal) = handle.redolog_wal.lock() {
+            let _ = wal.append_add_neuron(&neuron);
+        }
+    }
     Ok(Json(AddVertexResponse { id }))
 }
 
@@ -319,6 +333,9 @@ async fn add_edge_handler(
     let id = g.create_edge(label.clone(), req.source, req.target).map_err(|e| {
         (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()})))
     })?;
+    if let Ok(mut wal) = handle.redolog_wal.lock() {
+        let _ = wal.append_add_edge(id, &label, req.source, req.target);
+    }
     if let Some(e) = g.get_edge_mut(id) {
         e.properties = req.properties.into_iter().map(|(k, v)| (k, json_to_property(&v))).collect();
     }
@@ -328,7 +345,11 @@ async fn add_edge_handler(
     let nid = (nn.neuron_count() as u64) + 1;
     let neuron = crate::neuron::neuron::Neuron::for_edge(nid, &label, id)
         .with_keywords(vec![label.clone()]);
-    nn.add_neuron(neuron);
+    nn.add_neuron(neuron.clone());
+    // WAL: log the new neuron
+    if let Ok(mut wal) = handle.redolog_wal.lock() {
+        let _ = wal.append_add_neuron(&neuron);
+    }
     // Auto-create neural synapses between neurons referencing the two vertices
     nn.auto_synapse(req.source, req.target);
     Ok(Json(AddEdgeResponse { id }))
@@ -350,7 +371,10 @@ async fn create_neuron_handler(
     let mut neuron = crate::neuron::Neuron::new(id, &req.label);
     neuron.keywords = req.keywords;
     neuron.vertex_refs = req.vertex_refs;
-    nn.add_neuron(neuron);
+    nn.add_neuron(neuron.clone());
+    if let Ok(mut wal) = handle.redolog_wal.lock() {
+        let _ = wal.append_add_neuron(&neuron);
+    }
     Ok(Json(serde_json::json!({"id": id})))
 }
 
@@ -368,7 +392,13 @@ async fn link_neuron_handler(
     let handle = gm.get_mut(&graph_name).ok_or_else(|| {
         (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "graph not found"})))
     })?;
-    handle.neural_network.lock().unwrap().link_vertex(neuron_id, vertex_id);
+    {
+        let mut nn = handle.neural_network.lock().unwrap();
+        nn.link_vertex(neuron_id, vertex_id);
+        if let Ok(mut wal) = handle.redolog_wal.lock() {
+            let _ = wal.append_link_vertex(neuron_id, vertex_id);
+        }
+    }
     Ok(Json(serde_json::json!({"status": "linked"})))
 }
 
@@ -392,6 +422,9 @@ async fn add_synapse_handler(
     let mut nn = handle.neural_network.lock().unwrap();
     nn.add_synapse(pre_id, post_id, strength, plasticity)
         .ok_or_else(|| (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "neuron not found"}))))?;
+    if let Ok(mut wal) = handle.redolog_wal.lock() {
+        let _ = wal.append_add_synapse(pre_id, post_id, strength, plasticity);
+    }
     Ok(Json(serde_json::json!({"status": "synapse_created"})))
 }
 
@@ -494,10 +527,33 @@ async fn delete_vertex_handler(
     // Remove edges connected to this vertex
     let edge_ids: Vec<u64> = g.all_edges().filter(|e| e.source == id || e.target == id).map(|e| e.id).collect();
     for eid in edge_ids {
-        g.remove_edge(eid);
+        let _ = g.remove_edge(eid);
+        if let Ok(mut wal) = handle.redolog_wal.lock() {
+            let _ = wal.append_remove_edge(eid);
+        }
     }
     // Remove the vertex
-    g.remove_vertex(id, true);
+    let _ = g.remove_vertex(id, true);
+    if let Ok(mut wal) = handle.redolog_wal.lock() {
+        let _ = wal.append_remove_vertex(id);
+    }
+    // Remove associated neuron
+    if let Ok(mut nn) = handle.neural_network.lock() {
+        use crate::neuron::neuron::EntityType;
+        let nid = nn.all_neurons().find_map(|n| {
+            if matches!(n.entity_type, Some(EntityType::Vertex(v)) if v == id) {
+                Some(n.id)
+            } else {
+                None
+            }
+        });
+        if let Some(nid) = nid {
+            nn.remove_neuron(nid);
+            if let Ok(mut wal) = handle.redolog_wal.lock() {
+                let _ = wal.append_remove_neuron(nid);
+            }
+        }
+    }
     Ok(Json(serde_json::json!({"success": true, "deleted": id})))
 }
 
@@ -662,8 +718,31 @@ async fn delete_document_handler(
                     .collect();
                 for eid in edge_ids {
                     let _ = g.remove_edge(eid);
+                    if let Ok(mut wal) = handle.redolog_wal.lock() {
+                        let _ = wal.append_remove_edge(eid);
+                    }
                 }
-                g.remove_vertex(vid, true);
+                let _ = g.remove_vertex(vid, true);
+                if let Ok(mut wal) = handle.redolog_wal.lock() {
+                    let _ = wal.append_remove_vertex(vid);
+                }
+                // Remove associated neuron
+                if let Ok(mut nn) = handle.neural_network.lock() {
+                    use crate::neuron::neuron::EntityType;
+                    let nid = nn.all_neurons().find_map(|n| {
+                        if matches!(n.entity_type, Some(EntityType::Vertex(v)) if v == vid) {
+                            Some(n.id)
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(nid) = nid {
+                        nn.remove_neuron(nid);
+                        if let Ok(mut wal) = handle.redolog_wal.lock() {
+                            let _ = wal.append_remove_neuron(nid);
+                        }
+                    }
+                }
             }
             count
         } else {
@@ -755,6 +834,161 @@ async fn get_task_handler(
         }
         None => Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Task not found"})))),
     }
+}
+
+// ─── Update Vertex ──────────────────────────────────────────────
+
+/// PUT /vertices/:id — Update vertex labels and properties.
+#[derive(Deserialize)]
+struct UpdateVertexRequest {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    keywords: Option<Vec<String>>,
+    #[serde(default)]
+    labels: Vec<String>,
+    #[serde(default)]
+    properties: std::collections::HashMap<String, serde_json::Value>,
+}
+
+async fn update_vertex_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<u64>,
+    Json(req): Json<UpdateVertexRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let graph_name = resolve_graph_name(&headers);
+    let mut gm = state.graph_manager.lock().unwrap();
+    let handle = gm.get_mut(&graph_name).ok_or_else(|| {
+        (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "graph not found"})))
+    })?;
+    let mut g = handle.graph.lock().unwrap();
+    let vertex = g.get_vertex_mut(id).ok_or_else(|| {
+        (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "vertex not found"})))
+    })?;
+    let props: std::collections::HashMap<String, crate::graph::PropertyValue> = req
+        .properties.into_iter().map(|(k, v)| (k, json_to_property(&v))).collect();
+    if let Some(name) = req.name {
+        vertex.name = name;
+    }
+    if let Some(keywords) = req.keywords {
+        vertex.keywords = keywords;
+    }
+    if !req.labels.is_empty() {
+        vertex.labels = req.labels;
+    }
+    vertex.properties = props;
+    let new_keywords: Vec<String> = {
+        let v = &vertex;
+        let mut kw = v.labels.clone();
+        kw.push(v.name.clone());
+        for kw_val in &v.keywords {
+            kw.push(kw_val.clone());
+        }
+        kw
+    };
+    drop(g);
+    // Graph WAL
+    if let Ok(mut wal) = handle.redolog_wal.lock() {
+        let g = handle.graph.lock().unwrap();
+        if let Some(v) = g.get_vertex(id) {
+            let _ = wal.append_update_vertex(id, &v.labels, &v.properties);
+        }
+        drop(g);
+        drop(wal);
+    }
+    // Sync neuron keywords
+    if let Ok(mut nn) = handle.neural_network.lock() {
+        use crate::neuron::neuron::EntityType;
+        let nid = nn.all_neurons().find_map(|n| {
+            if matches!(n.entity_type, Some(EntityType::Vertex(v)) if v == id) {
+                Some(n.id)
+            } else {
+                None
+            }
+        });
+        if let Some(nid) = nid {
+            if let Some(neuron) = nn.get_neuron_mut(nid) {
+                neuron.keywords = new_keywords;
+                nn.mark_dirty();
+            }
+            if let Ok(mut wal) = handle.redolog_wal.lock() {
+                if let Some(neuron) = nn.get_neuron(nid) {
+                    let _ = wal.append_update_neuron(neuron);
+                }
+            }
+        }
+    }
+    Ok(Json(serde_json::json!({"success": true, "id": id})))
+}
+
+// ─── Update Edge ────────────────────────────────────────────────
+
+/// PUT /edges/:id — Update edge label and properties.
+#[derive(Deserialize)]
+struct UpdateEdgeRequest {
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    properties: std::collections::HashMap<String, serde_json::Value>,
+}
+
+async fn update_edge_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<u64>,
+    Json(req): Json<UpdateEdgeRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let graph_name = resolve_graph_name(&headers);
+    let mut gm = state.graph_manager.lock().unwrap();
+    let handle = gm.get_mut(&graph_name).ok_or_else(|| {
+        (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "graph not found"})))
+    })?;
+    let mut g = handle.graph.lock().unwrap();
+    let edge = g.get_edge_mut(id).ok_or_else(|| {
+        (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "edge not found"})))
+    })?;
+    let props: std::collections::HashMap<String, crate::graph::PropertyValue> = req
+        .properties.into_iter().map(|(k, v)| (k, json_to_property(&v))).collect();
+    if let Some(ref label) = req.label {
+        edge.label = label.clone();
+    }
+    edge.properties = props;
+    drop(g);
+    // Graph WAL
+    if let Ok(mut wal) = handle.redolog_wal.lock() {
+        let g = handle.graph.lock().unwrap();
+        if let Some(e) = g.get_edge(id) {
+            let _ = wal.append_update_edge(id, &e.label, &e.properties);
+        }
+        drop(g);
+        drop(wal);
+    }
+    // Sync neuron label
+    if let Ok(mut nn) = handle.neural_network.lock() {
+        use crate::neuron::neuron::EntityType;
+        let nid = nn.all_neurons().find_map(|n| {
+            if matches!(n.entity_type, Some(EntityType::Edge(e)) if e == id) {
+                Some(n.id)
+            } else {
+                None
+            }
+        });
+        if let Some(nid) = nid {
+            if let Some(neuron) = nn.get_neuron_mut(nid) {
+                if let Some(ref label) = req.label {
+                    neuron.keywords = vec![label.clone()];
+                    nn.mark_dirty();
+                }
+            }
+            if let Ok(mut wal) = handle.redolog_wal.lock() {
+                if let Some(neuron) = nn.get_neuron(nid) {
+                    let _ = wal.append_update_neuron(neuron);
+                }
+            }
+        }
+    }
+    Ok(Json(serde_json::json!({"success": true, "id": id})))
 }
 
 // ─── Re-index ────────────────────────────────────────────────────

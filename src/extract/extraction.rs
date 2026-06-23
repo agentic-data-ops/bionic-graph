@@ -221,7 +221,7 @@ pub fn parse_batch_response(
         })?;
 
     let mut results = Vec::with_capacity(sections.len());
-    for (i, (batch_idx, section)) in sections.iter().enumerate() {
+    for (i, (_batch_idx, section)) in sections.iter().enumerate() {
         let entry = parsed.get(i).cloned().unwrap_or(LlmExtraction {
             section_summary: None,
             entities: None,

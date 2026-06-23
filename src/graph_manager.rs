@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use crate::graph::Graph;
 use crate::neuron::NeuralNetwork;
 use crate::persistence::{self, AutoSaveConfig};
+use crate::storage::RedologWal;
 
 /// A handle to a single graph instance within the manager.
 #[derive(Clone)]
@@ -12,6 +13,7 @@ pub struct GraphHandle {
     pub name: String,
     pub graph: Arc<Mutex<Graph>>,
     pub neural_network: Arc<Mutex<NeuralNetwork>>,
+    pub redolog_wal: Arc<Mutex<RedologWal>>,
     pub data_dir: PathBuf,
 }
 
@@ -23,25 +25,26 @@ impl GraphHandle {
 }
 
 /// Manages multiple named knowledge graphs, each persisted to
-/// `data_root/{graph_name}/`.
+/// `data_root/graphs/{graph_name}/`.
 pub struct GraphManager {
     graphs: HashMap<String, GraphHandle>,
     data_root: PathBuf,
 }
 
 impl GraphManager {
-    /// Open (or create) all graphs found under `data_root/`.
+    /// Open (or create) all graphs found under `data_root/graphs/`.
     ///
-    /// Scans `data_root/` for subdirectories, opens each one as a graph.
+    /// Scans `data_root/graphs/` for subdirectories, opens each one as a graph.
     /// If no graphs exist, creates a `"default"` graph.
     pub fn open(data_root: impl Into<PathBuf>) -> Result<Self, String> {
         let data_root: PathBuf = data_root.into();
-        std::fs::create_dir_all(&data_root).map_err(|e| format!("Cannot create data dir: {}", e))?;
+        let graphs_root = data_root.join("graphs");
+        std::fs::create_dir_all(&graphs_root).map_err(|e| format!("Cannot create graphs dir: {}", e))?;
 
         let mut graphs = HashMap::new();
 
-        // Scan for existing graph directories
-        if let Ok(entries) = std::fs::read_dir(&data_root) {
+        // Scan for existing graph directories under graphs/
+        if let Ok(entries) = std::fs::read_dir(&graphs_root) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
@@ -64,7 +67,7 @@ impl GraphManager {
 
         // If no graphs found, create default
         if graphs.is_empty() {
-            let default_path = data_root.join("default");
+            let default_path = graphs_root.join("default");
             let handle = Self::create_graph_internal("default", &default_path, false)?;
             graphs.insert("default".to_string(), handle);
             log::info!("Created default graph at {:?}", default_path);
@@ -92,7 +95,8 @@ impl GraphManager {
         if self.graphs.contains_key(name) {
             return Err(format!("Graph '{}' already exists", name));
         }
-        let path = self.data_root.join(name);
+        let graphs_root = self.data_root.join("graphs");
+        let path = graphs_root.join(name);
         if path.exists() {
             return Err(format!("Directory already exists: {:?}", path));
         }
@@ -170,13 +174,22 @@ impl GraphManager {
             ..Default::default()
         };
 
-        let (graph, neural_network) = persistence::load_or_create(&config)
+        let (mut graph, mut neural_network) = persistence::load_or_create(&config)
             .map_err(|e| format!("Failed to load graph '{}': {}", name, e))?;
+
+        // Open unified WAL and replay un-persisted mutations atomically
+        let redolog_path = data_dir.join("redolog.wal");
+        let mut redolog_wal = RedologWal::open(&redolog_path)
+            .map_err(|e| format!("Failed to open unified WAL for '{}': {}", name, e))?;
+        if let Err(e) = redolog_wal.replay(&mut graph, &mut neural_network) {
+            log::warn!("Redolog WAL recovery error for '{}': {}", name, e);
+        }
 
         Ok(GraphHandle {
             name: name.to_string(),
             graph: Arc::new(Mutex::new(graph)),
             neural_network: Arc::new(Mutex::new(neural_network)),
+            redolog_wal: Arc::new(Mutex::new(redolog_wal)),
             data_dir: data_dir.to_path_buf(),
         })
     }
@@ -184,7 +197,7 @@ impl GraphManager {
     fn create_graph_internal(name: &str, data_dir: &Path, time_travel: bool) -> Result<GraphHandle, String> {
         std::fs::create_dir_all(data_dir)
             .map_err(|e| format!("Cannot create graph dir: {}", e))?;
-        let mut handle = Self::open_graph(name, data_dir)?;
+        let handle = Self::open_graph(name, data_dir)?;
         // Set time_travel on the underlying Graph
         if time_travel {
             if let Ok(mut g) = handle.graph.lock() {
@@ -196,7 +209,7 @@ impl GraphManager {
 
     /// Save all graphs.
     pub fn save_all(&self) {
-        for (name, handle) in &self.graphs {
+        for (_name, handle) in &self.graphs {
             let config = AutoSaveConfig {
                 graph_path: handle.data_dir.join("graph.bin"),
                 neural_path: handle.data_dir.join("neural.bin"),
@@ -211,6 +224,11 @@ impl GraphManager {
                     let _ = persistence::neuron_store::save_neural_network(&nn, &config.neural_path);
                     nn.mark_clean();
                 }
+            }
+            // Redolog WAL checkpoint after saving both snapshots
+            if let Ok(mut wal) = handle.redolog_wal.lock() {
+                let _ = wal.checkpoint();
+                let _ = wal.truncate_after_checkpoint();
             }
         }
     }

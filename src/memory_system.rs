@@ -3,10 +3,11 @@ use std::sync::{Arc, Mutex};
 
 use crate::config::Settings;
 use crate::extract::ExtractionTaskManager;
+use crate::graph_manager::GraphHandle;
+use crate::storage::RedologWal;
 use std::path::PathBuf;
 
 use crate::graph::{Graph, VertexId};
-use crate::graph::graph::GraphError;
 use crate::graph_manager::GraphManager;
 use crate::gremlin::{
     build_router, execute_query, AppState, GremlinQuery, QueryResponse,
@@ -226,9 +227,10 @@ impl MemorySystem {
         task_manager: ExtractionTaskManager,
         settings: Arc<Mutex<Settings>>,
     ) -> axum::Router {
+        let data_dir = settings.lock().unwrap().storage.data_dir.clone();
         let state = AppState {
             graph_manager: gm,
-            document_manager: crate::documents::DocumentManager::new("data"),
+            document_manager: crate::documents::DocumentManager::new(&data_dir),
             task_manager,
             settings,
         };
@@ -259,17 +261,22 @@ impl MemorySystem {
         neural_network: Arc<Mutex<NeuralNetwork>>,
         data_dir: impl Into<PathBuf>,
     ) -> axum::Router {
-        use crate::graph_manager::GraphHandle;
-        let mut gm = GraphManager::empty(data_dir);
+        let data_root: PathBuf = data_dir.into();
+        let graph_dir = data_root.join("graphs").join("default");
+        let redolog_path = graph_dir.join("redolog.wal");
+        let mut gm = GraphManager::empty(data_root.clone());
         gm.insert("default".to_string(), GraphHandle {
             name: "default".to_string(),
             graph,
             neural_network,
-            data_dir: PathBuf::new(),
+            redolog_wal: Arc::new(Mutex::new(
+                RedologWal::open(&redolog_path).unwrap_or_else(|_| RedologWal::open_in_memory()),
+            )),
+            data_dir: graph_dir,
         });
         let state = AppState {
             graph_manager: Arc::new(Mutex::new(gm)),
-            document_manager: crate::documents::DocumentManager::new("data"),
+            document_manager: crate::documents::DocumentManager::new(data_root.to_str().unwrap_or("data")),
             task_manager: ExtractionTaskManager::new(),
             settings: Arc::new(Mutex::new(Settings::default())),
         };

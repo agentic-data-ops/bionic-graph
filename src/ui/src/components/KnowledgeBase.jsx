@@ -58,10 +58,13 @@ async function extractFromMarkdown(provider, content, sourceFile) {
   const systemPrompt = `You are a knowledge graph extractor. Extract entities and their relationships from the given markdown document.
 Return ONLY valid JSON with this structure:
 {
-  "entities": [{ "name": "EntityName", "type": "person|place|organization|concept|event|object", "description": "Brief description" }],
+  "entities": [{ "name": "EntityName", "type": "person|place|organization|concept|event|object", "description": "Brief description", "keywords": ["search keyword1", "search keyword2"] }],
   "relations": [{ "source": "EntityName", "target": "EntityName", "relation": "relationship description" }]
 }
-- Extract 5-20 most important entities. Entity names should be in their original language. Relations should use clear, concise descriptions.`;
+- Extract 5-20 most important entities.
+- For each entity, provide 0-5 search keywords that help find this entity. Do NOT include the entity name or type in keywords — they are already used as search terms automatically. Only provide ADDITIONAL keywords.
+- Entity names should be in their original language.
+- Relations should use clear, concise descriptions.`;
   const { response } = chatCompletion(
     [{ role: 'system', content: systemPrompt }, { role: 'user', content: `Document: ${sourceFile}\n\n${content}` }],
     provider,
@@ -72,18 +75,28 @@ Return ONLY valid JSON with this structure:
   return { entities: [], relations: [] };
 }
 
-/** Progress step component */
+/** Progress step component — styled to match SearchStep from MessageList */
 function ProgressStep({ label, status, detail }) {
-  const icon = (status === 'done' || status === 'completed') ? '✅' : status === 'running' ? '⏳' : status === 'failed' ? '❌' : '⏸';
-  const color = (status === 'done' || status === 'completed') ? 'text-[#30d158]' : status === 'running' ? 'text-[#0a84ff]' : status === 'failed' ? 'text-[#ff453a]' : 'text-[#636366]';
+  const icon = status === 'done' || status === 'completed' ? '✅'
+    : status === 'running' ? '⏳'
+    : status === 'failed' ? '❌'
+    : '⏸';
+  const color = status === 'done' || status === 'completed' ? 'text-[#30d158]'
+    : status === 'running' ? 'text-[#0a84ff]'
+    : status === 'failed' ? 'text-[#ff453a]'
+    : 'text-[#636366]';
   return (
-    <div className="py-1">
+    <div className="py-1.5">
       <div className="flex items-center gap-2">
         <span className="text-xs">{icon}</span>
-        <span className={`text-xs ${color} font-medium`}>{label}</span>
-        {status === 'running' && <span className="inline-flex gap-0.5"><span className="w-1 h-1 rounded-full bg-[#0a84ff] pulse-dot" /><span className="w-1 h-1 rounded-full bg-[#0a84ff] pulse-dot" style={{ animationDelay: '0.2s' }} /><span className="w-1 h-1 rounded-full bg-[#0a84ff] pulse-dot" style={{ animationDelay: '0.4s' }} /></span>}
+        <span className={`text-xs ${color} font-medium tracking-tight`}>{label}</span>
       </div>
-      {detail && (status === 'done' || status === 'completed') && <div className="mt-1 ml-5 text-[11px] text-[#636366] leading-relaxed font-mono whitespace-pre-wrap border-l border-[#2a2a2e] pl-3">{detail}</div>}
+      {detail && (status === 'done' || status === 'completed') && (
+        <div className="mt-1.5 ml-5 text-[11px] text-[#636366] leading-relaxed font-mono whitespace-pre-wrap border-l border-[#2a2a2e] pl-3">{detail}</div>
+      )}
+      {detail && status === 'running' && (
+        <div className="mt-1.5 ml-5 text-[11px] text-[#48484a] leading-relaxed font-mono whitespace-pre-wrap border-l border-[#2a2a2e] pl-3 max-h-20 overflow-y-auto">{detail}</div>
+      )}
     </div>
   );
 }
@@ -129,7 +142,16 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
 
   const runExtraction = useCallback(async (content, providerCfg, graphName) => {
     const steps = [];
-    const addStep = (s) => { steps.push(s); setImportSteps([...steps]); };
+    const addStep = (s) => {
+      // Replace last running step instead of appending duplicate
+      const last = steps[steps.length - 1];
+      if (last && last.status === 'running') {
+        steps[steps.length - 1] = s;
+      } else {
+        steps.push(s);
+      }
+      setImportSteps([...steps]);
+    };
 
     addStep({ label: 'Generating title...', status: 'running', detail: '' });
     const title = await generateTitle(providerCfg, content);
@@ -152,7 +174,8 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
     let vCount = 0;
     for (const entity of (extracted.entities || [])) {
       try {
-        const v = await addVertex([entity.type || 'entity'], { name: entity.name, description: entity.description || '', source_file: title, chapter_path: '' }, graphName);
+        const kw = entity.keywords || [entity.name];
+        const v = await addVertex([entity.type || 'entity'], { description: entity.description || '', source_file: title, chapter_path: '' }, graphName, entity.name, kw);
         vertexMap[entity.name] = v.id;
         vCount++;
       } catch {}
@@ -169,7 +192,7 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
       }
     }
     addStep({ label: `${eCount} edges created`, status: 'done', detail: '' });
-    addStep({ label: '✅ Import complete', status: 'done', detail: '' });
+    addStep({ label: 'Import complete', status: 'done', detail: '' });
 
     const docs = await listDocuments();
     setDocuments(docs.documents || []);
@@ -310,8 +333,13 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
 
           {/* Progress steps */}
           {importSteps.length > 0 && (
-            <div className="bg-[#1c1c20] rounded-xl p-3 mt-2">
-              {importSteps.map((step, i) => <ProgressStep key={i} {...step} />)}
+            <div className="border border-[#2a2a2e] rounded-xl overflow-hidden mt-2">
+              <div className="px-4 py-3">
+                <div className="text-xs text-[#0a84ff] font-semibold mb-2 tracking-tight">📄 {t('knowledgeBase.import')}</div>
+                <div className="space-y-0">
+                  {importSteps.map((step, i) => <ProgressStep key={i} {...step} />)}
+                </div>
+              </div>
             </div>
           )}
           </div>

@@ -28,7 +28,7 @@ pub fn execute_query_with_llm(
     graph: &Arc<Mutex<Graph>>,
     neural_network: &Arc<Mutex<NeuralNetwork>>,
     query: &GremlinQuery,
-    llm_config: Option<&ExtractionConfig>,
+    _llm_config: Option<&ExtractionConfig>,
 ) -> QueryResponse {
     // The current stream of results — starts empty (needs a source step)
     let mut current: Result<Vec<TraversalResult>, String> = Ok(Vec::new());
@@ -63,6 +63,8 @@ pub fn execute_query_with_llm(
                     .map(|(vid, _score)| TraversalResult::VertexResult(VertexResult {
                         element_type: "vertex".to_string(),
                         id: vid,
+                        name: String::new(),
+                        keywords: Vec::new(),
                         labels: Vec::new(),
                         properties: std::collections::HashMap::new(),
                     }))
@@ -125,13 +127,13 @@ pub fn execute_query_with_llm(
             }
 
             TraversalStep::HasNot { key, value } => {
-                let g = graph.lock().unwrap();
-                let results = filter_by_property_not(&g, input, key, value);
+                let _g = graph.lock().unwrap();
+                let results = filter_by_property_not(&_g, input, key, value);
                 Ok(results)
             }
 
             TraversalStep::HasKey { key } => {
-                let g = graph.lock().unwrap();
+                let _g = graph.lock().unwrap();
                 let results: Vec<TraversalResult> = input
                     .into_iter()
                     .filter(|r| match r {
@@ -160,7 +162,7 @@ pub fn execute_query_with_llm(
             }
 
             TraversalStep::HasLabel { labels } => {
-                let g = graph.lock().unwrap();
+                let _g = graph.lock().unwrap();
                 let label_set: HashSet<&str> = labels.iter().map(|s| s.as_str()).collect();
                 let results: Vec<TraversalResult> = input
                     .into_iter()
@@ -341,7 +343,7 @@ pub fn execute_query_with_llm(
                     }
                 };
                 log::info!("Compacting history before timestamp {}", timestamp);
-                let data_dir = std::path::Path::new("data");
+                let data_dir = std::path::Path::new("data/graphs");
                 let mut g = graph.lock().unwrap();
                 let stats = crate::storage::compaction::compact_graph(&mut g, data_dir, timestamp, 0);
                 let result = serde_json::json!({
@@ -756,7 +758,7 @@ fn run_steps(
             TraversalStep::Compact { before } => {
                 let timestamp = parse_time_value(before)?;
                 let mut g = graph.lock().unwrap();
-                let data_dir = std::path::Path::new("data");
+                let data_dir = std::path::Path::new("data/graphs");
                 crate::storage::compaction::compact_graph(&mut g, data_dir, timestamp, 0);
                 current
             }
@@ -796,6 +798,7 @@ fn run_steps(
 /// Accepts: integer (Unix microseconds) or ISO 8601 string.
 /// Extract search keywords from a natural language query using LLM.
 /// Falls back to simple whitespace splitting if LLM is unavailable.
+#[allow(dead_code)]
 fn extract_search_keywords(llm_config: Option<&ExtractionConfig>, query: &str) -> Vec<String> {
     if let Some(config) = llm_config {
         let system_prompt = "Extract 3-5 key search keywords from this query. Keep names in their original language (e.g. Chinese names stay in Chinese). Return ONLY a JSON array of strings, no other text.";
@@ -821,6 +824,7 @@ fn extract_search_keywords(llm_config: Option<&ExtractionConfig>, query: &str) -
 }
 
 /// After search, ask the LLM to prune results not semantically relevant.
+#[allow(dead_code)]
 pub(super) fn semantic_filter_results(
     config: &ExtractionConfig,
     query: &str,
@@ -912,6 +916,8 @@ fn vertex_to_result(g: &Graph, id: VertexId) -> TraversalResult {
     TraversalResult::VertexResult(VertexResult {
         element_type: "vertex".to_string(),
         id: v.id,
+        name: v.name.clone(),
+        keywords: v.keywords.clone(),
         labels: v.labels.clone(),
         properties: props,
     })
@@ -945,6 +951,8 @@ fn vertex_from_snapshot(v: &crate::graph::Vertex) -> TraversalResult {
     TraversalResult::VertexResult(VertexResult {
         element_type: "vertex".to_string(),
         id: v.id,
+        name: v.name.clone(),
+        keywords: v.keywords.clone(),
         labels: v.labels.clone(),
         properties: props,
     })
@@ -994,7 +1002,7 @@ pub(super) fn fill_vertex_details(g: &Graph, results: Vec<TraversalResult>) -> R
 }
 
 fn filter_by_property(
-    g: &Graph,
+    _g: &Graph,
     input: Vec<TraversalResult>,
     key: &str,
     value: &Value,
@@ -1014,7 +1022,7 @@ fn filter_by_property(
 
 /// Filter results where a property does NOT match the given value.
 fn filter_by_property_not(
-    g: &Graph,
+    _g: &Graph,
     input: Vec<TraversalResult>,
     key: &str,
     value: &Value,

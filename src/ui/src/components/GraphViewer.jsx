@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState, forwardRef, useImperativeHandle } from 'react';
+import { useEffect, useRef, useState, forwardRef, useImperativeHandle, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Network } from 'vis-network';
 import { DataSet } from 'vis-data';
-import { traverse } from '../api';
+import { traverse, updateVertexProperties, updateEdgeProperties, deleteVertex } from '../api';
 
 const DARK_OPTIONS = {
   nodes: {
@@ -27,10 +28,61 @@ const DARK_OPTIONS = {
   layout: { randomSeed: 42 },
 };
 
-function InfoPanel({ item, type, onClose }) {
+function InfoPanel({ item, type, onClose, graphName, onDelete }) {
+  const { t } = useTranslation();
+  const [editing, setEditing] = useState(false);
+  const [editLabels, setEditLabels] = useState('');
+  const [editProps, setEditProps] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [newPropKey, setNewPropKey] = useState('');
+  const [newPropVal, setNewPropVal] = useState('');
+
   if (!item) return null;
   const props = item.properties || {};
   const labels = item.labels || [];
+
+  const startEdit = useCallback(() => {
+    setEditLabels(labels.join(', '));
+    setEditProps({ _name: item.name || '', _keywords: (item.keywords || []).join(', '), ...Object.fromEntries(Object.entries(props).map(([k, v]) => [k, String(v)])) });
+    setError('');
+    setEditing(true);
+  }, [labels, props]);
+
+  const cancelEdit = useCallback(() => {
+    setEditing(false);
+    setError('');
+  }, []);
+
+  const saveEdit = useCallback(async () => {
+    setSaving(true);
+    setError('');
+    try {
+      const newLabels = editLabels.split(',').map((s) => s.trim()).filter(Boolean);
+      const newProps = Object.fromEntries(
+        Object.entries(editProps).map(([k, v]) => [k, v])
+      );
+      const name = editProps._name || item.name || '';
+      const keywords = editProps._keywords ? editProps._keywords.split(',').map(s => s.trim()).filter(Boolean) : (item.keywords || []);
+      // Remove internal fields before sending
+      const { _name, _keywords, ...customProps } = editProps;
+      if (type === 'vertex') {
+        await updateVertexProperties(item.id, newLabels, customProps, graphName, name, keywords);
+      } else {
+        // Edge: first label in the CSV is the new label
+        const newLabel = newLabels[0] || item.label || '';
+        await updateEdgeProperties(item.id, newLabel, newProps, graphName);
+      }
+      // Update local _original so the panel shows fresh data
+      item.labels = newLabels;
+      item.properties = newProps;
+      setEditing(false);
+    } catch (e) {
+      setError(e.message || 'Save failed');
+    }
+    setSaving(false);
+  }, [editLabels, editProps, item, type, graphName]);
+
   return (
     <div className="w-72 bg-[#1c1c20] border-l border-[#2a2a2e] flex flex-col h-full overflow-y-auto flex-shrink-0 select-text">
       <div className="flex items-center justify-between px-4 py-3 border-b border-[#2a2a2e] flex-shrink-0">
@@ -38,38 +90,149 @@ function InfoPanel({ item, type, onClose }) {
           {type === 'vertex' ? 'Vertex' : 'Edge'}
           <span className="text-[#48484a] font-mono ml-2 normal-case">#{item.id}</span>
         </span>
-        <button className="w-5 h-5 rounded-md bg-[#2a2a2e] hover:bg-[#3a3a3e] flex items-center justify-center text-[#636366] hover:text-white" onClick={onClose}>
-          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        </button>
+        <div className="flex items-center gap-1">
+          {!editing && (
+            <button className="px-2 py-1 rounded-lg bg-[#2a2a2e] text-[#86868b] hover:text-white hover:bg-[#3a3a3e] text-xs font-medium transition-all" onClick={startEdit}>{t('graph.modify')}</button>
+          )}
+          <button className="w-5 h-5 rounded-md bg-[#2a2a2e] hover:bg-[#3a3a3e] flex items-center justify-center text-[#636366] hover:text-white" onClick={onClose}>
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
       </div>
       <div className="p-4 space-y-4">
-        {labels.length > 0 && (
-          <div>
-            <div className="text-[10px] font-semibold text-[#636366] uppercase tracking-wider mb-2">Labels</div>
+        {/* Labels */}
+        <div>
+          <div className="text-[10px] font-semibold text-[#636366] uppercase tracking-wider mb-2">
+            Labels {editing && <span className="text-[#48484a] normal-case font-normal">(comma-separated)</span>}
+          </div>
+          {editing ? (
+            <input
+              className="w-full px-2.5 py-1.5 rounded-lg bg-[#2a2a2e] text-[#e5e5e7] text-xs border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff]"
+              value={editLabels}
+              onChange={(e) => setEditLabels(e.target.value)}
+            />
+          ) : (
             <div className="flex flex-wrap gap-1.5">
               {labels.map((l, i) => <span key={i} className="px-2 py-0.5 rounded-md bg-[#0a84ff]/15 text-[#0a84ff] text-[11px] font-medium">{l}</span>)}
             </div>
-          </div>
-        )}
+          )}
+        </div>
+        {/* Name (built-in) */}
         <div>
-          <div className="text-[10px] font-semibold text-[#636366] uppercase tracking-wider mb-2">Properties</div>
-          {Object.keys(props).length === 0 ? <div className="text-xs text-[#48484a] italic">—</div> : (
-            <div className="space-y-1">
-              {Object.entries(props).map(([k, v]) => (
-                <div key={k} className="flex justify-between items-start py-1.5 px-2.5 rounded-lg bg-[#2a2a2e]">
-                  <span className="text-[11px] text-[#636366] font-medium mr-3 whitespace-nowrap">{k}</span>
-                  <span className="text-[11px] text-[#e5e5e7] text-right break-all max-w-[160px] font-mono">{String(v)}</span>
-                </div>
-              ))}
+          <div className="text-[10px] font-semibold text-[#636366] uppercase tracking-wider mb-2">Name</div>
+          {editing ? (
+            <input
+              className="w-full px-2.5 py-1.5 rounded-lg bg-[#2a2a2e] text-[#e5e5e7] text-xs border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff]"
+              value={editProps._name || ''}
+              onChange={(e) => setEditProps({ ...editProps, _name: e.target.value })}
+            />
+          ) : (
+            <div className="text-xs text-[#e5e5e7] font-medium">{item.name || '—'}</div>
+          )}
+        </div>
+        {/* Tags (built-in) */}
+        <div>
+          <div className="text-[10px] font-semibold text-[#636366] uppercase tracking-wider mb-2">Tags</div>
+          {editing ? (
+            <input
+              className="w-full px-2.5 py-1.5 rounded-lg bg-[#2a2a2e] text-[#e5e5e7] text-xs border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff]"
+              value={editProps._keywords || ''}
+              onChange={(e) => setEditProps({ ...editProps, _keywords: e.target.value })}
+              placeholder="comma-separated"
+            />
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {(item.keywords || []).length > 0 ? item.keywords.map((tag, i) => (
+                <span key={i} className="px-2 py-0.5 rounded-md bg-[#30d158]/15 text-[#30d158] text-[11px] font-medium">{tag}</span>
+              )) : <span className="text-xs text-[#48484a] italic">—</span>}
             </div>
           )}
         </div>
+        {/* Custom Properties */}
+        <div>
+          <div className="text-[10px] font-semibold text-[#636366] uppercase tracking-wider mb-2">Custom Properties</div>
+          {editing ? (
+            <div className="space-y-1.5">
+              {Object.entries(editProps).map(([k, v]) => (
+                <div key={k} className="flex items-start gap-1 py-1.5 px-2.5 rounded-lg bg-[#2a2a2e]">
+                  <div className="flex-1 flex flex-col gap-1 min-w-0">
+                    <input
+                      className="w-full px-2 py-1 rounded-md bg-[#1c1c20] text-[#e5e5e7] text-[10px] border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff] font-mono"
+                      value={k}
+                      onChange={(e) => {
+                        const { [k]: _, ...rest } = editProps;
+                        setEditProps({ ...rest, [e.target.value]: v });
+                      }}
+                      placeholder="key"
+                    />
+                    <input
+                      className="w-full px-2 py-1 rounded-md bg-[#1c1c20] text-[#e5e5e7] text-xs border-0 outline-none ring-1 ring-[#3a3a3e] focus:ring-[#0a84ff]"
+                      value={v}
+                      onChange={(e) => setEditProps({ ...editProps, [k]: e.target.value })}
+                    />
+                  </div>
+                  <button
+                    className="flex-shrink-0 w-5 h-5 rounded-md bg-[#3a3a3e] hover:bg-[#ff453a] flex items-center justify-center text-[#636366] hover:text-white text-[10px] mt-1"
+                    onClick={() => { const { [k]: _, ...rest } = editProps; setEditProps(rest); }}
+                  >✕</button>
+                </div>
+              ))}
+              {Object.keys(editProps).length === 0 && <div className="text-xs text-[#48484a] italic">No properties</div>}
+              <button
+                className="w-full py-1 rounded-lg border border-dashed border-[#3a3a3e] text-[#636366] hover:text-white hover:border-[#0a84ff] text-xs font-medium transition-all"
+                onClick={() => {
+                  const key = newPropKey || 'key' + (Object.keys(editProps).length + 1);
+                  setEditProps({ ...editProps, [key]: newPropVal || '' });
+                  setNewPropKey('');
+                  setNewPropVal('');
+                }}
+              >+ {t('graph.addProperty')}</button>
+            </div>
+          ) : (
+            <>
+              {Object.keys(props).length === 0 ? <div className="text-xs text-[#48484a] italic">—</div> : (
+                <div className="space-y-1">
+                  {Object.entries(props).map(([k, v]) => (
+                    <div key={k} className="flex justify-between items-start py-1.5 px-2.5 rounded-lg bg-[#2a2a2e]">
+                      <span className="text-[11px] text-[#636366] font-medium mr-3 whitespace-nowrap">{k}</span>
+                      <span className="text-[11px] text-[#e5e5e7] text-right break-all max-w-[160px] font-mono">{String(v)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+        {/* Edge source/target */}
         {type === 'edge' && (
           <div className="space-y-2">
             <div className="flex items-center gap-2 text-xs"><span className="text-[#636366] font-medium w-14">source</span><span className="text-[#e5e5e7] font-mono">{item.source}</span></div>
             <div className="flex items-center gap-2 text-xs"><span className="text-[#636366] font-medium w-14">target</span><span className="text-[#e5e5e7] font-mono">{item.target}</span></div>
+          </div>
+        )}
+        {/* Delete button for vertices */}
+        {!editing && type === 'vertex' && (
+          <div>
+            <button
+              className="w-full py-1.5 rounded-lg bg-[#ff453a]/15 text-[#ff453a] hover:bg-[#ff453a]/25 text-xs font-medium transition-all"
+              onClick={() => { if (confirm(t('graph.confirmDelete', { id: item.id }))) onDelete?.(item.id); }}
+            >
+              {t('graph.delete')}
+            </button>
+          </div>
+        )}
+        {/* Edit buttons */}
+        {editing && (
+          <div className="space-y-2">
+            {error && <div className="text-[11px] text-[#ff453a] bg-[#3a2a2e] rounded-lg px-2.5 py-1.5">{error}</div>}
+            <div className="flex gap-2">
+              <button className="flex-1 py-1.5 rounded-lg bg-[#3a3a3e] text-[#86868b] hover:text-white text-xs font-medium transition-all" onClick={cancelEdit}>Cancel</button>
+              <button className="flex-1 py-1.5 rounded-lg bg-[#0a84ff] text-white text-xs font-medium hover:bg-[#0a6ed9] transition-all shadow-sm disabled:opacity-50" onClick={saveEdit} disabled={saving}>
+                {saving ? 'Saving...' : 'Save'}
+              </button>
+            </div>
           </div>
         )}
       </div>
@@ -203,7 +366,31 @@ const GraphViewer = forwardRef(({ data, graph, className }, ref) => {
   return (
     <div className={`flex-1 flex min-h-0 ${className || ''}`} style={{ height: '100%', width: '100%' }}>
       <div ref={containerRef} className="flex-1 min-h-0" />
-      {selected && <InfoPanel item={selected.item} type={selected.type} onClose={() => setSelected(null)} />}
+      {selected && (
+        <InfoPanel
+          item={selected.item}
+          type={selected.type}
+          graphName={graph}
+          onClose={() => setSelected(null)}
+          onDelete={async (vid) => {
+            try {
+              await deleteVertex(vid, graph);
+            } catch (e) {
+              console.error('Delete failed:', e);
+              return;
+            }
+            const ns = nodesRef.current;
+            const es = edgesRef.current;
+            if (!ns) return;
+            if (es) {
+              const toRemove = es.get().filter((e) => e.from === vid || e.to === vid);
+              toRemove.forEach((e) => es.remove(e.id));
+            }
+            ns.remove(vid);
+            setSelected(null);
+          }}
+        />
+      )}
     </div>
   );
 });

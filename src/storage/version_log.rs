@@ -100,7 +100,7 @@ pub fn write_vlog(
     let boundaries: Vec<usize> = sparse_index
         .iter()
         .enumerate()
-        .map(|(i, e)| {
+        .map(|(i, _e)| {
             if i + 1 < sparse_index.len() {
                 sparse_index[i + 1].entry_idx as usize
             } else {

@@ -61,7 +61,7 @@ pub fn assign_vertex_to_subgraph(
         }
         PartitionStrategy::ByLabel => {
             // Find a subgraph with the same label
-            let target_label = vertex.labels.first()?;
+            let _target_label = vertex.labels.first()?;
             // Try to find existing subgraph matching this label
             // We need a LabelIndex or subgraph naming convention
             // Simple: check all current subgraphs via their first vertex's label

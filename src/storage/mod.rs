@@ -1,6 +1,9 @@
 pub mod compaction;
 pub mod disk_graph;
+pub mod graph_wal;
 pub mod index;
+pub mod neuron_wal;
+pub mod redolog_wal;
 pub mod partition;
 pub mod redo_log;
 pub mod subgraph;
@@ -8,7 +11,10 @@ pub mod subgraph_cache;
 pub mod version_log;
 
 pub use disk_graph::DiskGraph;
+pub use graph_wal::GraphWal;
 pub use index::*;
+pub use neuron_wal::NeuronWal;
+pub use redolog_wal::RedologWal;
 pub use partition::*;
 pub use redo_log::*;
 pub use subgraph::*;

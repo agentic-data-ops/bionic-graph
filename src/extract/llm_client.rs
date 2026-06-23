@@ -42,6 +42,7 @@ struct ChatResponse {
 struct UsageInfo {
     prompt_tokens: Option<u32>,
     completion_tokens: Option<u32>,
+    #[allow(dead_code)]
     total_tokens: Option<u32>,
 }
 
