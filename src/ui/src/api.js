@@ -39,8 +39,8 @@ export async function gremlin(steps, graph = 'default') {
   });
 }
 
-export async function graphSearch(tags, graph = 'default') {
-  return gremlin([{ step: 'search', tags }], graph);
+export async function graphSearch(keywords, graph = 'default') {
+  return gremlin([{ step: 'search', keywords }], graph);
 }
 
 export async function compact(beforeTs, graph = 'default') {
