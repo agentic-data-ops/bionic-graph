@@ -183,22 +183,28 @@ async fn main() {
 
 fn log_info_banner(addr: &SocketAddr) {
     println!();
-    println!("╔══════════════════════════════════════════════════╗");
-    println!("║            Bionic-Graph v{}            ║", env!("CARGO_PKG_VERSION"));
-    println!("║  Bio-inspired Neural Knowledge Graph             ║");
-    println!("╠══════════════════════════════════════════════════╣");
-    println!("║  HTTP server listening on: {addr:<15}    ║");
-    println!("║                                                  ║");
-    println!("║  Endpoints:                                      ║");
-    println!("║    GET  /health   — System health                ║");
-    println!("║    POST /gremlin  — Gremlin query                ║");
-    println!("║    POST /search   — Neural keyword search        ║");
-    println!("║    POST /vertices — Add vertex                   ║");
-    println!("║    POST /edges    — Add edge                     ║");
-    println!("║    POST /neurons  — Create neuron                ║");
-    println!("║    POST /extract      — Submit document extraction   ║");
-    println!("║    GET  /extract/task/:id — Poll extraction task      ║");
-    println!("║    GET  /extract/tasks   — List all extraction tasks  ║");
-    println!("╚══════════════════════════════════════════════════╝");
+    println!("╔══════════════════════════════════════════════════════════╗");
+    println!("║                 Bionic-Graph v{:<13} ║", env!("CARGO_PKG_VERSION"));
+    println!("║         Bio-inspired Neural Knowledge Graph             ║");
+    println!("╠══════════════════════════════════════════════════════════╣");
+    println!("║  HTTP server → {addr:<21}            ║");
+    println!("║                                                          ║");
+    println!("║  Knowledge Graph API                                     ║");
+    println!("║    GET /health         System health                     ║");
+    println!("║    POST /gremlin      Gremlin pipeline query             ║");
+    println!("║    POST /search       Neural keyword search              ║");
+    println!("║    POST /vertices     Add vertex (auto-indexed)          ║");
+    println!("║    POST /edges        Add edge (auto-indexed)            ║");
+    println!("║    POST /neurons      Create neuron                      ║");
+    println!("║                                                          ║");
+    println!("║  Document Management                                     ║");
+    println!("║    POST /documents/:id/extract  Async doc extraction     ║");
+    println!("║    GET  /extract/task/:id        Poll extraction task    ║");
+    println!("║    GET  /extract/tasks           List extraction tasks   ║");
+    println!("║                                                          ║");
+    println!("║  MaaS — OpenAI-compatible Proxy                          ║");
+    println!("║    GET  /maas/openai/v1/models         List models       ║");
+    println!("║    POST /maas/openai/v1/chat/completions  Chat completion ║");
+    println!("╚══════════════════════════════════════════════════════════╝");
     println!();
 }

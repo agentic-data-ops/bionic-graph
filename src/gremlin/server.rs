@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     routing::{delete, get, post, put},
     Json, Router,
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tower_http::cors::CorsLayer;
 use crate::ui_serve::{ui_handler, ui_root_handler};
-use crate::config::{NeuralConfig, Settings, save_settings};
+use crate::config::{Settings, save_settings};
 use crate::graph_manager::GraphManager;
 use crate::extract::{ExtractionTaskManager, ExtractionConfig, TaskResponse};
 
@@ -51,6 +51,7 @@ struct HealthResponse {
     vertices: usize,
     edges: usize,
     neurons: usize,
+    time_travel: std::collections::HashMap<String, bool>,
 }
 
 #[derive(Deserialize)]
@@ -101,6 +102,7 @@ struct CreateGraphRequest {
 struct GraphListResponse {
     graphs: Vec<String>,
     default: String,
+    time_travel: std::collections::HashMap<String, bool>,
 }
 
 // ─── Router ──────────────────────────────────────────────────────
@@ -136,6 +138,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/vertices/:id", delete(delete_vertex_handler))
         .route("/vertices/:id", put(update_vertex_handler))
         .route("/edges/:id", put(update_edge_handler))
+
+        // MaaS — OpenAI-compatible proxy
+        .route("/maas/openai/v1/models", get(crate::maas::openai::list_models_handler))
+        .route("/maas/openai/v1/chat/completions", post(crate::maas::openai::chat_completions_handler))
 
         // Settings
         .route("/settings", get(get_settings_handler))
@@ -174,14 +180,23 @@ pub fn build_router(state: AppState) -> Router {
 
 // ─── Graph Management ────────────────────────────────────────────
 
-/// GET /graphs — List all graphs.
+/// GET /graphs — List all graphs with time_travel status.
 async fn list_graphs_handler(
     State(state): State<AppState>,
 ) -> Json<GraphListResponse> {
     let gm = state.graph_manager.lock().unwrap();
+    let mut time_travel = std::collections::HashMap::new();
+    for name in gm.list() {
+        if let Some(h) = gm.get(&name) {
+            if let Ok(g) = h.graph.lock() {
+                time_travel.insert(name, g.time_travel_enabled);
+            }
+        }
+    }
     Json(GraphListResponse {
         graphs: gm.list(),
         default: DEFAULT_GRAPH.to_string(),
+        time_travel,
     })
 }
 
@@ -232,12 +247,21 @@ async fn health_handler(State(state): State<AppState>) -> Json<HealthResponse> {
             }
         }
     }
+    let mut time_travel = std::collections::HashMap::new();
+    for name in gm.list() {
+        if let Some(h) = gm.get(&name) {
+            if let Ok(g) = h.graph.lock() {
+                time_travel.insert(name, g.time_travel_enabled);
+            }
+        }
+    }
     Json(HealthResponse {
         status: "ok".to_string(),
         graphs: gm.len(),
         vertices: total_v,
         edges: total_e,
         neurons: total_n,
+        time_travel,
     })
 }
 
@@ -309,8 +333,8 @@ async fn add_vertex_handler(
     {
         let mut nn = handle.neural_network.lock().unwrap();
         let nid = nn.neuron_count() as u64 + 1;
-        let neuron = crate::neuron::neuron::Neuron::for_vertex(nid, &nn_label, id)
-            .with_keywords(keywords.clone());
+        let mut neuron = crate::neuron::neuron::Neuron::for_vertex(nid, &nn_label, id);
+        neuron.keywords = keywords;
         nn.add_neuron(neuron.clone());
         if let Ok(mut wal) = handle.redolog_wal.lock() {
             let _ = wal.append_add_neuron(&neuron);
@@ -345,8 +369,9 @@ async fn add_edge_handler(
     // Auto-create a neuron for this edge
     let mut nn = handle.neural_network.lock().unwrap();
     let nid = (nn.neuron_count() as u64) + 1;
-    let neuron = crate::neuron::neuron::Neuron::for_edge(nid, &label, id)
-        .with_keywords(vec![label.clone()]);
+    let mut neuron = crate::neuron::neuron::Neuron::for_edge(nid, &label, id);
+    neuron.vertex_refs = vec![req.source, req.target];
+    neuron.keywords = vec![label.clone()];
     nn.add_neuron(neuron.clone());
     // WAL: log the new neuron
     if let Ok(mut wal) = handle.redolog_wal.lock() {
@@ -562,14 +587,22 @@ async fn delete_vertex_handler(
 
 // ─── Settings ────────────────────────────────────────────────────
 
-/// GET /settings — Return full LLM settings (providers list with api_key).
+/// GET /settings — Return full LLM settings (api_key is stripped from each provider).
 async fn get_settings_handler(
     State(state): State<AppState>,
 ) -> Json<Value> {
     let s = state.settings.lock().unwrap();
+    // Build providers without api_key for security
+    let providers_json: Vec<Value> = s.llm.providers.iter().map(|p| {
+        serde_json::json!({
+            "name": p.name,
+            "api_base_url": p.api_base_url,
+            "models": p.models,
+        })
+    }).collect();
     Json(serde_json::json!({
         "llm": {
-            "providers": s.llm.providers,
+            "providers": providers_json,
             "default_model": s.llm.default_model,
             "context_window": s.llm.context_window,
             "max_output_tokens": s.llm.max_output_tokens,
@@ -581,20 +614,42 @@ async fn get_settings_handler(
 #[derive(Deserialize)]
 struct UpdateLlmRequest {
     providers: Vec<crate::config::LlmProvider>,
-    default_model: String,
+    #[serde(default)]
+    default_model: Option<String>,
     context_window: Option<usize>,
     max_output_tokens: Option<usize>,
     max_retries: Option<u32>,
 }
 
 /// PUT /settings — Update full LLM settings and persist to file.
+/// If a provider's api_key is empty, the existing value is preserved.
 async fn update_settings_handler(
     State(state): State<AppState>,
     Json(req): Json<UpdateLlmRequest>,
 ) -> Json<Value> {
     let mut s = state.settings.lock().unwrap();
+
+    // Snapshot existing api_keys before overwriting, so we can preserve
+    // them when the incoming request sends an empty value.
+    let old_keys: std::collections::HashMap<String, String> = s.llm.providers
+        .iter()
+        .map(|p| (p.name.clone(), p.api_key.clone()))
+        .collect();
+
     s.llm.providers = req.providers;
-    s.llm.default_model = req.default_model;
+
+    // Restore api_key for providers that sent an empty value
+    for prov in &mut s.llm.providers {
+        if prov.api_key.is_empty() {
+            if let Some(old_key) = old_keys.get(&prov.name) {
+                if !old_key.is_empty() {
+                    prov.api_key = old_key.clone();
+                }
+            }
+        }
+    }
+
+    if let Some(v) = req.default_model { s.llm.default_model = v; }
     if let Some(v) = req.context_window { s.llm.context_window = v; }
     if let Some(v) = req.max_output_tokens { s.llm.max_output_tokens = v; }
     if let Some(v) = req.max_retries { s.llm.max_retries = v; }
@@ -794,68 +849,66 @@ async fn update_document_handler(
 async fn delete_document_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    // Get doc metadata first (to find source_file in graph)
+    let clean_graph = params.get("clean").map(|s| s == "true").unwrap_or(false);
+    // Get doc metadata first
     let doc = state.document_manager.get(&id)
         .ok_or_else(|| (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Document not found"}))))?;
 
     let _doc_title = doc.title.clone();
 
-    // Clean up graph vertices associated with this document
-    let deleted_vertices = {
+    // Clean up graph vertices associated with this document (all graphs)
+    let deleted_vertices: usize = if clean_graph {
+        let graph_name = if doc.graph_name.is_empty() { "default" } else { &doc.graph_name };
         let gm = state.graph_manager.lock().unwrap();
-        if let Some(handle) = gm.get("default") {
+        if let Some(handle) = gm.get(graph_name) {
             let mut g = handle.graph.lock().unwrap();
-            // Find vertices with matching document ID
             let to_delete: Vec<u64> = g.vertex_ids()
                 .filter_map(|vid| {
                     let v = g.get_vertex(*vid)?;
-                    if v.document == id {
-                        Some(*vid)
-                    } else {
-                        None
-                    }
+                    if v.document == id { Some(*vid) } else { None }
                 })
                 .collect();
-            let count = to_delete.len();
+            let total = to_delete.len();
             for vid in to_delete {
-                // Remove connected edges first
                 let edge_ids: Vec<u64> = g.all_edges()
                     .filter(|e| e.source == vid || e.target == vid)
-                    .map(|e| e.id)
-                    .collect();
-                for eid in edge_ids {
-                    let _ = g.remove_edge(eid);
-                    if let Ok(mut wal) = handle.redolog_wal.lock() {
-                        let _ = wal.append_remove_edge(eid);
+                    .map(|e| e.id).collect();
+                for eid in &edge_ids {
+                    let _ = g.remove_edge(*eid);
+                    if let Ok(mut wal) = handle.redolog_wal.lock() { let _ = wal.append_remove_edge(*eid); }
+                    // Remove the edge's neuron too, otherwise search still finds stale results
+                    if let Ok(mut nn) = handle.neural_network.lock() {
+                        use crate::neuron::neuron::EntityType;
+                        let enid = nn.all_neurons().find_map(|n| {
+                            if matches!(n.entity_type, Some(EntityType::Edge(e)) if e == *eid) { Some(n.id) } else { None }
+                        });
+                        if let Some(enid) = enid {
+                            nn.remove_neuron(enid);
+                            if let Ok(mut wal) = handle.redolog_wal.lock() { let _ = wal.append_remove_neuron(enid); }
+                        }
                     }
                 }
                 let _ = g.remove_vertex(vid, true);
-                if let Ok(mut wal) = handle.redolog_wal.lock() {
-                    let _ = wal.append_remove_vertex(vid);
-                }
-                // Remove associated neuron
+                if let Ok(mut wal) = handle.redolog_wal.lock() { let _ = wal.append_remove_vertex(vid); }
                 if let Ok(mut nn) = handle.neural_network.lock() {
                     use crate::neuron::neuron::EntityType;
                     let nid = nn.all_neurons().find_map(|n| {
-                        if matches!(n.entity_type, Some(EntityType::Vertex(v)) if v == vid) {
-                            Some(n.id)
-                        } else {
-                            None
-                        }
+                        if matches!(n.entity_type, Some(EntityType::Vertex(v)) if v == vid) { Some(n.id) } else { None }
                     });
                     if let Some(nid) = nid {
                         nn.remove_neuron(nid);
-                        if let Ok(mut wal) = handle.redolog_wal.lock() {
-                            let _ = wal.append_remove_neuron(nid);
-                        }
+                        if let Ok(mut wal) = handle.redolog_wal.lock() { let _ = wal.append_remove_neuron(nid); }
                     }
                 }
             }
-            count
+            total
         } else {
             0
         }
+    } else {
+        0
     };
 
     // Delete the document
@@ -872,12 +925,17 @@ async fn delete_document_handler(
 // ─── Document Extraction (Background Task) ────────────────────────
 
 /// POST /documents/{id}/extract — Start extraction for a document.
+/// Optional query param `?model=Provider/ModelName` overrides the LLM model used.
 async fn start_extraction_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let graph_name = resolve_graph_name(&headers);
+    let model_override = params.get("model").and_then(|m| {
+        if m.is_empty() { None } else { Some(m.clone()) }
+    });
 
     // Check document exists
     let doc = state.document_manager.get(&id)
@@ -898,10 +956,22 @@ async fn start_extraction_handler(
 
     let title = doc.title.clone();
 
-    // Build ExtractionConfig from current settings at runtime
+    // Build ExtractionConfig from current settings at runtime.
+    // If a model override ("Provider/Model") is specified, look up the provider
+    // and override the config with its api_key, api_base_url, and model name.
     let extract_config = {
         let s = state.settings.lock().unwrap();
-        ExtractionConfig::from_llm_config(&s.llm)
+        let mut config = ExtractionConfig::from_llm_config(&s.llm);
+        if let Some(ref model_key) = model_override {
+            if let Some((prov_name, model_name)) = model_key.split_once('/') {
+                if let Some(provider) = s.llm.providers.iter().find(|p| p.name == prov_name) {
+                    config.api_key = provider.api_key.clone();
+                    config.api_base_url = provider.api_base_url.clone();
+                    config.model = model_name.to_string();
+                }
+            }
+        }
+        config
     };
 
     let task_id = state.task_manager.submit_document_extraction(
@@ -909,8 +979,10 @@ async fn start_extraction_handler(
         id,
         content,
         title,
+        graph_name.clone(),
         graph,
         neural,
+        Arc::new(state.document_manager.clone()),
     );
 
     Ok(Json(serde_json::json!({

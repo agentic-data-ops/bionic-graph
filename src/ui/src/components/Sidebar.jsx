@@ -54,7 +54,7 @@ export default function Sidebar({
                 <button
                   className={`w-full text-left px-3 py-2.5 rounded-xl text-sm transition-all duration-200 ${
                     conv.id === activeConvId
-                      ? 'bg-[var(--bg-hover)] text-white shadow-sm'
+                      ? 'bg-[var(--bg-hover)] text-[var(--text-primary)] shadow-sm'
                       : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]'
                   }`}
                   onClick={() => onSwitchConv(conv.id)}

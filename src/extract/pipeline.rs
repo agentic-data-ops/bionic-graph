@@ -365,6 +365,7 @@ async fn extract_sections_core(
                                             if let Ok(mut nn) = nn.lock() {
                                                 let nid = (nn.neuron_count() as u64) + 1;
                                                 let mut neuron = crate::neuron::Neuron::for_edge(nid, &relation.label, eid);
+                                                neuron.vertex_refs = vec![src_vid, tgt_vid];
                                                 // Keywords: relation label + source name + target name
                                                 let keywords = vec![
                                                     relation.label.clone(),

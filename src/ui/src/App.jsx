@@ -25,28 +25,42 @@ const DEFAULT_SETTINGS = {
       model: 'deepseek-v4-flash',
     },
   ],
-  activeProvider: 'default-deepseek',
+  activeProvider: 'DeepSeek',
   defaultGraph: 'default',
   timeTravel: false,
   timeTravelPoint: '',
   useGraph: false,
   searchMode: 'semantic',
   chatModel: null,
+  defaultModelKey: '',
 };
+
+// Keys persisted to localStorage (user preferences only — no system config)
+const USER_PREFS_KEYS = ['activeProvider','defaultGraph','timeTravel','timeTravelPoint','useGraph','searchMode','chatModel'];
 
 function loadSettings() {
   try {
-    const raw = localStorage.getItem('bgraph-settings');
+    const raw = localStorage.getItem('bggraph-chat-settings');
     if (raw) {
       const parsed = JSON.parse(raw);
-      return { ...DEFAULT_SETTINGS, ...parsed };
+      // Only pick user-preference keys, ignore anything else (e.g. stale providers)
+      const prefs = {};
+      for (const k of USER_PREFS_KEYS) {
+        if (k in parsed) prefs[k] = parsed[k];
+      }
+      return { ...DEFAULT_SETTINGS, ...prefs };
     }
   } catch {}
   return { ...DEFAULT_SETTINGS };
 }
 
 function saveSettings(settings) {
-  localStorage.setItem('bgraph-settings', JSON.stringify(settings));
+  // Only persist user-preference keys, never system config
+  const toSave = {};
+  for (const k of USER_PREFS_KEYS) {
+    if (k in settings) toSave[k] = settings[k];
+  }
+  localStorage.setItem('bggraph-chat-settings', JSON.stringify(toSave));
 }
 
 function loadConversations() {
@@ -85,6 +99,7 @@ export default function App() {
   const [kbInitialContent, setKbInitialContent] = useState('');
   const [kbInitialGraph, setKbInitialGraph] = useState('');
   const [graphs, setGraphs] = useState([]);
+  const [timeTravelGraphs, setTimeTravelGraphs] = useState({});
 
   // ── Theme ──
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
@@ -101,6 +116,7 @@ export default function App() {
       .then((d) => {
         const gs = d.graphs || [];
         setGraphs(gs);
+        setTimeTravelGraphs(d.time_travel || {});
         if (!gs.includes(settings.defaultGraph)) {
           setSettings((s) => ({ ...s, defaultGraph: gs[0] || 'default' }));
         }
@@ -124,7 +140,7 @@ export default function App() {
             const backendProviders = llm.providers.map((bp, i) => {
               const m = i === activeIdx ? defaultModel : (bp.models?.[0] || 'deepseek-v4-flash');
               return {
-                id: `provider-${i}`,
+                id: bp.name,  // use name as stable id
                 name: bp.name,
                 apiBase: bp.api_base_url,
                 apiKey: bp.api_key || '',
@@ -133,10 +149,17 @@ export default function App() {
                 model: m,
               };
             });
+            const chosenActiveProvider = prev.activeProvider && backendProviders.some(p => p.name === prev.activeProvider)
+              ? prev.activeProvider
+              : backendProviders[activeIdx]?.name || backendProviders[0]?.name || '';
+            const chosenActiveProv = backendProviders.find(p => p.name === chosenActiveProvider);
+            const defaultKey = llm.default_model || '';
             return {
               ...prev,
               providers: backendProviders,
-              activeProvider: `provider-${activeIdx}`,
+              defaultModelKey: defaultKey,
+              activeProvider: chosenActiveProvider,
+              chatModel: prev.chatModel || (chosenActiveProv ? (chosenActiveProv.defaultModel || chosenActiveProv.model) : null),
             };
           });
         }
@@ -149,7 +172,9 @@ export default function App() {
     saveSettings(settings);
   }, [settings]);
 
-  // ── Sync providers to backend when they change ──
+  // ── Sync provider configs to backend when they change ──
+  // Only syncs provider API configs (keys, URLs, model lists), NOT the active
+  // provider/model selection — those stay in localStorage only.
   const mounted = useRef(false);
   useEffect(() => {
     if (!mounted.current) { mounted.current = true; return; }
@@ -159,15 +184,13 @@ export default function App() {
       api_key: p.apiKey || '',
       models: p.models || [p.model],
     }));
-    const activeProv = settings.providers.find((p) => p.id === settings.activeProvider);
-    const defaultModel = activeProv
-      ? `${activeProv.name}/${activeProv.defaultModel || activeProv.model}`
-      : 'DeepSeek/deepseek-v4-flash';
+    // Also sync the default_model when it changes
+    const defaultModel = settings.defaultModelKey || undefined;
     if (providers.length > 0) {
       updateSettings(providers, defaultModel)
         .catch(() => {});
     }
-  }, [settings.providers, settings.activeProvider]);
+  }, [settings.providers, settings.defaultModelKey]);
 
   // ── Persist conversations on change ──
   useEffect(() => {
@@ -226,11 +249,17 @@ export default function App() {
   }, []);
 
   const handleUpdateProviders = useCallback((providers) => {
-    setSettings((prev) => ({
-      ...prev,
-      providers,
-      activeProvider: providers.length > 0 ? prev.activeProvider : null,
-    }));
+    setSettings((prev) => {
+      // Match active provider by name (id from backend may differ)
+      const activeProv = providers.find(p => p.name === prev.activeProvider) || providers[0];
+      const newDefaultKey = activeProv ? `${activeProv.name}/${activeProv.defaultModel || activeProv.model}` : (prev.defaultModelKey || '');
+      return {
+        ...prev,
+        providers,
+        defaultModelKey: newDefaultKey,
+        activeProvider: activeProv ? activeProv.name : (providers.length > 0 ? providers[0].name : null),
+      };
+    });
   }, []);
 
   const handleThemeToggle = useCallback(() => {
@@ -267,7 +296,7 @@ export default function App() {
         onUpdateConv={handleUpdateConv}
         providers={settings.providers}
         activeProvider={settings.activeProvider}
-        onProviderChange={(id) => handleUpdateSettings({ activeProvider: id })}
+        onProviderChange={(name) => handleUpdateSettings({ activeProvider: name })}
         useGraph={settings.useGraph}
         onGraphToggle={(v) => handleUpdateSettings({ useGraph: v })}
         searchMode={settings.searchMode}
@@ -279,6 +308,8 @@ export default function App() {
         defaultGraph={settings.defaultGraph}
         onDefaultGraphChange={(g) => handleUpdateSettings({ defaultGraph: g })}
         graphs={graphs}
+        timeTravelGraphs={timeTravelGraphs}
+        defaultModelKey={settings.defaultModelKey}
         chatModel={settings.chatModel}
         onChatModelChange={(m) => handleUpdateSettings({ chatModel: m })}
         theme={theme}
@@ -315,7 +346,7 @@ export default function App() {
         graphs={graphs}
         onGraphsChange={setGraphs}
         activeProvider={settings.activeProvider}
-        onProviderChange={(id) => handleUpdateSettings({ activeProvider: id })}
+        onProviderChange={(name) => handleUpdateSettings({ activeProvider: name })}
         theme={theme}
         onThemeToggle={handleThemeToggle}
         language={i18n.language}

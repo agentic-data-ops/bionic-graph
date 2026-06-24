@@ -6,6 +6,7 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use super::config::ExtractionConfig;
+use crate::documents::DocumentManager;
 use super::document_extractor::extract_document_full;
 use super::pipeline::ExtractionStats;
 use super::extract_content_raw_with_nn_and_progress;
@@ -377,8 +378,10 @@ impl ExtractionTaskManager {
         doc_id: String,
         doc_content: String,
         doc_title: String,
+        graph_name: String,
         graph: Arc<Mutex<Graph>>,
         neural: Arc<Mutex<NeuralNetwork>>,
+        doc_manager: Arc<DocumentManager>,
     ) -> String {
         let task_id = self.create_task("default", &doc_title);
         let task_id_clone = task_id.clone();
@@ -423,8 +426,14 @@ impl ExtractionTaskManager {
             )
             .await;
 
+            let doc_mgr = doc_manager.clone();
+            let doc_id_c = doc_id.clone();
+            let doc_title_c = doc_title.clone();
+            let graph_name_c = graph_name.clone();
             match result {
                 Ok(stats) => {
+                    // Update document tags from extraction (preserve title & graph)
+                    doc_mgr.update(&doc_id_c, &doc_title_c, &stats.tags, Some(&graph_name_c));
                     // Mark remaining steps as completed
                     let mut tasks = manager_clone.tasks.lock().unwrap();
                     if let Some(task) = tasks.get_mut(&tid) {

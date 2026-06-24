@@ -15,6 +15,7 @@
 - `src/neuron/` — Spreading activation network, Hebbian learning, `EntityType` (Vertex/Edge per neuron)
 - `src/storage/` — Disk-backed storage: subgraph partitioning, LRU cache, WAL (redo_log / redolog_wal / RedologWal), version log (vlog), compaction
 - `src/gremlin/` — REST API routes + Gremlin JSON pipeline step engine (15 steps)
+- `src/maas/` — MaaS (Model as a Service) OpenAI-compatible proxy: model listing + chat completions
 - `src/extract/` — Backend document extraction (legacy; extraction moved to frontend)
   - `task_manager.rs` — Async task lifecycle (pending → running → completed/failed), UUID-based task tracking with progress
 - `src/config/` — Settings struct (serde) + loader with env override
@@ -40,7 +41,7 @@
 - React 19, Vite 8, Tailwind CSS 4
 - `vis-network` + `vis-data` (Canvas 2D graph visualization)
 - `i18next` (i18n EN/ZH)
-- All LLM calls (chat, semantic search, document extraction) are frontend-side
+- All LLM calls go through backend MaaS proxy (`/maas/openai/v1/chat/completions`), which forwards to configured providers using stored API keys
 
 ### Layout
 ```
@@ -54,9 +55,9 @@ App.jsx
 ```
 
 ### Conversation Flow
-- **LLM Chat**: User input → `chatCompletion()` (SSE streaming) → streaming display
+- **LLM Chat**: User input → `chatCompletionProxy()` (SSE streaming via MaaS proxy) → streaming display
 - **Keyword Search**: User input → split keywords → `graphSearch` → graph result
-- **Semantic Search**: User input → LLM extract keywords → `graphSearch` → LLM filter results → graph result
+- **Semantic Search**: User input → LLM extract keywords (via MaaS proxy) → `graphSearch` → LLM filter results (via MaaS proxy) → graph result
 - **Document Extraction**: Markdown file → LLM generate title/tags → LLM extract entities/relations → `POST /vertices` + `POST /edges`
 
 ### Data Persistence
@@ -99,6 +100,8 @@ App.jsx
 | GET/PUT | `/settings/neural` | Neural activation/search/learn config |
 | GET/POST/PUT/DELETE | `/documents` | Document CRUD |
 | GET | `/documents/:id/content` | Document content |
+| GET | `/maas/openai/v1/models` | List available models (format `provider/model`) with `x-default-model` header |
+| POST | `/maas/openai/v1/chat/completions` | OpenAI-compatible chat completion proxy (supports streaming SSE) |
 
 ## Watch out for
 - **`edit_file` SEARCH must match byte-for-byte** — the Rust source has no trailing whitespace convention, and SEARCH is whitespace-sensitive.
@@ -120,6 +123,11 @@ App.jsx
 - **Route params use `:param` syntax** — axum 0.7.9 requires `:param` (not `{param}`) for path parameters in `.route()`.
 - **`search` step filters inactive neurons** — `activation.rs` only collects vertex refs from neurons with `activation > 0`.
 - **`search` step returns full vertex data** — no longer creates synthetic empty VertexResult; looks up from graph via `g.get_vertex(vid)`.
+- **MaaS proxy uses `x-default-model` header** — `GET /maas/openai/v1/models` returns the default model in the `x-default-model` response header.
+- **`Neuron::with_keywords()` has CJK bug** — This generic method can lose CJK keyword strings. Use direct field assignment `neuron.keywords = keywords` instead.
+- **Document delete with `?clean=true`** — Deletes vertices, edges, AND their neurons (both Vertex and Edge entity types). Default in frontend.
+- **ChatInput model saved to localStorage** — Key `bgraph-last-model`. On init, prefers saved model, falls back to `x-default-model` header. Re-fetches when settings change.
+- **`GET /settings` no longer returns `api_key`** — API keys are stripped for security. Frontend uses MaaS proxy instead of calling providers directly.
 - **`document_extractor.rs` nid bug** — `(nn.neuron_count()+1)` in separate lock scopes returned same value. Fixed by pre-computing `start_nid` before loop.
 - **`cargo build` needs `touch src/ui_serve.rs` after frontend changes** — rust-embed doesn't detect `src/ui/dist/` file changes for recompilation.
 - **`semanticSearch` removed from backend** — all semantic search logic now runs on the frontend (LLM calls + graphSearch).
@@ -144,3 +152,4 @@ App.jsx
 - `003-keyword-semantic-search.md` — keywordSearch + semanticSearch + global LLM config
 - `005-ui-rewrite-knowledgebase-visnetwork.md` — Frontend rewrite + knowledge base + vis-network migration
 - `2024-06-23-vertex-redolog-overhaul.md` — Vertex built-in name/keywords, RedologWal atomic WAL, directory restructure, graceful shutdown, frontend improvements
+- `009-maas-proxy-neural-fix-frontend-polish.md` — MaaS OpenAI proxy, `with_keywords()` CJK fix, edge neuron cleanup on doc delete, semantic search prompt optimization, Light mode UI polish

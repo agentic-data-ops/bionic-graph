@@ -16,6 +16,7 @@ pub struct Edge {
     pub label: String,
     pub source: VertexId,
     pub target: VertexId,
+    pub document: String,
     pub properties: HashMap<String, PropertyValue>,
 
     // ─── Version fields ──────────────────────────────────────────
@@ -32,6 +33,7 @@ impl Edge {
             label,
             source,
             target,
+            document: String::new(),
             properties: HashMap::new(),
             _version: 1,
             _updated_at: super::vertex::now_micros(),
@@ -112,6 +114,7 @@ impl Edge {
                         label,
                         source: self.source,
                         target: self.target,
+                        document: self.document.clone(),
                         properties: record.properties.clone(),
                         _version: record.version,
                         _updated_at: record.updated_at,
@@ -131,6 +134,7 @@ impl Edge {
                         label,
                         source: self.source,
                         target: self.target,
+                        document: self.document.clone(),
                         properties: record.properties.clone(),
                         _version: record.version,
                         _updated_at: record.updated_at,

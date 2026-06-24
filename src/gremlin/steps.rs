@@ -106,6 +106,7 @@ pub fn execute_query_with_llm(
                             label: e.label.clone(),
                             source: e.source,
                             target: e.target,
+                            document: e.document.clone(),
                             properties: eprops,
                         }));
                     }
@@ -970,6 +971,7 @@ pub(super) fn edge_to_result(e: &crate::graph::Edge) -> TraversalResult {
         label: e.label.clone(),
         source: e.source,
         target: e.target,
+        document: e.document.clone(),
         properties: props,
     })
 }

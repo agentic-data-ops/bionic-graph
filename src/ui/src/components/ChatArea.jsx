@@ -4,7 +4,7 @@ import MessageList from './MessageList';
 import ChatInput from './ChatInput';
 
 import {
-  chatCompletion,
+  chatCompletionProxy,
   parseSSEStream,
   graphSearch,
 } from '../api';
@@ -30,6 +30,8 @@ export default function ChatArea({
   defaultGraph,
   onDefaultGraphChange,
   graphs,
+  timeTravelGraphs,
+  defaultModelKey,
   chatModel,
   onChatModelChange,
   theme,
@@ -63,8 +65,7 @@ export default function ChatArea({
       if (useGraph) {
         // ── Graph mode: keyword or semantic search ──
         const isSemantic = searchMode === 'semantic';
-        const provider = { ...providers.find((p) => p.id === activeProvider) };
-        if (chatModel) provider.model = chatModel;
+        const modelKey = `${activeProvider}/${chatModel || 'default'}`;
 
         const steps = isSemantic
           ? [
@@ -89,9 +90,9 @@ export default function ChatArea({
             setSearchStream({ ...progressMsg, steps: [step1, progressMsg.steps[1], progressMsg.steps[2]] });
 
             const systemPrompt = 'Select 3-5 key search keywords from the user\'s query below. ONLY pick words/phrases that actually appear in the query — do NOT generate, infer, or translate any new words. Return ONLY a JSON array of strings, no other text.';
-            const { response } = chatCompletion(
+            const { response } = chatCompletionProxy(
               [{ role: 'system', content: systemPrompt }, { role: 'user', content: `Query: ${text}` }],
-              provider,
+              modelKey,
             );
             let llmBuf = '';
             await parseSSEStream(await response, (t) => {
@@ -134,20 +135,21 @@ export default function ChatArea({
 
           // Step 3: Filter results via LLM (streaming)
           const items = (res?.data || []).slice(0, 30);
-          let summary = '';
-          for (let i = 0; i < items.length; i++) {
-            const item = items[i];
-            if (item.type === 'vertex') {
-              summary += `${i + 1}. V:${item.properties?.name || '?'} [${(item.labels || []).join(', ')}]\n`;
-            } else if (item.type === 'edge') {
-              summary += `${i + 1}. EDGE:${item.label} (${item.id})\n`;
-            }
-          }
+          const filterPrompt = `You are a semantic relevance filter. Given a user query and a list of search results, identify which results are semantically relevant to the query.
 
-          const filterPrompt = 'You are a semantic relevance filter. Given a user query and a list of search results, return ONLY the indices (comma-separated, 1-based) of results that are semantically relevant to the query. If none are relevant, return "NONE". No other text.';
-          const { response: filterResponse } = chatCompletion(
-            [{ role: 'system', content: filterPrompt }, { role: 'user', content: `Query: ${text}\n\nSearch results:\n${summary}` }],
-            provider,
+The search results are graph data with two types of items:
+- vertex: represents an entity, with fields: name, type, labels, properties
+- edge: represents a relationship, with fields: label, source (vertex id), target (vertex id)
+
+Selection rules:
+1. Select vertices that match the entities mentioned in the query
+2. Select edges whose label matches the relationship described in the query
+3. If you select an edge, ALSO select its source and target vertices (even if they weren't explicitly mentioned)
+
+Return ONLY a comma-separated list of 1-based array indices of the selected items. If none are relevant, return "NONE". No other text.`;
+          const { response: filterResponse } = chatCompletionProxy(
+            [{ role: 'system', content: filterPrompt }, { role: 'user', content: `Query: ${text}\n\nSearch Results:\n${JSON.stringify(items, null, 2)}` }],
+            modelKey,
           );
           let filterBuf = '';
           await parseSSEStream(await filterResponse, (t) => {
@@ -187,9 +189,7 @@ export default function ChatArea({
         }
       } else {
         // ── LLM mode: streaming chat ──
-        const provider = { ...providers.find((p) => p.id === activeProvider) };
-        if (!provider) return;
-        if (chatModel) provider.model = chatModel;
+        const modelKey = `${activeProvider}/${chatModel || 'default'}`;
 
         // Build message list for LLM — skip assistant placeholders with empty content
         // Only send user/assistant messages with content to the LLM
@@ -203,7 +203,7 @@ export default function ChatArea({
         const assistantMsg = { id: uid(), type: 'assistant', content: '' };
 
         try {
-          const { response } = chatCompletion(llmMessages, provider);
+          const { response } = chatCompletionProxy(llmMessages, modelKey);
           let fullContent = '';
           await parseSSEStream(
             await response,
@@ -225,7 +225,7 @@ export default function ChatArea({
         }
       }
     },
-    [activeConv, useGraph, searchMode, defaultGraph, providers, activeProvider, onUpdateConv, chatModel]
+    [activeConv, useGraph, searchMode, defaultGraph, providers, activeProvider, onUpdateConv, chatModel, kwSearchMode]
   );
 
   const messages = activeConv?.messages || [];
@@ -285,6 +285,8 @@ export default function ChatArea({
         onTimeTravelToggle={onTimeTravelToggle}
         timeTravelPoint={timeTravelPoint}
         onTimeTravelPointChange={(v) => {}}
+        timeTravelGraphs={timeTravelGraphs}
+        defaultModelKey={defaultModelKey}
         graphName={defaultGraph}
         onGraphNameChange={onDefaultGraphChange}
         graphs={graphs}

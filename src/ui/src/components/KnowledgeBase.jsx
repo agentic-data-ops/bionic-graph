@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  chatCompletion, listDocuments, addDocument, updateDocument, deleteDocument, getDocumentContent,
-  addVertex, addEdge, deleteVertex, graphSearch, listGraphs, parseSSEStream,
-  startDocumentExtraction, getExtractionTask,
+  listDocuments, addDocument, updateDocument, deleteDocument, getDocumentContent,
+  listGraphs,
+  startDocumentExtraction, getExtractionTask, fetchModels,
 } from '../api';
 
 function Modal({ title, children, onClose }) {
@@ -25,54 +25,53 @@ function Modal({ title, children, onClose }) {
   );
 }
 
-async function generateTitle(provider, content) {
-  const prompt = `Generate a concise title (max 30 characters) for this markdown document. Rules:
-- If the document already has a heading (# Title), simplify it to ≤30 chars without punctuation
-- Otherwise create a new title from the content
-- Keep the original language (Chinese stays Chinese, English stays English)
-- English words should be joined with hyphens
-- NO punctuation, NO spaces in English titles
-- Return ONLY the title, nothing else
+// Extraction now uses backend POST /documents/:id/extract — no frontend LLM calls needed.
 
-Document content (first 500 chars):
-${content.slice(0, 500)}`;
-  const { response } = chatCompletion([{ role: 'user', content: prompt }], provider);
-  let result = '';
-  await parseSSEStream(await response, (t) => { result += t; });
-  return result.trim().slice(0, 30).replace(/[。，！？、；：""''（）【】《》.,!?;:'"()\[\]{}<>\/\\@#$%^&*+=~\s]/g, '').slice(0, 30);
-}
+/** Model selector that fetches model list from backend MaaS proxy */
+function ModelSelector({ value, onChange }) {
+  const { t } = useTranslation();
+  const [models, setModels] = useState(null);
+  const [defaultModel, setDefaultModel] = useState('');
+  const initialised = useRef(false);
 
-async function generateTags(provider, content) {
-  const prompt = `Extract 2-4 topic tags from this markdown document. Tags should be single words or short phrases that categorize the document's content.
-Rules: Tags must be in the same language as the document. Each tag should be 1-3 words. Return ONLY a JSON array of strings, no other text.
-Document content (first 500 chars):
-${content.slice(0, 500)}`;
-  const { response } = chatCompletion([{ role: 'user', content: prompt }], provider);
-  let result = '';
-  await parseSSEStream(await response, (t) => { result += t; });
-  try { const match = result.match(/\[[\s\S]*\]/); if (match) return JSON.parse(match[0]); } catch {}
-  return [];
-}
+  useEffect(() => {
+    if (!models) {
+      fetchModels().then(({ models: m, defaultModel: dm }) => {
+        const list = m?.data || [];
+        setModels(list);
+        setDefaultModel(dm || '');
+        if (!initialised.current) {
+          initialised.current = true;
+          if (!value) {
+            onChange(dm || list[0]?.id || '');
+          }
+        }
+      }).catch(() => {});
+    }
+  }, []);
 
-async function extractFromMarkdown(provider, content, sourceFile) {
-  const systemPrompt = `You are a knowledge graph extractor. Extract entities and their relationships from the given markdown document.
-Return ONLY valid JSON with this structure:
-{
-  "entities": [{ "name": "EntityName", "type": "person|place|organization|concept|event|object", "description": "Brief description", "keywords": ["search keyword1", "search keyword2"] }],
-  "relations": [{ "source": "EntityName", "target": "EntityName", "relation": "relationship description" }]
-}
-- Extract 5-20 most important entities.
-- For each entity, provide 0-5 search keywords that help find this entity. Do NOT include the entity name or type in keywords — they are already used as search terms automatically. Only provide ADDITIONAL keywords.
-- Entity names should be in their original language.
-- Relations should use clear, concise descriptions.`;
-  const { response } = chatCompletion(
-    [{ role: 'system', content: systemPrompt }, { role: 'user', content: `Document: ${sourceFile}\n\n${content}` }],
-    provider,
+  if (!models) {
+    return <div className="text-xs text-[var(--text-tertiary)]">加载中...</div>;
+  }
+
+  const options = models.map(entry => ({
+    key: entry.id,
+    isDefault: entry.id === defaultModel,
+  }));
+
+  return (
+    <select className="w-full px-3 py-2 rounded-xl bg-[var(--bg-secondary)] text-[var(--text-primary)] text-sm border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] appearance-none cursor-pointer"
+      style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23636366' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px center', paddingRight: '32px' }}
+      value={value || ''}
+      onChange={(e) => onChange(e.target.value)}
+    >
+      {options.map((opt) => (
+        <option key={opt.key} value={opt.key}>
+          {opt.key}{opt.isDefault ? ` ${t('chat.default')}` : ''}
+        </option>
+      ))}
+    </select>
   );
-  let result = '';
-  await parseSSEStream(await response, (t) => { result += t; });
-  try { const jsonMatch = result.match(/\{[\s\S]*\}/); if (jsonMatch) return JSON.parse(jsonMatch[0]); } catch {}
-  return { entities: [], relations: [] };
 }
 
 /** Progress step component — styled to match SearchStep from MessageList */
@@ -110,9 +109,11 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
   const [showImport, setShowImport] = useState(false);
   const [filterGraph, setFilterGraph] = useState('');
   const [importContent, setImportContent] = useState('');
+  const [importTitle, setImportTitle] = useState('');
   const [importGraph, setImportGraph] = useState(defaultGraph);
   const [importProvider, setImportProvider] = useState(activeProvider);
   const [importModel, setImportModel] = useState(null);
+  const [importModelKey, setImportModelKey] = useState('');
   const [importSteps, setImportSteps] = useState([]);
   const [importing, setImporting] = useState(false);
   const [showEdit, setShowEdit] = useState(null);
@@ -120,6 +121,10 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
   const [editTitle, setEditTitle] = useState('');
   const [editTags, setEditTags] = useState([]);
   const [editNewTag, setEditNewTag] = useState('');
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [deleteGraphData, setDeleteGraphData] = useState(true);
+  const [docView, setDocView] = useState(null);
+  const [docViewContent, setDocViewContent] = useState('');
 
   const provider = (() => {
     const p = providers.find((p) => p.id === importProvider);
@@ -137,6 +142,8 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
         setImportContent(initialContent);
         setShowImport(true);
       }
+      setImportTitle('');
+      setImportSteps([]);
       if (initialGraph) setImportGraph(initialGraph);
       Promise.all([
         listDocuments().then((d) => setDocuments(d.documents || [])).catch(() => {}),
@@ -153,10 +160,9 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
     return true;
   });
 
-  const runExtraction = useCallback(async (content, providerCfg, graphName) => {
+  const runExtraction = useCallback(async (content, title, graphName, modelKey) => {
     const steps = [];
     const addStep = (s) => {
-      // Replace last running step instead of appending duplicate
       const last = steps[steps.length - 1];
       if (last && last.status === 'running') {
         steps[steps.length - 1] = s;
@@ -166,78 +172,85 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
       setImportSteps([...steps]);
     };
 
-    addStep({ label: 'Generating title...', status: 'running', detail: '' });
-    const title = await generateTitle(providerCfg, content);
-    addStep({ label: `Title: ${title}`, status: 'done', detail: title });
-
-    addStep({ label: 'Generating tags...', status: 'running', detail: '' });
-    const tags = await generateTags(providerCfg, content);
-    addStep({ label: `Tags: ${tags.join(', ')}`, status: 'done', detail: tags.join(', ')});
-
     addStep({ label: 'Adding document...', status: 'running', detail: '' });
-    const doc = await addDocument(title, content, tags, graphName);
-    addStep({ label: `Document saved`, status: 'done', detail: doc.id });
+    let docId;
+    try {
+      const doc = await addDocument(title, content, [], graphName);
+      docId = doc.id;
+      addStep({ label: `Document saved: ${title}`, status: 'done', detail: docId });
+    } catch (e) {
+      addStep({ label: 'Failed to save document', status: 'failed', detail: e.message });
+      setImporting(false);
+      return;
+    }
 
+    addStep({ label: 'Starting extraction...', status: 'running', detail: '' });
+    let taskId;
+    try {
+      const task = await startDocumentExtraction(docId, graphName, modelKey);
+      taskId = task.task_id;
+      addStep({ label: 'Extraction task submitted', status: 'running', detail: taskId });
+    } catch (e) {
+      addStep({ label: 'Failed to start extraction', status: 'failed', detail: e.message });
+      setImporting(false);
+      return;
+    }
+
+    // Poll task until completion
     addStep({ label: 'Extracting entities and relations...', status: 'running', detail: '' });
-    const extracted = await extractFromMarkdown(providerCfg, content, title);
-    addStep({ label: `Extracted ${extracted.entities?.length || 0} entities, ${extracted.relations?.length || 0} relations`, status: 'done', detail: '' });
-
-    addStep({ label: 'Creating vertices...', status: 'running', detail: '' });
-    const vertexMap = {};
-    let vCount = 0;
-    for (const entity of (extracted.entities || [])) {
-      try {
-        const kw = entity.keywords || [entity.name];
-        const v = await addVertex([entity.type || 'entity'], { description: entity.description || '', source_file: title, chapter_path: '' }, graphName, entity.name, kw);
-        vertexMap[entity.name] = v.id;
-        vCount++;
-      } catch {}
-    }
-    addStep({ label: `${vCount} vertices created`, status: 'done', detail: '' });
-
-    addStep({ label: 'Creating edges...', status: 'running', detail: '' });
-    let eCount = 0;
-    for (const rel of (extracted.relations || [])) {
-      const src = vertexMap[rel.source];
-      const tgt = vertexMap[rel.target];
-      if (src && tgt) {
-        try { await addEdge(rel.relation, src, tgt, {}, graphName); eCount++; } catch {}
+    const poll = async () => {
+      for (let i = 0; i < 120; i++) {
+        await new Promise(r => setTimeout(r, 3000));
+        const task = await getExtractionTask(taskId);
+        const runStep = task.steps?.find(s => s.status === 'running');
+        if (runStep) {
+          addStep({ label: runStep.label, status: 'running', detail: runStep.detail || '' });
+        }
+        if (task.status === 'completed') {
+          const stats = task.stats || {};
+          addStep({ label: `Extraction complete: ${stats.new_vertices || 0} vertices, ${stats.new_edges || 0} edges`, status: 'done', detail: '' });
+          addStep({ label: 'Import complete', status: 'done', detail: '' });
+          const docs = await listDocuments();
+          setDocuments(docs.documents || []);
+          setImporting(false);
+          return;
+        }
+        if (task.status === 'failed') {
+          addStep({ label: 'Extraction failed', status: 'failed', detail: task.error || 'Unknown error' });
+          setImporting(false);
+          return;
+        }
       }
-    }
-    addStep({ label: `${eCount} edges created`, status: 'done', detail: '' });
-    addStep({ label: 'Import complete', status: 'done', detail: '' });
-
-    const docs = await listDocuments();
-    setDocuments(docs.documents || []);
+      addStep({ label: 'Extraction timed out', status: 'failed', detail: '' });
+      setImporting(false);
+    };
+    poll();
   }, []);
 
   const handleImportText = useCallback(async () => {
-    if (!importContent.trim()) return;
+    if (!importContent.trim() || !importTitle.trim()) return;
     setImporting(true);
     setImportSteps([]);
     try {
-      await runExtraction(importContent, provider, importGraph);
+      await runExtraction(importContent, importTitle.trim(), importGraph, importModelKey);
       setImportContent('');
+      setImportTitle('');
     } catch (e) {
       setImportSteps((prev) => [...prev, { label: `❌ Error: ${e.message}`, status: 'failed', detail: '' }]);
+      setImporting(false);
     }
-    setImporting(false);
-  }, [importContent, provider, importGraph, runExtraction]);
+  }, [importContent, importTitle, importGraph, runExtraction]);
 
   const handleFileUpload = useCallback(async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const content = await file.text();
-    setImporting(true);
-    setImportSteps([]);
-    try {
-      await runExtraction(content, provider, importGraph);
-    } catch (err) {
-      setImportSteps((prev) => [...prev, { label: `❌ Error: ${err.message}`, status: 'failed', detail: '' }]);
-    }
-    setImporting(false);
+    const fileName = file.name.replace(/\.(md|markdown|txt)$/i, '');
+    setImportContent(content);
+    setImportTitle(fileName);
+    setShowImport(true);
     e.target.value = '';
-  }, [provider, importGraph, runExtraction]);
+  }, []);
 
   const handleEdit = useCallback(async (doc) => {
     setEditTitle(doc.title);
@@ -260,16 +273,15 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
     }
   }, [showEdit, editTitle, editTags]);
 
-  const handleDelete = useCallback(async (doc) => {
-    if (!confirm(`Delete "${doc.title}"?`)) return;
+  const handleDelete = useCallback(async () => {
+    const doc = deleteConfirm;
+    if (!doc) return;
+    setDeleteConfirm(null);
     try {
-      const res = await graphSearch([doc.title], importGraph);
-      const vertexIds = (res?.data || []).filter((item) => item.type === 'vertex' && item.properties?.source_file === doc.title).map((item) => item.id);
-      for (const vid of vertexIds) { try { await deleteVertex(vid, importGraph); } catch {} }
-      await deleteDocument(doc.id);
+      await deleteDocument(doc.id, deleteGraphData);
       const docs = await listDocuments(); setDocuments(docs.documents || []);
     } catch (e) { console.error('Delete error:', e); }
-  }, [importGraph]);
+  }, [deleteConfirm, deleteGraphData]);
 
   if (!open) return null;
 
@@ -309,44 +321,19 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
           </div>
           <div>
             <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.model')}</label>
-            <select className="w-full px-3 py-2 rounded-xl bg-[var(--bg-secondary)] text-[var(--text-primary)] text-sm border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] appearance-none cursor-pointer"
-              style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23636366' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px center', paddingRight: '32px' }}
-              value={(() => {
-                const selProv = providers.find(p => p.id === importProvider);
-                if (!selProv) return '';
-                const effectiveModel = importModel || selProv.defaultModel || selProv.model;
-                return selProv.id + '/' + effectiveModel;
-              })()}
-              onChange={(e) => {
-                const val = e.target.value;
-                const [pid, ...rest] = val.split('/');
-                const modelName = rest.join('/');
-                setImportProvider(pid);
-                const p = providers.find(x => x.id === pid);
-                if (p && modelName === (p.defaultModel || p.model)) {
-                  setImportModel(null);
-                } else {
-                  setImportModel(modelName);
-                }
-              }}>
-              {providers.flatMap((p) => {
-                const models = p.models || [p.model];
-                return models.map((m) => ({
-                  key: p.id + '/' + m,
-                  pid: p.id,
-                  model: m,
-                  // Only mark as default globally-active provider + its default model
-                  isDefault: p.id === activeProvider && m === (p.defaultModel || p.model),
-                  label: p.name + '/' + m + (p.id === activeProvider && m === (p.defaultModel || p.model) ? ' (默认)' : ''),
-                }));
-              }).map((opt) => (
-                <option key={opt.key} value={opt.key}>{opt.label}</option>
-              ))}
-            </select>
+            <ModelSelector
+              value={importModelKey}
+              onChange={setImportModelKey}
+            />
           </div>
 
           <div>
-            <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.content')}</label>
+            <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">文档标题</label>
+            <input className="w-full px-3.5 py-2 rounded-xl bg-[var(--bg-secondary)] text-[var(--text-primary)] text-sm border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] placeholder-[var(--text-muted)]"
+              type="text" placeholder="输入文档标题" value={importTitle} onChange={(e) => setImportTitle(e.target.value)} />
+          </div>
+          <div>
+            <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tippy">文档内容</label>
             <textarea className="w-full h-28 px-3 py-2 rounded-xl bg-[var(--bg-secondary)] text-[var(--text-primary)] text-sm border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] placeholder-[var(--text-muted)] resize-none" placeholder={t('knowledgeBase.import') + '...'} value={importContent} onChange={(e) => setImportContent(e.target.value)} />
           </div>
 
@@ -358,7 +345,7 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
             </label>
             <div className="flex gap-2">
               <button className="px-3.5 py-1.5 rounded-xl bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs font-medium transition-all" onClick={() => { setShowImport(false); setImportContent(''); setImportSteps([]); }}>{t('panel.close')}</button>
-              <button className="px-3.5 py-1.5 rounded-xl bg-[var(--accent)] text-white text-xs font-medium hover:bg-[color-mix(in srgb, var(--accent), black 10%)] transition-all shadow-sm" onClick={handleImportText} disabled={!importContent.trim() || !provider || importing}>
+              <button className="px-3.5 py-1.5 rounded-xl bg-[var(--accent)] text-white text-xs font-medium hover:bg-[color-mix(in srgb, var(--accent), black 10%)] transition-all shadow-sm" onClick={handleImportText} disabled={!importContent.trim() || !importTitle.trim() || importing}>
                 {importing ? t('knowledgeBase.import') + '...' : t('knowledgeBase.import')}
               </button>
             </div>
@@ -417,6 +404,42 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
         </Modal>
       )}
 
+      {/* Document detail dialog */}
+      {docView && (
+        <Modal title={docView.title} onClose={() => setDocView(null)}>
+          <div className="space-y-4 max-h-[70vh] overflow-y-auto">
+            {docView.tags?.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {docView.tags.map((tag, i) => (
+                  <span key={i} className="px-2 py-0.5 rounded-md bg-[var(--accent)]/15 text-[var(--accent)] text-xs font-medium">{tag}</span>
+                ))}
+              </div>
+            )}
+            <div className="text-xs text-[var(--text-primary)] font-mono whitespace-pre-wrap border border-[var(--border)] rounded-xl p-4 bg-[var(--bg-tertiary)] leading-relaxed max-h-96 overflow-y-auto">{docViewContent || '加载中...'}</div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Delete confirmation dialog */}
+      {deleteConfirm && (
+        <Modal title="删除文档" onClose={() => setDeleteConfirm(null)}>
+          <div className="space-y-4">
+            <p className="text-sm text-[var(--text-primary)]">确定删除「{deleteConfirm.title}」？</p>
+            <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)] cursor-pointer select-none">
+              <input type="checkbox" checked={deleteGraphData} onChange={(e) => setDeleteGraphData(e.target.checked)}
+                className="w-3.5 h-3.5 rounded border-[#3a3a3e] bg-[var(--bg-secondary)] checked:bg-[var(--accent)] checked:border-[#0a84ff] focus:ring-0 cursor-pointer" />
+              同时清理关联的图谱数据（顶点、边、神经元）
+            </label>
+            <div className="flex gap-2 justify-end">
+              <button className="px-4 py-2 rounded-xl bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-sm font-medium transition-all" onClick={() => setDeleteConfirm(null)}>取消</button>
+              <button className="px-4 py-2 rounded-xl bg-[var(--danger)] text-white text-sm font-medium hover:bg-[color-mix(in srgb, var(--danger), black 10%)] transition-all shadow-sm" onClick={handleDelete}>
+                删除
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
       {loading && <div className="text-center text-[var(--text-tertiary)] text-sm py-8">Loading...</div>}
 
       {!loading && (
@@ -428,8 +451,11 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
           {filteredDocs.length === 0 && <div className="text-center text-[var(--text-tertiary)] text-sm py-8">No documents yet</div>}
           {filteredDocs.map((doc) => (
             <div key={doc.id} className="flex items-center justify-between py-2.5 px-3 rounded-xl hover:bg-[var(--bg-tertiary)] transition-all group">
-              <div className="flex-1 min-w-0">
-                <div className="text-sm text-[var(--text-primary)] font-medium truncate">{doc.title}</div>
+              <div className="flex-1 min-w-0 cursor-pointer" onClick={async () => {
+                setDocView(doc);
+                try { const c = await getDocumentContent(doc.id); setDocViewContent(c); } catch { setDocViewContent(''); }
+              }}>
+                <div className="text-sm text-[var(--text-primary)] font-medium truncate hover:text-[var(--accent)] transition-colors">{doc.title}</div>
                 <div className="text-xs text-[var(--text-tertiary)] mt-0.5">
                   {doc.graph_name && <><span className="text-[var(--accent)]">{doc.graph_name}</span>{' · '}</>}
                   {doc.tags?.length > 0 && doc.tags.join(', ') + ' · '}
@@ -438,7 +464,7 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
               </div>
               <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 ml-2">
                 <button className="px-2 py-1 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] rounded-lg transition-all" onClick={() => handleEdit(doc)} disabled={!!importing}>Edit</button>
-                <button className="px-2 py-1 text-xs text-[var(--danger)] hover:bg-[color-mix(in srgb, var(--bg-hover), var(--danger) 30%)] rounded-lg transition-all" onClick={() => handleDelete(doc)} disabled={!!importing}>Delete</button>
+                <button className="px-2 py-1 text-xs text-[var(--danger)] hover:bg-[color-mix(in srgb, var(--bg-hover), var(--danger) 30%)] rounded-lg transition-all" onClick={() => { setDeleteConfirm(doc); setDeleteGraphData(false); }} disabled={!!importing}>Delete</button>
               </div>
             </div>
           ))}

@@ -4,6 +4,7 @@ pub mod extract;
 pub mod graph;
 pub mod graph_manager;
 pub mod gremlin;
+pub mod maas;
 pub mod memory_system;
 pub mod neuron;
 pub mod persistence;

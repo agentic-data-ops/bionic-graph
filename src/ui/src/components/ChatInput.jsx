@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect, forwardRef, useImperativeHandle } from 'react';
 import { useTranslation } from 'react-i18next';
+import { fetchModels } from '../api';
 
 const ChatInput = forwardRef(function ChatInput({
   providers,
@@ -18,6 +19,8 @@ const ChatInput = forwardRef(function ChatInput({
   graphName,
   onGraphNameChange,
   graphs,
+  timeTravelGraphs,
+  defaultModelKey,
   chatModel,
   onChatModelChange,
   onSend,
@@ -59,36 +62,73 @@ const ChatInput = forwardRef(function ChatInput({
       {/* Mode bar */}
       <div className="flex items-center gap-3 mb-2.5 flex-wrap">
         {/* Model selector — leftmost */}
-        {providers.length > 0 && activeProvider && (() => {
-          const activeProv = providers.find(p => p.id === activeProvider);
-          if (!activeProv) return null;
-          const effectiveModel = chatModel || activeProv.defaultModel || activeProv.model;
-          const defaultModel = activeProv.defaultModel || activeProv.model;
-          const currentKey = `${activeProv.name}/${effectiveModel}`;
-          const options = [];
-          providers.forEach(p => {
-            const models = p.models || [p.model];
-            models.forEach(m => {
-              options.push({ key: `${p.name}/${m}`, providerId: p.id, model: m, isDefault: p.id === activeProvider && m === defaultModel });
-            });
-          });
+        {(() => {
+          const [modelList, setModelList] = useState(null);
+          const [defaultModel, setDefaultModel] = useState('');
+          const [fetching, setFetching] = useState(false);
+          const initialised = useRef(false);
+
+          // Fetch model list + default model from backend.
+          // Re-fetches when providers or defaultModelKey change (settings modified).
+          useEffect(() => {
+            if (!fetching) {
+              setFetching(true);
+              fetchModels().then(({ models, defaultModel: dm }) => {
+                const list = models?.data || [];
+                setModelList(list);
+                setDefaultModel(dm || '');
+
+                // On first load only, determine the initial model key:
+                // 1. Try localStorage saved model
+                // 2. If missing or not in the list, use backend defaultModel
+                if (!initialised.current) {
+                  initialised.current = true;
+                  const saved = localStorage.getItem('bgraph-last-model');
+                  const validSaved = saved && list.some(e => e.id === saved);
+                  const targetKey = validSaved ? saved : (dm || list[0]?.id || '');
+                  if (targetKey) {
+                    const parts = targetKey.split('/');
+                    if (parts.length >= 2) {
+                      onProviderChange(parts[0]);
+                      onChatModelChange(parts.slice(1).join('/'));
+                    }
+                  }
+                }
+              }).catch(() => {}).finally(() => setFetching(false));
+            }
+          }, [providers, defaultModelKey]);
+
+          if (!modelList) {
+            return <span className="text-xs text-[var(--text-tertiary)]">加载中...</span>;
+          }
+
+          const currentModel = chatModel || '';
+          const currentProvider = activeProvider || '';
+          const currentKey = currentProvider && currentModel ? `${currentProvider}/${currentModel}` : '';
+
+          const options = modelList.map(entry => ({
+            key: entry.id,
+            providerName: entry.owned_by,
+            model: entry.id.includes('/') ? entry.id.split('/').slice(1).join('/') : entry.id,
+            isDefault: entry.id === defaultModel,
+          }));
+
           return (
             <select
               className="bg-[var(--bg-tertiary)] text-[var(--text-primary)] rounded-lg px-2.5 py-1 text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] cursor-pointer appearance-none flex-shrink-0"
-              style={{ maxWidth: '220px', backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath fill='%2386868b' d='M0 0l4 5 4-5z'/%3E%3C/svg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 6px center', paddingRight: '22px' }}
+              style={{ maxWidth: '220px', backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath fill='%2386868b' d='M0 0l4 5 4-5z'/%3E%3Csvg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 6px center', paddingRight: '22px' }}
               value={currentKey}
               onChange={(e) => {
                 const selected = options.find(o => o.key === e.target.value);
                 if (!selected) return;
-                if (selected.providerId !== activeProvider) {
-                  onProviderChange(selected.providerId);
-                }
-                onChatModelChange(selected.isDefault ? null : selected.model);
+                localStorage.setItem('bgraph-last-model', selected.key);
+                onProviderChange(selected.providerName);
+                onChatModelChange(selected.model);
               }}
             >
               {options.map((opt) => (
                 <option key={opt.key} value={opt.key}>
-                  {opt.key}{opt.isDefault ? ' (default)' : ''}
+                  {opt.key}{opt.isDefault ? ` ${t('chat.default')}` : ''}
                 </option>
               ))}
             </select>
@@ -155,10 +195,11 @@ const ChatInput = forwardRef(function ChatInput({
               </div>
             )}
 
-            {/* Time travel */}
+            {/* Time travel — only if graph supports it */}
+            {timeTravelGraphs[graphName] && (<>
             <label className="flex items-center gap-1.5 cursor-pointer select-none text-xs text-[var(--text-secondary)] font-medium whitespace-nowrap">
               <input type="checkbox" checked={timeTravel} onChange={(e) => onTimeTravelToggle(e.target.checked)}
-                className="w-3.5 h-3.5 rounded border-[#3a3a3e] bg-[var(--bg-tertiary)] checked:bg-[var(--accent)] checked:border-[#0a84ff] focus:ring-0 cursor-pointer" />
+                className="w-3.5 h-3.5 rounded border-[var(--border)] bg-[var(--bg-tertiary)] checked:bg-[var(--accent)] checked:border-[var(--accent)] focus:ring-0 cursor-pointer" />
               {t('chat.timeTravel')}
             </label>
             {timeTravel && (
@@ -168,6 +209,7 @@ const ChatInput = forwardRef(function ChatInput({
                 onChange={(e) => onTimeTravelPointChange?.(e.target.value)}
               />
             )}
+            </>)}
           </>
         )}
 
@@ -189,8 +231,8 @@ const ChatInput = forwardRef(function ChatInput({
         <button
           className="flex-shrink-0 p-2.5 rounded-xl transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed"
           style={{
-            backgroundColor: text.trim() && !disabled ? '#0a84ff' : '#2a2a2e',
-            color: text.trim() && !disabled ? 'white' : '#636366',
+            backgroundColor: text.trim() && !disabled ? 'var(--accent)' : 'var(--bg-hover)',
+            color: text.trim() && !disabled ? 'white' : 'var(--text-tertiary)',
           }}
           onClick={handleSend}
           disabled={!text.trim() || disabled}

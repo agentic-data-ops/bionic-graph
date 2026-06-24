@@ -18,8 +18,10 @@ Bionic-Graph is a **low-cost AI memory system** that combines a knowledge graph 
 │  Chat interface  |  Knowledge Base  |  Graph Visualization    │
 │  LLM Chat (SSE)  |  Semantic Search  |  Document Extraction   │
 ├──────────────────────────────────────────────────────────────┤
-│                    REST API (axum, embedded in binary)         │
-│  /gremlin  |  /vertices  |  /edges  |  /documents  |  /search  |  /settings │
+│                    REST API + MaaS Proxy (axum, embedded)       │
+│  /gremlin  |  /vertices  |  /edges  |  /documents  |  /search  │
+│  /maas/openai/v1/models | /maas/openai/v1/chat/completions     │
+│  /settings | /extract  | /neurons                              │
 ├──────────────────────────────────────────────────────────────┤
 │              Neural Index (spreading activation)               │
 │  keyword → neuron activation → spread → entity find           │
@@ -202,6 +204,8 @@ curl localhost:8080/documents/{id}/content
 | `POST` | `/compact` | History compaction |
 | `GET/PUT` | `/settings` | LLM providers config |
 | `GET/PUT` | `/settings/neural` | Neural activation/search/learn config |
+| `GET` | `/maas/openai/v1/models` | List models (`provider/model` format, `x-default-model` header) |
+| `POST` | `/maas/openai/v1/chat/completions` | OpenAI-compatible chat completion proxy (SSE streaming) |
 
 ### Supported Gremlin steps
 

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, forwardRef, useImperativeHandle, useCallba
 import { useTranslation } from 'react-i18next';
 import { Network } from 'vis-network';
 import { DataSet } from 'vis-data';
-import { traverse, updateVertexProperties, updateEdgeProperties, deleteVertex, getDocument } from '../api';
+import { traverse, updateVertexProperties, updateEdgeProperties, deleteVertex, getDocument, getDocumentContent } from '../api';
 
 
 const DARK_OPTS = {
@@ -13,13 +13,68 @@ const DARK_OPTS = {
   layout: { randomSeed: 42 },
 };
 const LIGHT_OPTS = {
-  nodes: { shape: 'dot', size: 18, font: { face: '-apple-system, BlinkMacSystemFont, "SF Pro Text", Helvetica, Arial, sans-serif', size: 13, color: '#1d1d1f', strokeWidth: 0, strokeColor: '#ffffff' }, color: { background: '#d1d1d6', border: '#aeaeb2', highlight: { background: '#0a84ff', border: '#0a84ff' }, hover: { background: '#c7c7cc', border: '#8e8e93' } }, borderWidth: 1.5, borderWidthSelected: 2, shadow: { enabled: false, color: 'rgba(0,0,0,0.08)', size: 3, x: 0, y: 1 } },
-  edges: { width: 1.2, color: { color: '#c7c7cc', highlight: '#0a84ff', hover: '#aeaeb2' }, font: { face: '-apple-system, BlinkMacSystemFont, "SF Pro Text", Helvetica, Arial, sans-serif', size: 10, color: '#8e8e93', strokeWidth: 3, strokeColor: '#ffffff', align: 'middle' }, smooth: { type: 'curvedCW', roundness: 0.15 }, arrows: { to: { enabled: true, scaleFactor: 0.6 } } },
+  nodes: { shape: 'dot', size: 18, font: { face: '-apple-system, BlinkMacSystemFont, "SF Pro Text", Helvetica, Arial, sans-serif', size: 13, color: '#1d1d1f', strokeWidth: 0, strokeColor: '#ffffff' }, color: { background: '#e8e8ed', border: '#d1d1d6', highlight: { background: '#0a84ff', border: '#0a84ff' }, hover: { background: '#d1d1d6', border: '#aeaeb2' } }, borderWidth: 1.5, borderWidthSelected: 2, shadow: { enabled: false, color: 'rgba(0,0,0,0.08)', size: 3, x: 0, y: 1 } },
+  edges: { width: 1.2, color: { color: '#aeaeb2', highlight: '#0a84ff', hover: '#8e8e93' }, font: { face: '-apple-system, BlinkMacSystemFont, "SF Pro Text", Helvetica, Arial, sans-serif', size: 10, color: '#636366', strokeWidth: 3, strokeColor: '#ffffff', align: 'middle' }, smooth: { type: 'curvedCW', roundness: 0.15 }, arrows: { to: { enabled: true, scaleFactor: 0.6 } } },
   physics: { solver: 'forceAtlas2Based', forceAtlas2Based: { gravitationalConstant: -40, centralGravity: 0.005, springLength: 180, springConstant: 0.02 }, stabilization: { iterations: 100 } },
   interaction: { hover: true, tooltipDelay: 200, zoomView: true, dragView: true },
   layout: { randomSeed: 42 },
 };
-function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument }) {
+/** Document detail dialog — shows name, tags, and markdown content. */
+function DocViewer({ docId, onClose }) {
+  const { t } = useTranslation();
+  const [doc, setDoc] = useState(null);
+  const [content, setContent] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!docId) return;
+    setLoading(true);
+    Promise.all([
+      getDocument(docId).catch(() => null),
+      getDocumentContent(docId).catch(() => ''),
+    ]).then(([d, c]) => {
+      setDoc(d);
+      setContent(c || '');
+      setLoading(false);
+    });
+  }, [docId]);
+
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
+      <div className="relative bg-[var(--bg-secondary)] border border-[var(--border)] rounded-2xl p-6 max-w-2xl max-h-[80vh] overflow-y-auto shadow-2xl min-w-[500px]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-4">
+          <span className="text-sm font-semibold text-[var(--text-primary)] tracking-tight">
+            {loading ? '加载中...' : (doc?.title || '文档')}
+          </span>
+          <button className="w-7 h-7 rounded-lg bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-all" onClick={onClose}>
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        {loading ? (
+          <div className="text-xs text-[var(--text-tertiary)] text-center py-8">加载中...</div>
+        ) : (
+          <div className="space-y-4">
+            {doc?.tags?.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {doc.tags.map((tag, i) => (
+                  <span key={i} className="px-2 py-0.5 rounded-md bg-[var(--accent)]/15 text-[var(--accent)] text-[11px] font-medium">{tag}</span>
+                ))}
+              </div>
+            )}
+            <div className="text-xs text-[var(--text-primary)] font-mono break-words whitespace-pre-wrap max-h-96 overflow-y-auto border border-[var(--border)] rounded-xl p-4 bg-[var(--bg-tertiary)] leading-relaxed">{content}</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument, onSelectVertex, graphData, nodesRef }) {
   const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const [editLabels, setEditLabels] = useState('');
@@ -118,12 +173,14 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument })
         </div>
       </div>
       <div className="p-4 space-y-4">
-        {/* Labels */}
+        {/* Labels (vertex) / Label (edge) */}
         <div>
           <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-2">
-            Labels {editing && <span className="text-[var(--text-muted)] normal-case font-normal">(comma-separated)</span>}
+            {type === 'edge' ? 'Label' : 'Labels'} {editing && <span className="text-[var(--text-muted)] normal-case font-normal">(comma-separated)</span>}
           </div>
-          {editing ? (
+          {type === 'edge' ? (
+            <div className="text-xs text-[var(--text-primary)] font-medium">{item.label || '—'}</div>
+          ) : editing ? (
             <input
               className="w-full px-2.5 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
               value={editLabels}
@@ -135,7 +192,8 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument })
             </div>
           )}
         </div>
-        {/* Name (built-in) */}
+        {/* Name (built-in) — vertices only */}
+        {type === 'vertex' && (
         <div>
           <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-2">Name</div>
           {editing ? (
@@ -148,7 +206,9 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument })
             <div className="text-xs text-[var(--text-primary)] font-medium">{item.name || '—'}</div>
           )}
         </div>
-        {/* Keywords (built-in) */}
+        )}
+        {/* Keywords (built-in) — vertices only */}
+        {type === 'vertex' && (
         <div>
           <div className="text-[10px] font-semibold text-[var(--text-tertiary)]  uppercase tracking-wider mb-2">Keywords</div>
           {editing ? (
@@ -166,6 +226,52 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument })
             </div>
           )}
         </div>
+        )}
+        {/* Edge source/target — clickable vertex links */}
+        {type === 'edge' && (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-[var(--text-tertiary)] font-medium w-14">SOURCE</span>
+              <button className="text-[var(--accent)] hover:underline font-mono text-xs text-left"
+                onClick={() => onSelectVertex?.(item.source)}>
+                {(() => {
+                  const allData = graphData?.data || [];
+                  let v = allData.find(d => d.type === 'vertex' && d.id === item.source);
+                  if (!v && nodesRef?.current) {
+                    const node = nodesRef.current.get(item.source);
+                    v = node?._original;
+                  }
+                  return v ? v.name || `#${item.source}` : `#${item.source}`;
+                })()}
+              </button>
+            </div>
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-[var(--text-tertiary)] font-medium w-14">TARGET</span>
+              <button className="text-[var(--accent)] hover:underline font-mono text-xs text-left"
+                onClick={() => onSelectVertex?.(item.target)}>
+                {(() => {
+                  const allData = graphData?.data || [];
+                  let v = allData.find(d => d.type === 'vertex' && d.id === item.target);
+                  if (!v && nodesRef?.current) {
+                    const node = nodesRef.current.get(item.target);
+                    v = node?._original;
+                  }
+                  return v ? v.name || `#${item.target}` : `#${item.target}`;
+                })()}
+              </button>
+            </div>
+          </div>
+        )}
+        {/* Document (clickable link) */}
+        {item.document && (
+          <div>
+            <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-2">Document</div>
+            <button
+              className="text-xs text-[var(--accent)] hover:underline text-left break-all"
+              onClick={() => onShowDocument?.(item.document)}
+            >{docName || `#${item.document.slice(0,8)}…`}</button>
+          </div>
+        )}
         {/* Custom Properties */}
         <div>
           <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-2">Custom Properties</div>
@@ -221,13 +327,7 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument })
             </>
           )}
         </div>
-        {/* Edge source/target */}
-        {type === 'edge' && (
-          <div className="space-y-2">
-            <div className="flex items-center gap-2 text-xs"><span className="text-[var(--text-tertiary)] font-medium w-14">source</span><span className="text-[var(--text-primary)] font-mono">{item.source}</span></div>
-            <div className="flex items-center gap-2 text-xs"><span className="text-[var(--text-tertiary)] font-medium w-14">target</span><span className="text-[var(--text-primary)] font-mono">{item.target}</span></div>
-          </div>
-        )}
+
 
         {/* Edit buttons */}
         {editing && (
@@ -271,7 +371,29 @@ const GraphViewer = forwardRef(({ data, graph, className, theme }, ref) => {
   const nodesRef = useRef(null);
   const edgesRef = useRef(null);
   const [selected, setSelected] = useState(null);
-  const dataRef = useRef(data); // track latest data for event handlers
+  const [showDoc, setShowDoc] = useState(null);
+  const dataRef = useRef(data);
+
+  const selectVertex = useCallback((vid) => {
+    const net = netRef.current;
+    const ns = nodesRef.current;
+    if (!net || !ns) return;
+    const node = ns.get(vid);
+    if (!node) return;
+    const curData = dataRef.current;
+    let found = null;
+    if (node._original) {
+      found = { item: node._original, type: 'vertex' };
+    } else {
+      found = null;
+      for (const d of (curData?.data || [])) {
+        if (d.type === 'vertex' && d.id === vid) { found = { item: d, type: 'vertex' }; break; }
+      }
+    }
+    if (found) setSelected(found);
+    net.selectNodes([vid]);
+    net.focus(vid, { scale: 1.5, animation: { duration: 300, easingFunction: 'easeInOutQuad' } });
+  }, []); // track latest data for event handlers
 
   useEffect(() => { dataRef.current = data; }, [data]);
 
@@ -312,6 +434,12 @@ const GraphViewer = forwardRef(({ data, graph, className, theme }, ref) => {
       return;
     }
 
+    const container = containerRef.current;
+    if (!container) return;
+
+    // Ensure container has dimensions before network creation
+    // The parent h-[420px] in MessageList provides the height constraint
+
     const { nodes: nds, edges: eds } = buildFromData(data.data);
     const nodes = new DataSet(nds);
     const edges = new DataSet(eds);
@@ -319,12 +447,11 @@ const GraphViewer = forwardRef(({ data, graph, className, theme }, ref) => {
     edgesRef.current = edges;
 
     netRef.current?.destroy();
-    const container = containerRef.current;
-    if (!container) return;
 
     const isLight = (theme || "dark") === "light";
     const net = new Network(container, { nodes, edges }, isLight ? LIGHT_OPTS : DARK_OPTS);
-    // Old inline opts removed color: isDark ? "#e5e5e7" : "#1d1d1f", strokeWidth: isDark ? 3 : 0, strokeColor: isDark ? "#1a1a1e" : "#ffffff" },
+    // Fit view immediately (no animation to avoid interaction interference)
+    net.fit({ animation: false });
     net.on('click', (evt) => {
       const curData = dataRef.current;
       if (evt.nodes.length) {
@@ -378,8 +505,11 @@ const GraphViewer = forwardRef(({ data, graph, className, theme }, ref) => {
           item={selected.item}
           type={selected.type}
           graphName={graph}
+          graphData={data}
+          nodesRef={nodesRef}
           onClose={() => setSelected(null)}
-          onShowDocument={(docId) => { console.log("Show document:", docId); }}
+          onShowDocument={(docId) => setShowDoc(docId)}
+          onSelectVertex={selectVertex}
           onDelete={async (vid) => {
             try {
               await deleteVertex(vid, graph);
@@ -399,6 +529,7 @@ const GraphViewer = forwardRef(({ data, graph, className, theme }, ref) => {
           }}
         />
       )}
+      {showDoc && <DocViewer docId={showDoc} onClose={() => setShowDoc(null)} />}
     </div>
   );
 });

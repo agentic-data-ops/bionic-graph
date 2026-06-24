@@ -124,7 +124,7 @@ mod tests {
         assert_eq!(parsed.server.port, 8080);
         assert_eq!(parsed.llm.default_model, "DeepSeek/deepseek-v4-flash");
         assert_eq!(parsed.storage.data_dir, "data");
-        assert_eq!(parsed.neural.default_threshold, 0.7);
+        assert_eq!(parsed.neural.activate.default_threshold, 0.7);
     }
 
     #[test]

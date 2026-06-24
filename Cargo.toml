@@ -22,9 +22,13 @@ chrono = "0.4"
 crc32fast = "1"
 log = "0.4"
 env_logger = "0.11"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rust-embed = "8"
 mime_guess = "2"
+tokio-stream = "0.1"
+futures-util = "0.3"
+http-body = "1"
+http-body-util = "0.1"
 
 [dev-dependencies]
 tempfile = "3"

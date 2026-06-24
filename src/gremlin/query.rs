@@ -211,6 +211,7 @@ pub struct EdgeResult {
     pub label: String,
     pub source: u64,
     pub target: u64,
+    pub document: String,
     pub properties: std::collections::HashMap<String, serde_json::Value>,
 }
 

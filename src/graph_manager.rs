@@ -216,10 +216,10 @@ impl GraphManager {
         let (mut graph, mut neural_network) = persistence::load_or_create(&config, act_cfg, learn_cfg)
             .map_err(|e| format!("Failed to load graph '{}': {}", name, e))?;
 
-        // Open unified WAL and replay un-persisted mutations atomically
+        // Open Redolog WAL and replay un-persisted mutations atomically
         let redolog_path = data_dir.join("redolog.wal");
         let mut redolog_wal = RedologWal::open(&redolog_path)
-            .map_err(|e| format!("Failed to open unified WAL for '{}': {}", name, e))?;
+            .map_err(|e| format!("Failed to open Redolog WAL for '{}': {}", name, e))?;
         if let Err(e) = redolog_wal.replay(&mut graph, &mut neural_network) {
             log::warn!("Redolog WAL recovery error for '{}': {}", name, e);
         }

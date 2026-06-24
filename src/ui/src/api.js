@@ -224,11 +224,64 @@ export async function updateDocument(id, title, keywords = [], graphName) {
   });
 }
 
-export async function deleteDocument(id) {
-  return api(`/documents/${encodeURIComponent(id)}`, { method: 'DELETE' });
+export async function deleteDocument(id, cleanGraph) {
+  const url = cleanGraph ? `/documents/${encodeURIComponent(id)}?clean=true` : `/documents/${encodeURIComponent(id)}`;
+  return api(url, { method: 'DELETE' });
+}
+
+// ─── MaaS Proxy (OpenAI-compatible backend proxy) ──────────────
+
+/**
+ * Fetch available models from the backend MaaS proxy.
+ * Returns { models: [...], defaultModel: "Provider/Model" }
+ * where models is the OpenAI-compatible list { object, data }.
+ */
+export async function fetchModels() {
+  const res = await fetch('/maas/openai/v1/models');
+  if (!res.ok) throw new Error(await res.text());
+  const defaultModel = res.headers.get('x-default-model') || '';
+  const models = await res.json();
+  return { models, defaultModel };
+}
+
+/**
+ * Call the backend MaaS proxy for chat completions.
+ * The backend forwards to the actual provider using stored API keys.
+ * Returns an object with:
+ *   - response: the fetch Response (for reading body as SSE)
+ *   - abort: () => void  to abort the request
+ */
+export function chatCompletionProxy(messages, model, stream = true) {
+  const controller = new AbortController();
+
+  const promise = fetch('/maas/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model,
+      messages,
+      stream,
+    }),
+    signal: controller.signal,
+  });
+
+  return {
+    response: promise,
+    abort: () => controller.abort(),
+  };
 }
 
 // ─── Settings Sync ───────────────────────────────────────────────
+
+/** Get a single provider config (apiKey, apiBase) from backend by provider name. */
+export async function fetchProviderConfig(providerName) {
+  const res = await fetch('/settings');
+  if (!res.ok) throw new Error(await res.text());
+  const data = await res.json();
+  const provider = data?.llm?.providers?.find(p => p.name === providerName);
+  if (!provider) throw new Error(`Provider "${providerName}" not found in backend settings`);
+  return provider;
+}
 
 /** Fetch full LLM settings from backend (providers, models, api_keys). */
 export async function fetchSettings() {
@@ -243,13 +296,12 @@ export async function fetchSettings() {
  * @param {string} defaultModel - "ProviderName/ModelName"
  */
 export async function updateSettings(providers, defaultModel) {
+  const body = { providers };
+  if (defaultModel) body.default_model = defaultModel;
   const res = await fetch('/settings', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      providers,
-      default_model: defaultModel,
-    }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
@@ -281,10 +333,12 @@ export async function updateNeuralConfig(config) {
 // ─── Document Extraction (Backend Task) ─────────────────────────
 
 /** Submit a document for background extraction. Returns { task_id, status } */
-export async function startDocumentExtraction(docId, graphName) {
+export async function startDocumentExtraction(docId, graphName, model) {
   const headers = {};
   if (graphName) headers['X-Graph-Name'] = graphName;
-  const res = await fetch(`/documents/${encodeURIComponent(docId)}/extract`, {
+  let url = `/documents/${encodeURIComponent(docId)}/extract`;
+  if (model) url += `?model=${encodeURIComponent(model)}`;
+  const res = await fetch(url, {
     method: 'POST',
     headers,
   });

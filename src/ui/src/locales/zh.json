@@ -72,6 +72,7 @@
   "chat.maximize": "最大化",
   "chat.keyword": "关键词",
   "chat.semantic": "语义",
+  "chat.default": "(默认)",
   "chat.noProvider": "⚠ 未配置模型供应商，请在设置中添加",
   "settings.title": "设置",
   "settings.providers": "供应商",

@@ -224,6 +224,7 @@ impl NeuralNetwork {
             if let Some(edge) = graph.get_edge(*eid) {
                 let nid = (self.neuron_count() as u64) + 1;
                 let mut neuron = crate::neuron::Neuron::for_edge(nid, &edge.label, *eid);
+                neuron.vertex_refs = vec![edge.source, edge.target];
                 // Build keywords from edge label, and source/target entity names
                 let mut keywords = vec![edge.label.clone()];
                 if let Some(src) = graph.get_vertex(edge.source) {

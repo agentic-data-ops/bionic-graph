@@ -98,8 +98,9 @@ impl MemorySystem {
         let eid = self.graph.lock().unwrap().create_edge(label.clone(), source, target)?;
         let mut nn = self.neural_network.lock().unwrap();
         let nid = (nn.neuron_count() as u64) + 1;
-        let neuron = crate::neuron::neuron::Neuron::for_edge(nid, &label, eid)
-            .with_keywords(vec![label.clone()]);
+        let mut neuron = crate::neuron::neuron::Neuron::for_edge(nid, &label, eid);
+        neuron.vertex_refs = vec![source, target];
+        neuron.keywords = vec![label.clone()];
         nn.add_neuron(neuron);
         nn.auto_synapse(source, target);
         Ok(eid)

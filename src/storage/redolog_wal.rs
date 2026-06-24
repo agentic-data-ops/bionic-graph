@@ -199,7 +199,7 @@ impl RedologWal {
         std::fs::rename(&tmp, &self.path)?;
         self.file = Some(std::fs::OpenOptions::new()
             .create(true).append(true).read(true).open(&self.path)?);
-        log::info!("Unified WAL truncated: kept {} entries", entries.len() - keep_from);
+        log::info!("Redolog WAL truncated: kept {} entries", entries.len() - keep_from);
         Ok(())
     }
 
@@ -222,7 +222,7 @@ impl RedologWal {
         };
         if to_replay.is_empty() { return Ok(0); }
         let count = to_replay.len();
-        log::info!("Unified WAL recovery: replaying {} entries", count);
+        log::info!("Redolog WAL recovery: replaying {} entries", count);
         for (ty, data, _) in &to_replay {
             match *ty {
                 // Graph operations
@@ -230,7 +230,7 @@ impl RedologWal {
                 // Neuron operations
                 0x11..=0x15 => apply_neuron_op(*ty, data, nn),
                 OP_CHECKPOINT => {},
-                _ => log::warn!("Unified WAL: unknown op 0x{:02x}", ty),
+                _ => log::warn!("Redolog WAL: unknown op 0x{:02x}", ty),
             }
         }
         Ok(count)
