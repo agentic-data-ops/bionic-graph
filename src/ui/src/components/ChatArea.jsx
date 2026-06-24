@@ -46,6 +46,8 @@ export default function ChatArea({
   const chatInputRef = useRef(null);
   const [kwSearchMode, setKwSearchMode] = useState("greedy");
   const [searchStream, setSearchStream] = useState(null);
+  const abortRef = useRef(null);
+  const [isGenerating, setIsGenerating] = useState(false);
 
   // Reset search stream when active conversation changes
   useEffect(() => {
@@ -80,6 +82,7 @@ export default function ChatArea({
         const progressMsgId = uid();
         const progressMsg = { id: progressMsgId, type: 'search_progress', title: text, steps };
         setSearchStream(progressMsg); // only in stream, not saved to conversation
+        setIsGenerating(true);
 
         try {
           let keywordsArr;
@@ -90,10 +93,11 @@ export default function ChatArea({
             setSearchStream({ ...progressMsg, steps: [step1, progressMsg.steps[1], progressMsg.steps[2]] });
 
             const systemPrompt = 'Select 3-5 key search keywords from the user\'s query below. ONLY pick words/phrases that actually appear in the query — do NOT generate, infer, or translate any new words. Return ONLY a JSON array of strings, no other text.';
-            const { response } = chatCompletionProxy(
+            const { response, abort } = chatCompletionProxy(
               [{ role: 'system', content: systemPrompt }, { role: 'user', content: `Query: ${text}` }],
               modelKey,
             );
+            abortRef.current = abort;
             let llmBuf = '';
             await parseSSEStream(await response, (t) => {
               llmBuf += t;
@@ -106,6 +110,7 @@ export default function ChatArea({
                 ],
               });
             });
+            abortRef.current = null;
             try { keywordsArr = JSON.parse(llmBuf.trim()); }
             catch { keywordsArr = text.split(/\s+/).filter(Boolean); }
 
@@ -125,6 +130,8 @@ export default function ChatArea({
             const doneSteps = [{ icon: '✅', name: 'Graph search completed', status: 'done', llmOutput: '' }];
             setSearchStream(null);
             requestAnimationFrame(() => chatInputRef.current?.focus());
+            abortRef.current = null;
+            setIsGenerating(false);
             onUpdateConv({ ...conv, messages: [...updatedMsgs, { ...progressMsg, steps: doneSteps, graphData: res, graphName: defaultGraph }] });
             return;
           }
@@ -147,10 +154,11 @@ Selection rules:
 3. If you select an edge, ALSO select its source and target vertices (even if they weren't explicitly mentioned)
 
 Return ONLY a comma-separated list of 1-based array indices of the selected items. If none are relevant, return "NONE". No other text.`;
-          const { response: filterResponse } = chatCompletionProxy(
+          const { response: filterResponse, abort: filterAbort } = chatCompletionProxy(
             [{ role: 'system', content: filterPrompt }, { role: 'user', content: `Query: ${text}\n\nSearch Results:\n${JSON.stringify(items, null, 2)}` }],
             modelKey,
           );
+          abortRef.current = filterAbort;
           let filterBuf = '';
           await parseSSEStream(await filterResponse, (t) => {
             filterBuf += t;
@@ -159,6 +167,7 @@ Return ONLY a comma-separated list of 1-based array indices of the selected item
               steps: [step1done, step2done, { icon: '🎯', name: 'Filtering semantically relevant results', status: 'running', llmOutput: filterBuf }],
             });
           });
+          abortRef.current = null;
 
           const text2 = filterBuf.trim();
           let filteredData;
@@ -186,6 +195,9 @@ Return ONLY a comma-separated list of 1-based array indices of the selected item
           setSearchStream(null);
           onUpdateConv({ ...conv, messages: [...updatedMsgs, { ...progressMsg, steps: failedSteps }] });
           requestAnimationFrame(() => chatInputRef.current?.focus());
+        } finally {
+          abortRef.current = null;
+          setIsGenerating(false);
         }
       } else {
         // ── LLM mode: streaming chat ──
@@ -203,7 +215,9 @@ Return ONLY a comma-separated list of 1-based array indices of the selected item
         const assistantMsg = { id: uid(), type: 'assistant', content: '' };
 
         try {
-          const { response } = chatCompletionProxy(llmMessages, modelKey);
+          const { response, abort } = chatCompletionProxy(llmMessages, modelKey);
+          abortRef.current = abort;
+          setIsGenerating(true);
           let fullContent = '';
           await parseSSEStream(
             await response,
@@ -222,6 +236,9 @@ Return ONLY a comma-separated list of 1-based array indices of the selected item
             ...conv,
             messages: [...updatedMsgs, { ...assistantMsg, content: `**Error**: ${e.message}` }],
           });
+        } finally {
+          abortRef.current = null;
+          setIsGenerating(false);
         }
       }
     },
@@ -272,6 +289,8 @@ Return ONLY a comma-separated list of 1-based array indices of the selected item
 
       <ChatInput
         ref={chatInputRef}
+        isGenerating={isGenerating}
+        onStop={() => { abortRef.current?.(); abortRef.current = null; setIsGenerating(false); }}
         kwSearchMode={kwSearchMode}
         onkwSearchModeChange={setKwSearchMode}
         providers={providers}

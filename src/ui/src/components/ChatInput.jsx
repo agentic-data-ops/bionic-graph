@@ -25,6 +25,8 @@ const ChatInput = forwardRef(function ChatInput({
   onChatModelChange,
   onSend,
   disabled,
+  isGenerating,
+  onStop,
 }, ref) {
   const { t } = useTranslation();
   const [text, setText] = useState('');
@@ -228,19 +230,30 @@ const ChatInput = forwardRef(function ChatInput({
           disabled={disabled}
         />
 
-        <button
-          className="flex-shrink-0 p-2.5 rounded-xl transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed"
-          style={{
-            backgroundColor: text.trim() && !disabled ? 'var(--accent)' : 'var(--bg-hover)',
-            color: text.trim() && !disabled ? 'white' : 'var(--text-tertiary)',
-          }}
-          onClick={handleSend}
-          disabled={!text.trim() || disabled}
-        >
-          <svg className="w-4.5 h-4.5" style={{ width: '18px', height: '18px' }} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 19V5m0 0l-7 7m7-7l7 7" />
-          </svg>
-        </button>
+        {isGenerating ? (
+          <button
+            className="flex-shrink-0 p-2.5 rounded-xl transition-all duration-200 bg-red-500 text-white hover:bg-red-600"
+            onClick={() => { onStop?.(); textareaRef.current?.focus(); }}
+          >
+            <svg className="w-4.5 h-4.5" style={{ width: '18px', height: '18px' }} fill="currentColor" viewBox="0 0 24 24">
+              <rect x="6" y="6" width="12" height="12" rx="2" />
+            </svg>
+          </button>
+        ) : (
+          <button
+            className="flex-shrink-0 p-2.5 rounded-xl transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed"
+            style={{
+              backgroundColor: text.trim() && !disabled ? 'var(--accent)' : 'var(--bg-hover)',
+              color: text.trim() && !disabled ? 'white' : 'var(--text-tertiary)',
+            }}
+            onClick={handleSend}
+            disabled={!text.trim() || disabled}
+          >
+            <svg className="w-4.5 h-4.5" style={{ width: '18px', height: '18px' }} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 19V5m0 0l-7 7m7-7l7 7" />
+            </svg>
+          </button>
+        )}
       </div>
 
       {!useGraph && providers.length === 0 && (
