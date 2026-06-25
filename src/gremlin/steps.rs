@@ -75,7 +75,7 @@ pub fn execute_query_with_llm(
                 let mut results: Vec<TraversalResult> = ranked_vertices
                     .into_iter()
                     .take(100)
-                    .map(|(vid, _score)| {
+                    .filter_map(|(vid, _score)| {
                         // When search_at is set (time-travel), include deleted entities;
                         // the neuron filtering already determined they should appear.
                         let vertex = if search_at.is_some() {
@@ -83,7 +83,7 @@ pub fn execute_query_with_llm(
                         } else {
                             g.get_vertex(vid)
                         };
-                        if let Some(vertex) = vertex {
+                        vertex.map(|vertex| {
                             let props: std::collections::HashMap<String, Value> = vertex
                                 .properties
                                 .iter()
@@ -98,17 +98,7 @@ pub fn execute_query_with_llm(
                                 labels: vertex.labels.clone(),
                                 properties: props,
                             })
-                        } else {
-                            TraversalResult::VertexResult(VertexResult {
-                                element_type: "vertex".to_string(),
-                                id: vid,
-                                name: String::new(),
-                                keywords: Vec::new(),
-                                document: String::new(),
-                                labels: Vec::new(),
-                                properties: std::collections::HashMap::new(),
-                            })
-                        }
+                        })
                     })
                     .collect();
 
