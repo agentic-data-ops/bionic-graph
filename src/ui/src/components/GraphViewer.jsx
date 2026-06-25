@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, forwardRef, useImperativeHandle, useCallback } from 'react';
+import { useEffect, useRef, useState, forwardRef, useImperativeHandle, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Network } from 'vis-network';
 import { DataSet } from 'vis-data';
@@ -386,7 +386,64 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
   const [showDoc, setShowDoc] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null); // { vid, name }
   const [confirmDeleteEdge, setConfirmDeleteEdge] = useState(null); // { eid, label }
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchFocused, setSearchFocused] = useState(false);
   const dataRef = useRef(data);
+
+  const searchFiltered = useMemo(() => {
+    if (!searchQuery || !nodesRef.current) return [];
+    const q = searchQuery.toLowerCase();
+    const results = [];
+    for (const n of nodesRef.current.get()) {
+      if (n.label && n.label.toLowerCase().includes(q)) {
+        results.push({ type: 'vertex', id: n.id, label: n.label });
+      }
+    }
+    if (edgesRef.current) {
+      for (const e of edgesRef.current.get()) {
+        if (e.label && e.label.toLowerCase().includes(q)) {
+          results.push({ type: 'edge', id: e.id, label: `[edge] ${e.label}` });
+        }
+      }
+    }
+    return results.slice(0, 50);
+  }, [searchQuery]);
+
+  const selectSearchResult = useCallback((result) => {
+    const net = netRef.current;
+    const ns = nodesRef.current;
+    if (!net || !ns) return;
+    setSearchQuery('');
+    if (result.type === 'vertex') {
+      const node = ns.get(result.id);
+      if (!node) return;
+      const curData = dataRef.current;
+      let found = null;
+      if (node._original) {
+        found = { item: node._original, type: 'vertex' };
+      } else if (curData?.data) {
+        for (const d of curData.data) {
+          if (d.type === 'vertex' && d.id === result.id) { found = { item: d, type: 'vertex' }; break; }
+        }
+      }
+      if (found) setSelected(found);
+      net.selectNodes([result.id]);
+      net.focus(result.id, { scale: 1.5, animation: { duration: 300, easingFunction: 'easeInOutQuad' } });
+    } else {
+      // Select edge — find its _original or build from DataSet
+      const es = edgesRef.current;
+      if (!es) return;
+      const edgeData = es.get(result.id);
+      if (!edgeData) return;
+      if (edgeData._original) {
+        setSelected({ item: edgeData._original, type: 'edge' });
+      } else {
+        setSelected({ item: edgeData, type: 'edge' });
+      }
+      net.selectEdges([result.id]);
+      net.focus(result.id, { scale: 1.5, animation: { duration: 300, easingFunction: 'easeInOutQuad' } });
+    }
+  }, []);
 
   const selectVertex = useCallback((vid) => {
     const net = netRef.current;
@@ -553,7 +610,35 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
 
   return (
     <div className={`flex-1 flex min-h-0 ${className || ''}`} style={{ height: '100%', width: '100%' }}>
-      <div ref={containerRef} className="flex-1 min-h-0" />
+      <div className="relative flex-1 min-h-0">
+        {/* Search bar overlay */}
+        <div className="absolute top-3 left-3 z-10 w-56">
+          <input
+            className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-secondary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] placeholder-[var(--text-tertiary)] shadow-lg"
+            placeholder="Search graph..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onFocus={() => setSearchFocused(true)}
+            onBlur={() => setTimeout(() => setSearchFocused(false), 200)}
+          />
+          {searchQuery && searchFocused && searchFiltered.length > 0 && (
+            <div className="absolute top-full left-0 right-0 mt-1 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-2xl max-h-60 overflow-y-auto z-20">
+              {searchFiltered.map((r) => (
+                <button
+                  key={`${r.type}-${r.id}`}
+                  className="w-full text-left px-3 py-2 text-xs text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-all flex items-center gap-2"
+                  onMouseDown={() => selectSearchResult(r)}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${r.type === 'vertex' ? 'bg-[var(--accent)]' : 'bg-[var(--success)]'}`} />
+                  <span className="truncate">{r.label}</span>
+                  <span className="text-[var(--text-tertiary)] font-mono ml-auto flex-shrink-0">#{r.id}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div ref={containerRef} className="w-full h-full" />
+      </div>
       {selected && (
         <InfoPanel
           item={selected.item}
