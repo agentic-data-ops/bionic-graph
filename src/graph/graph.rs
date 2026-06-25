@@ -278,7 +278,7 @@ impl Graph {
         Ok(id)
     }
 
-    /// Remove an edge by ID.
+    /// Remove an edge by ID (hard delete).
     pub fn remove_edge(&mut self, id: EdgeId) -> Result<(), GraphError> {
         let edge = self.edges.remove(&id).ok_or(GraphError::EdgeNotFound(id))?;
 
@@ -289,6 +289,21 @@ impl Graph {
             bwd.retain(|e| *e != id);
         }
 
+        Ok(())
+    }
+
+    /// Soft-delete an edge. The edge remains in the graph with `_is_deleted = true`,
+    /// and `get_edge()` will filter it out when time-travel is enabled.
+    pub fn soft_delete_edge(&mut self, id: EdgeId, record_history: bool) -> Result<(), GraphError> {
+        let edge = self.edges.get_mut(&id).ok_or(GraphError::EdgeNotFound(id))?;
+        edge.soft_delete(record_history);
+        // Remove from adjacency lists so traversal doesn't use it
+        if let Some(fwd) = self.forward.get_mut(&edge.source) {
+            fwd.retain(|e| *e != id);
+        }
+        if let Some(bwd) = self.backward.get_mut(&edge.target) {
+            bwd.retain(|e| *e != id);
+        }
         Ok(())
     }
 

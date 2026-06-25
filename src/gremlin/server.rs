@@ -555,25 +555,54 @@ async fn delete_vertex_handler(
         (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "graph not found"})))
     })?;
     let mut g = handle.graph.lock().unwrap();
-    // Remove edges connected to this vertex
+    // Priority: ?force=true query param > !g.time_travel_enabled (default)
+    let force = params.get("force").map(|v| v == "true").unwrap_or(!g.time_travel_enabled);
+    let now = crate::graph::vertex::now_micros();
+
+    // Remove edges connected to this vertex (soft delete when !force)
     let edge_ids: Vec<u64> = g.all_edges().filter(|e| e.source == id || e.target == id).map(|e| e.id).collect();
     for eid in edge_ids {
-        let _ = g.remove_edge(eid);
+        if force {
+            let _ = g.remove_edge(eid);
+        } else {
+            let _ = g.soft_delete_edge(eid, true);
+        }
         if let Ok(mut wal) = handle.redolog_wal.lock() {
-            let _ = wal.append_remove_edge(eid);
+            if force {
+                let _ = wal.append_remove_edge(eid);
+            } else {
+                // Mark edge's neuron as deleted
+                if let Ok(mut nn) = handle.neural_network.lock() {
+                    use crate::neuron::neuron::EntityType;
+                    let nid = {
+                        // Collect in a block to avoid borrow conflict with get_neuron_mut
+                        let mut result = None;
+                        for n in nn.all_neurons() {
+                            if matches!(n.entity_type, Some(EntityType::Edge(e)) if e == eid) {
+                                result = Some(n.id);
+                                break;
+                            }
+                        }
+                        result
+                    };
+                    if let Some(nid) = nid {
+                        if let Some(neuron) = nn.get_neuron_mut(nid) {
+                            neuron.mark_deleted(now);
+                            nn.mark_dirty();
+                        }
+                    }
+                }
+            }
         }
     }
     // Remove the vertex
-    // Priority: ?force=true query param > !g.time_travel_enabled (default)
-    let force = params.get("force").map(|v| v == "true").unwrap_or(!g.time_travel_enabled);
     let _ = g.remove_vertex(id, force);
     if let Ok(mut wal) = handle.redolog_wal.lock() {
         let _ = wal.append_remove_vertex(id);
     }
-    // Remove associated neuron
+    // Mark vertex's neuron as deleted
     if let Ok(mut nn) = handle.neural_network.lock() {
         use crate::neuron::neuron::EntityType;
-        let now = crate::graph::vertex::now_micros();
         let nid = nn.all_neurons().find_map(|n| {
             if matches!(n.entity_type, Some(EntityType::Vertex(v)) if v == id) {
                 Some(n.id)
@@ -887,18 +916,33 @@ async fn delete_document_handler(
                 let edge_ids: Vec<u64> = g.all_edges()
                     .filter(|e| e.source == vid || e.target == vid)
                     .map(|e| e.id).collect();
+                let edge_force = !g.time_travel_enabled;
+                let edge_now = crate::graph::vertex::now_micros();
                 for eid in &edge_ids {
-                    let _ = g.remove_edge(*eid);
+                    if edge_force {
+                        let _ = g.remove_edge(*eid);
+                    } else {
+                        let _ = g.soft_delete_edge(*eid, true);
+                    }
                     if let Ok(mut wal) = handle.redolog_wal.lock() { let _ = wal.append_remove_edge(*eid); }
-                    // Remove the edge's neuron too, otherwise search still finds stale results
+                    // Mark the edge's neuron as deleted
                     if let Ok(mut nn) = handle.neural_network.lock() {
                         use crate::neuron::neuron::EntityType;
-                        let enid = nn.all_neurons().find_map(|n| {
-                            if matches!(n.entity_type, Some(EntityType::Edge(e)) if e == *eid) { Some(n.id) } else { None }
-                        });
-                        if let Some(enid) = enid {
-                            nn.remove_neuron(enid);
-                            if let Ok(mut wal) = handle.redolog_wal.lock() { let _ = wal.append_remove_neuron(enid); }
+                        let nid = {
+                            let mut result = None;
+                            for n in nn.all_neurons() {
+                                if matches!(n.entity_type, Some(EntityType::Edge(e)) if e == *eid) {
+                                    result = Some(n.id);
+                                    break;
+                                }
+                            }
+                            result
+                        };
+                        if let Some(nid) = nid {
+                            if let Some(neuron) = nn.get_neuron_mut(nid) {
+                                neuron.mark_deleted(edge_now);
+                                nn.mark_dirty();
+                            }
                         }
                     }
                 }
