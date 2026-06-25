@@ -16,7 +16,8 @@
 - `src/storage/` — Disk-backed storage: subgraph partitioning, LRU cache, WAL (redo_log / redolog_wal / RedologWal), version log (vlog), compaction
 - `src/gremlin/` — REST API routes + Gremlin JSON pipeline step engine (15 steps)
 - `src/maas/` — MaaS (Model as a Service) OpenAI-compatible proxy: model listing + chat completions
-- `src/extract/` — Backend document extraction (legacy; extraction moved to frontend)
+- `src/extract/` — Backend document extraction
+  - `document_extractor.rs` — LLM-based entity/relation extraction with auto-split, dedup, GraphManager API
   - `task_manager.rs` — Async task lifecycle (pending → running → completed/failed), UUID-based task tracking with progress
 - `src/config/` — Settings struct (serde) + loader with env override
 - `src/persistence/` — graph_store/neuron_store serialization + auto-save thread
@@ -34,6 +35,7 @@
 - **frontend dev**: `npm --prefix src/ui run dev` (standalone Vite, proxies API to port 8080)
 - **frontend build**: `npm --prefix src/ui run build`
 - **frontend test**: `npm --prefix src/ui run test`
+- **frontend e2e**: `node src/ui/test/e2e/<name>.mjs` (Playwright, starts Vite dev server first)
 
 ## Frontend Architecture
 
@@ -67,7 +69,7 @@ App.jsx
 - Documents → Backend `data/documents/YYMMDD/<id>.md` + `index.json`
 - Graph data → Backend `data/graphs/<name>/` (graph.bin + neural.bin + redolog.wal)
 
-## Gremlin Steps (15 total)
+## Gremlin Steps (16 total)
 | Step | Description |
 |------|-------------|
 | `search` | Neural index search — returns vertices from matched/activated neurons. Supports `mode: "greedy"` (match ANY keyword) or `"exact"` (match ALL keywords). Default greedy. Capped at 100 results. |
@@ -79,6 +81,7 @@ App.jsx
 | `repeat` | Loop sub-steps N times |
 | `timeTravel` | Point-in-time query |
 | `compact` | Archive old history to vlog |
+| `expand` | Expand vertex: returns neighbor vertices + connected edges in one step |
 
 ## REST API Endpoints
 | Method | Path | Description |
@@ -90,7 +93,8 @@ App.jsx
 | POST | `/vertices`, `/edges` | Add vertex/edge (auto-creates neurons) |
 | PUT | `/vertices/:id` | Update vertex name/keywords/labels/properties |
 | PUT | `/edges/:id` | Update edge label/properties |
-| DELETE | `/vertices/:id` | Delete vertex + connected edges |
+| DELETE | `/vertices/:id` | Delete vertex + connected edges (supports `?force=true`) |
+| DELETE | `/edges/:id` | Delete edge (supports `?force=true`) |
 | POST | `/neurons`, `/neurons/:id/link`, `/neurons/:id/synapse` | Neural network management |
 | POST | `/extract` | Submit async extraction (legacy, backend-side) |
 | GET | `/extract/task/:task_id` | Poll extraction task |
@@ -144,6 +148,15 @@ App.jsx
 - **Search mode default is `semantic`** — persisted to localStorage. Semantic mode forces greedy for API call.
 - **Time travel datetime picker** — checkbox + `<input type="datetime-local">` for snapshot point.
 
+- **`Graph` auto-manages neurons** — `graph_manager.add_vertex_to_graph()` / `add_edge_to_graph()` atomically create graph entity + neuron + WAL. All callers (HTTP handlers + extraction) must use these methods, not direct graph+neural manipulation.
+- **Soft-delete marks neurons** — `neuron.mark_deleted(now)` instead of `nn.remove_neuron(nid)`. Idempotent. Vertex/edge `soft_delete()` methods also idempotent.
+- **Time-aware search via `search_at`** — `nn.search(query, search_at)`. When set, deleted neurons with `_deleted_at > search_at` participate; otherwise filtered. Gremlin pipeline auto-injects timestamp from `timeTravel` step.
+- **`expand` Gremlin step** — returns neighbor vertices + connected edges in one query. Used by frontend double-click expansion. Not a standard Gremlin step.
+- **Search step no longer emits empty VertexResult** — uses `filter_map` to skip vertices where `get_vertex` returns `None`, preventing soft-deleted vertices from appearing as name="" entries.
+- **`DELETE /edges/{id}`** — standalone edge deletion with `?force=true` support. Soft-deletes edge + marks neuron.
+- **Document extraction auto-splits** — by chapter headings when content exceeds LLM context window. Entities deduped by name (merge keywords, merge property keys). Uses `GraphManager` API.
+- **Default graph `graph0`** — time-travel enabled by default. Cannot be deleted. Old name `"default"` is deprecated.
+
 ## Implemented Plans
 - `2024-06-23-search-mode-theme-doc-fields.md` — Search modes (greedy/exact), CSS theme system, `document` built-in field, Vis-network light/dark options, Playwright e2e test, Playwright install
 - `007-settings-neural-config-search-ui.md` — NeuralConfig → activate/search/learn groups, configurable search scores + fuzzy matching, /settings/neural API, settings "搜索" tab, message action icons, chat UX fixes
@@ -154,3 +167,4 @@ App.jsx
 - `005-ui-rewrite-knowledgebase-visnetwork.md` — Frontend rewrite + knowledge base + vis-network migration
 - `2024-06-23-vertex-redolog-overhaul.md` — Vertex built-in name/keywords, RedologWal atomic WAL, directory restructure, graceful shutdown, frontend improvements
 - `009-maas-proxy-neural-fix-frontend-polish.md` — MaaS OpenAI proxy, `with_keywords()` CJK fix, edge neuron cleanup on doc delete, semantic search prompt optimization, Light mode UI polish
+- `010-session-comprehensive-refactor.md` — Soft-delete with time-travel, unified vertex/edge+neuron creation, extraction pipeline refactoring (split+dedup+GraphManager API), frontend graph viewer features (search, add V/E, edge edit/delete, expand step), default graph renamed to graph0

@@ -42,7 +42,7 @@ Bionic-Graph is a **low-cost AI memory system** that combines a knowledge graph 
 | **Frontend** | `src/ui/` | React 19 + Vite 8 + Tailwind CSS 4. Chat interface, knowledge base management, graph visualization via vis-network (Canvas 2D, no WebGL). All LLM calls (chat, semantic search, document extraction) are frontend-side. |
 | **Graph** | `src/graph/` | Directed property graph with dual adjacency lists. MVCC versioning (`_version`, `_updated_at`, `_is_deleted`, `_history`). Soft-delete. Time-travel `at_time()`. Optional time-travel per graph. |
 | **Neural Index** | `src/neuron/` | Spreading activation network — each neuron represents a concept or graph entity (`EntityType::Vertex`/`Edge`), fires when activation exceeds a threshold, spreads via synapses. Hebbian learning. Auto-synapse on edge creation. |
-| **Gremlin API** | `src/gremlin/` | JSON pipeline over HTTP. 15 steps: V, E, has, hasNot, hasKey, hasValue, hasLabel, hasText, out(depth), in, both, outE, inE, bothE, values, limit, count, dedup, repeat, timeTravel, compact, search. |
+| **Gremlin API** | `src/gremlin/` | JSON pipeline over HTTP. 16 steps: V, E, has, hasNot, hasKey, hasValue, hasLabel, hasText, out(depth), in, both, outE, inE, bothE, values, limit, count, dedup, repeat, timeTravel, compact, search, expand. |
 | **Storage** | `src/storage/` | Subgraph partitioning + LRU cache. WAL (CRC32, checkpoint, crash recovery). Version log (.vlog) with sparse index for archived history. Compaction orchestrator. |
 | **Documents** | `src/documents.rs` | Markdown file management with JSON index. CRUD via REST API. |
 | **Extraction** | `src/extract/` | Async extraction pipeline: Markdown → LLM → entities/relations. Frontend calls `POST /documents/:id/extract` (backend) or LLM directly. |
@@ -199,7 +199,8 @@ curl localhost:8080/documents/{id}/content
 | `GET` | `/extract/task/:task_id` | Poll extraction task progress |
 | `PUT` | `/vertices/:id` | Update vertex name/keywords/document/labels/properties |
 | `PUT` | `/edges/:id` | Update edge label/properties |
-| `DELETE` | `/vertices/:id` | Delete vertex + connected edges |
+| `DELETE` | `/vertices/:id` | Delete vertex + connected edges (supports `?force=true`) |
+| `DELETE` | `/edges/:id` | Delete edge (supports `?force=true`) |
 | `POST` | `/reindex` | Re-index edges into neural network |
 | `POST` | `/compact` | History compaction |
 | `GET/PUT` | `/settings` | LLM providers config |
@@ -233,6 +234,7 @@ curl localhost:8080/documents/{id}/content
 | `repeat` | `times, steps[]` | Repeat sub-pipeline N times |
 | `timeTravel` | `at` (int μs or ISO 8601) | Set query time point |
 | `compact` | `before` (int μs or ISO 8601) | Archive old history to vlog |
+| `expand` | `depth, label` | Expand vertex: returns neighbor vertices + connected edges |
 
 ---
 

@@ -19,6 +19,140 @@ const LIGHT_OPTS = {
   interaction: { hover: true, tooltipDelay: 200, zoomView: true, dragView: true },
   layout: { randomSeed: 42 },
 };
+/** Searchable vertex selector — filters visible vertices by name. */
+function VertexSearchSelect({ graph, value, onChange, placeholder, disabled, nodesRef }) {
+  const { t } = useTranslation();
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+  const inputRef = useRef(null);
+
+  /** All vertices from the vis-network DataSet (what's visible on canvas). */
+  const allNodes = useMemo(() => {
+    if (!nodesRef?.current) return [];
+    return nodesRef.current.get().map((n) => ({
+      id: n.id,
+      name: n.label || `#${n.id}`,
+      labels: n._original?.labels || [],
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodesRef?.current?.length]);
+
+  /** Filtered results — client-side substring match on name. */
+  const filtered = useMemo(() => {
+    if (!query.trim()) return allNodes;
+    const q = query.toLowerCase();
+    return allNodes.filter((v) => {
+      const label = v.name.toLowerCase();
+      return label.includes(q) || String(v.id).includes(q);
+    });
+  }, [query, allNodes]);
+
+  /** Currently selected vertex display info. */
+  const selectedVertex = useMemo(() => {
+    if (!value) return null;
+    if (nodesRef?.current) {
+      const n = nodesRef.current.get(value);
+      if (n) return { id: n.id, label: n.label, _original: n._original };
+    }
+    return null;
+  }, [value]);
+
+  const handleInput = useCallback((e) => {
+    setQuery(e.target.value);
+    setOpen(true);
+  }, []);
+
+  const select = useCallback((vertex) => {
+    onChange(vertex.id);
+    setQuery('');
+    setOpen(false);
+    inputRef.current?.blur();
+  }, [onChange]);
+
+  const clear = useCallback(() => {
+    onChange('');
+    setQuery('');
+    setOpen(false);
+  }, [onChange]);
+
+  const onFocus = useCallback(() => {
+    setOpen(true);
+  }, []);
+
+  const onBlur = useCallback(() => {
+    setTimeout(() => setOpen(false), 200);
+  }, []);
+
+  /** Render a vertex item in the dropdown list. */
+  const renderVertexItem = (v) => (
+    <button
+      key={v.id}
+      className="w-full px-3 py-2 text-left text-xs text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors border-b border-[var(--border)] last:border-0"
+      onMouseDown={(e) => { e.preventDefault(); select(v); }}
+    >
+      <span className="font-medium">{v.name || `#${v.id}`}</span>
+      {v.name && <span className="text-[var(--text-muted)] ml-2">#{v.id}</span>}
+      {v.labels?.length > 0 && (
+        <div className="flex flex-wrap gap-1 mt-0.5">
+          {v.labels.slice(0, 3).map((l, i) => (
+            <span key={i} className="px-1.5 py-0.5 rounded bg-[var(--accent)]/10 text-[var(--accent)] text-[10px]">{l}</span>
+          ))}
+          {v.labels.length > 3 && <span className="text-[10px] text-[var(--text-muted)]">+{v.labels.length - 3}</span>}
+        </div>
+      )}
+    </button>
+  );
+
+  return (
+    <div className="relative">
+      {selectedVertex ? (
+        <div className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[var(--accent)]/15 border border-[var(--accent)]/30">
+          <svg className="w-3 h-3 flex-shrink-0 text-[var(--accent)]" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
+          </svg>
+          <span className="flex-1 text-xs text-[var(--accent)] font-medium truncate">
+            {selectedVertex.label || `#${selectedVertex.id}`}
+          </span>
+          <button
+            className="flex-shrink-0 w-4 h-4 rounded-full bg-[var(--bg-hover)] hover:bg-[var(--danger)] flex items-center justify-center text-[9px] text-[var(--text-tertiary)] hover:text-white transition-all"
+            onClick={clear}
+            title="Clear"
+          >✕</button>
+        </div>
+      ) : (
+        <>
+          <div className="relative">
+            <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-[var(--text-tertiary)] pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            <input
+              ref={inputRef}
+              className="w-full pl-7 pr-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+              placeholder={placeholder || 'Search or select vertex…'}
+              value={query}
+              onChange={handleInput}
+              onFocus={onFocus}
+              onBlur={onBlur}
+              disabled={disabled}
+            />
+          </div>
+          {open && (
+            <div className="absolute z-[300] w-full mt-1 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border)] shadow-xl max-h-48 overflow-y-auto">
+              {filtered.length === 0 ? (
+                <div className="px-3 py-2 text-xs text-[var(--text-tertiary)] text-center">
+                  {query.trim() ? 'No matching vertices' : 'No visible vertices'}
+                </div>
+              ) : (
+                filtered.map(renderVertexItem)
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 /** Document detail dialog — shows name, tags, and markdown content. */
 function DocViewer({ docId, onClose }) {
   const { t } = useTranslation();
@@ -401,18 +535,18 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
   const dataRef = useRef(data);
 
   const searchFiltered = useMemo(() => {
-    if (!searchQuery || !nodesRef.current) return [];
+    if (!nodesRef.current) return [];
     const q = searchQuery.toLowerCase();
-    const results = [];
+    let results = [];
     for (const n of nodesRef.current.get()) {
-      if (n.label && n.label.toLowerCase().includes(q)) {
+      if (!q || (n.label && n.label.toLowerCase().includes(q))) {
         results.push({ type: 'vertex', id: n.id, label: n.label });
       }
     }
     if (edgesRef.current) {
       const ns = nodesRef.current;
       for (const e of edgesRef.current.get()) {
-        if (e.label && e.label.toLowerCase().includes(q)) {
+        if (!q || (e.label && e.label.toLowerCase().includes(q))) {
           const fromLabel = ns.get(e.from)?.label || `#${e.from}`;
           const toLabel = ns.get(e.to)?.label || `#${e.to}`;
           results.push({ type: 'edge', id: e.id, label: `[edge] ${e.label}`, fromLabel, toLabel });
@@ -630,15 +764,20 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
         {/* Toolbar: search + add buttons */}
         <div className="absolute top-3 left-3 z-10 flex items-start gap-2">
           <div className="w-48">
-            <input
-              className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-secondary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] placeholder-[var(--text-tertiary)] shadow-lg"
-              placeholder="Search graph..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              onFocus={() => setSearchFocused(true)}
-              onBlur={() => setTimeout(() => setSearchFocused(false), 200)}
-            />
-            {searchQuery && searchFocused && searchFiltered.length > 0 && (
+            <div className="relative">
+              <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-[var(--text-tertiary)] pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+              <input
+                className="w-full pl-7 pr-3 py-1.5 rounded-lg bg-[var(--bg-secondary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] placeholder-[var(--text-tertiary)] shadow-lg"
+                placeholder="Search graph..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onFocus={() => setSearchFocused(true)}
+                onBlur={() => setTimeout(() => setSearchFocused(false), 200)}
+              />
+            </div>
+            {searchFocused && searchFiltered.length > 0 && (
               <div className="absolute top-full left-0 right-0 mt-1 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-2xl max-h-60 overflow-y-auto z-20">
                 {searchFiltered.map((r) => (
                   <button
@@ -738,23 +877,23 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
                   placeholder="Edge Label" value={newEdgeLabel} onChange={(e) => setNewEdgeLabel(e.target.value)} />
                 <div>
                   <div className="text-[10px] text-[var(--text-tertiary)] mb-1 font-medium">Source vertex</div>
-                  <select className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] cursor-pointer"
-                    value={newEdgeSource} onChange={(e) => setNewEdgeSource(e.target.value)}>
-                    <option value="">-- Select --</option>
-                    {nodesRef.current?.get().map((n) => (
-                      <option key={n.id} value={n.id}>{n.label || `#${n.id}`}</option>
-                    ))}
-                  </select>
+                  <VertexSearchSelect
+                    graph={graph}
+                    value={newEdgeSource}
+                    onChange={setNewEdgeSource}
+                    placeholder="Search source vertex…"
+                    nodesRef={nodesRef}
+                  />
                 </div>
                 <div>
                   <div className="text-[10px] text-[var(--text-tertiary)] mb-1 font-medium">Target vertex</div>
-                  <select className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] cursor-pointer"
-                    value={newEdgeTarget} onChange={(e) => setNewEdgeTarget(e.target.value)}>
-                    <option value="">-- Select --</option>
-                    {nodesRef.current?.get().map((n) => (
-                      <option key={n.id} value={n.id}>{n.label || `#${n.id}`}</option>
-                    ))}
-                  </select>
+                  <VertexSearchSelect
+                    graph={graph}
+                    value={newEdgeTarget}
+                    onChange={setNewEdgeTarget}
+                    placeholder="Search target vertex…"
+                    nodesRef={nodesRef}
+                  />
                 </div>
                 {/* Properties */}
                 <div>
