@@ -178,14 +178,18 @@ pub fn execute_query_with_llm(
             TraversalStep::E { ids } => {
                 let g = graph.lock().unwrap();
                 let results: Vec<TraversalResult> = if ids.is_empty() {
+                    // All edges — filter out soft-deleted
                     g.all_edges()
+                        .filter_map(|e| g.get_edge(e.id))
                         .map(|e| edge_to_result(e))
                         .collect()
                 } else {
-                    let id_set: HashSet<_> = ids.iter().copied().collect();
-                    g.all_edges()
-                        .filter(|e| id_set.contains(&e.id))
-                        .map(|e| edge_to_result(e))
+                    // Specific IDs — include deleted so timeTravel can reconstruct history
+                    ids.iter()
+                        .filter_map(|&id| {
+                            let e = g.get_edge_including_deleted(id)?;
+                            Some(edge_to_result(e))
+                        })
                         .collect()
                 };
                 Ok(results)

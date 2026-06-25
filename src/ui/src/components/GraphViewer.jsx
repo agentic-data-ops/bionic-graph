@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, forwardRef, useImperativeHandle, useCallba
 import { useTranslation } from 'react-i18next';
 import { Network } from 'vis-network';
 import { DataSet } from 'vis-data';
-import { traverse, updateVertexProperties, updateEdgeProperties, deleteVertex, getDocument, getDocumentContent } from '../api';
+import { traverse, updateVertexProperties, updateEdgeProperties, deleteVertex, deleteEdge, getDocument, getDocumentContent } from '../api';
 
 
 const DARK_OPTS = {
@@ -151,18 +151,26 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument, o
           <span className="text-[var(--text-muted)] font-mono ml-2 normal-case">#{item.id}</span>
         </span>
         <div className="flex items-center gap-1">
-          {!editing && type === 'vertex' && (
+          {!editing && (
             <>
               <button className="w-5 h-5 rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] text-[11px]" onClick={startEdit} title={t('graph.modify')}>
                 <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                 </svg>
               </button>
-              <button className="w-5 h-5 rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--danger)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)]" onClick={() => onDelete?.(item.id, item.name || item.id)} title={t('graph.delete')}>
-                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                </svg>
-              </button>
+              {type === 'vertex' ? (
+                <button className="w-5 h-5 rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--danger)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)]" onClick={() => onDelete?.(item.id, item.name || item.id)} title={t('graph.delete')}>
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                </button>
+              ) : (
+                <button className="w-5 h-5 rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--danger)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)]" onClick={() => setConfirmDeleteEdge({ eid: item.id, label: item.label || item.id })} title={t('graph.delete')}>
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                </button>
+              )}
             </>
           )}
           <button className="w-5 h-5 rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)]" onClick={onClose}>
@@ -373,6 +381,7 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
   const [selected, setSelected] = useState(null);
   const [showDoc, setShowDoc] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null); // { vid, name }
+  const [confirmDeleteEdge, setConfirmDeleteEdge] = useState(null); // { eid, label }
   const dataRef = useRef(data);
 
   const selectVertex = useCallback((vid) => {
@@ -516,6 +525,24 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
     setConfirmDelete(null);
   }, [confirmDelete, graph]);
 
+  const handleConfirmDeleteEdge = useCallback(async (force) => {
+    if (!confirmDeleteEdge) return;
+    const { eid } = confirmDeleteEdge;
+    try {
+      await deleteEdge(eid, graph, force);
+    } catch (e) {
+      console.error('Delete edge failed:', e);
+      setConfirmDeleteEdge(null);
+      return;
+    }
+    const es = edgesRef.current;
+    if (es) {
+      es.remove(eid);
+    }
+    setSelected(null);
+    setConfirmDeleteEdge(null);
+  }, [confirmDeleteEdge, graph]);
+
   if (!data?.data?.length) {
     return <div className="flex items-center justify-center text-[var(--text-tertiary)] text-sm min-h-[200px]">No graph data</div>;
   }
@@ -538,6 +565,18 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
       )}
       {showDoc && <DocViewer docId={showDoc} onClose={() => setShowDoc(null)} />}
 
+      {/* Edge delete confirmation modal */}
+      {confirmDeleteEdge && (
+        <DeleteConfirmModal
+          vid={confirmDeleteEdge.eid}
+          name={confirmDeleteEdge.label}
+          timeTravelEnabled={timeTravelEnabled}
+          onConfirm={(force) => handleConfirmDeleteEdge(force)}
+          onCancel={() => setConfirmDeleteEdge(null)}
+          isEdge={true}
+        />
+      )}
+
       {/* Delete confirmation modal */}
       {confirmDelete && (
         <DeleteConfirmModal
@@ -553,7 +592,7 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
 });
 
 /** Delete confirmation dialog with optional hard-delete checkbox. */
-function DeleteConfirmModal({ vid, name, timeTravelEnabled, onConfirm, onCancel }) {
+function DeleteConfirmModal({ vid, name, timeTravelEnabled, onConfirm, onCancel, isEdge }) {
   const { t } = useTranslation();
   const [hardDelete, setHardDelete] = useState(false);
 
@@ -564,10 +603,12 @@ function DeleteConfirmModal({ vid, name, timeTravelEnabled, onConfirm, onCancel 
         onClick={(e) => e.stopPropagation()}
       >
         <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3 tracking-tight">
-          {t('graph.deleteVertex')}
+          {isEdge ? t('graph.deleteEdge') || 'Delete Edge' : t('graph.deleteVertex')}
         </h3>
         <p className="text-xs text-[var(--text-secondary)] leading-relaxed mb-4">
-          {t('graph.confirmDelete', { id: vid, name: name || vid })}
+          {isEdge
+            ? `Delete edge #${vid} (${name || ''})?`
+            : t('graph.confirmDelete', { id: vid, name: name || vid })}
         </p>
 
         {timeTravelEnabled && (

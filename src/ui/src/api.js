@@ -392,3 +392,12 @@ export async function deleteVertex(id, graph = 'default', force) {
     headers: { 'X-Graph-Name': graph },
   });
 }
+
+export async function deleteEdge(id, graph = 'default', force) {
+  let url = `/edges/${id}`;
+  if (force) url += '?force=true';
+  return api(url, {
+    method: 'DELETE',
+    headers: { 'X-Graph-Name': graph },
+  });
+}

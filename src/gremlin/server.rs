@@ -138,6 +138,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/vertices/:id", delete(delete_vertex_handler))
         .route("/vertices/:id", put(update_vertex_handler))
         .route("/edges/:id", put(update_edge_handler))
+        .route("/edges/:id", delete(delete_edge_handler))
 
         // MaaS — OpenAI-compatible proxy
         .route("/maas/openai/v1/models", get(crate::maas::openai::list_models_handler))
@@ -1277,6 +1278,57 @@ async fn reindex_handler(
         "graph": graph_name,
         "new_edge_neurons": count,
     })))
+}
+
+/// DELETE /edges/{id} — Delete an edge.
+/// Supports optional `?force=true` query param.
+async fn delete_edge_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<u64>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let graph_name = resolve_graph_name(&headers);
+    let mut gm = state.graph_manager.lock().unwrap();
+    let handle = gm.get_mut(&graph_name).ok_or_else(|| {
+        (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "graph not found"})))
+    })?;
+    let mut g = handle.graph.lock().unwrap();
+    let force = params.get("force").map(|v| v == "true").unwrap_or(!g.time_travel_enabled);
+    let now = crate::graph::vertex::now_micros();
+
+    if force {
+        let _ = g.remove_edge(id);
+    } else {
+        let _ = g.soft_delete_edge(id, true);
+    }
+    drop(g);
+
+    if let Ok(mut wal) = handle.redolog_wal.lock() {
+        let _ = wal.append_remove_edge(id);
+    }
+    // Mark edge's neuron as deleted
+    if let Ok(mut nn) = handle.neural_network.lock() {
+        use crate::neuron::neuron::EntityType;
+        let nid = {
+            let mut result = None;
+            for n in nn.all_neurons() {
+                if matches!(n.entity_type, Some(EntityType::Edge(e)) if e == id) {
+                    result = Some(n.id);
+                    break;
+                }
+            }
+            result
+        };
+        if let Some(nid) = nid {
+            if let Some(neuron) = nn.get_neuron_mut(nid) {
+                neuron.mark_deleted(now);
+                nn.mark_dirty();
+            }
+        }
+    }
+
+    Ok(Json(serde_json::json!({"success": true, "deleted": id})))
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────
