@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::config::settings::NeuralConfig;
 use crate::graph::Graph;
-use crate::neuron::{ActivationConfig, LearningConfig, NeuralNetwork, Neuron};
+use crate::neuron::{ActivationConfig, LearningConfig, NeuralNetwork};
 use crate::persistence::{self, AutoSaveConfig};
 use crate::storage::RedologWal;
 

@@ -271,8 +271,10 @@ Return ONLY a comma-separated list of 1-based array indices of the selected item
             {theme === 'dark' ? '☀️' : '🌙'}
           </button>
           <div className="relative">
-            <button className="px-2 py-1 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] text-xs font-medium transition-all" onClick={() => setLangOpen(!langOpen)}>
-              LANG
+            <button className="w-7 h-7 rounded-lg bg-[var(--bg-tertiary)] flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-all" onClick={() => setLangOpen(!langOpen)} title="Language">
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 2a10 10 0 110 20 10 10 0 010-20zM2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z" />
+              </svg>
             </button>
             {langOpen && (
               <>

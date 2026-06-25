@@ -282,7 +282,7 @@ pub async fn extract_document_full(
     config: &ExtractionConfig,
     content: &str,
     doc_title: &str,
-    doc_id: &str,
+    _doc_id: &str,
     graph_manager: &Arc<Mutex<GraphManager>>,
     graph_name: &str,
     on_step: StepCallback,
@@ -294,7 +294,6 @@ pub async fn extract_document_full(
     ).await?;
 
     let total_entities = entities.len();
-    let total_relations = relations.len();
 
     if entities.is_empty() && relations.is_empty() {
         return Ok(ExtractionResult {

@@ -22,21 +22,21 @@
 }
 
 .light {
-  --bg-primary: #f5f5f7;
+  --bg-primary: #f7f2ec;
   --bg-secondary: #ffffff;
-  --bg-tertiary: #e8e8ed;
-  --bg-hover: #d1d1d6;
-  --text-primary: #1d1d1f;
-  --text-secondary: #6e6e73;
-  --text-tertiary: #86868b;
-  --text-muted: #aeaeb2;
-  --border: #d2d2d7;
-  --accent: #0a84ff;
-  --danger: #ff3b30;
-  --success: #34c759;
-  --danger-bg: rgba(255, 59, 48, 0.12);
-  --accent-bg: rgba(10, 132, 255, 0.12);
-  --success-bg: rgba(52, 199, 89, 0.12);
+  --bg-tertiary: #ede6df;
+  --bg-hover: #e0d8cf;
+  --text-primary: #2c221a;
+  --text-secondary: #6b5f53;
+  --text-tertiary: #94887d;
+  --text-muted: #b8ada3;
+  --border: #ded5cb;
+  --accent: #7ac4e0;
+  --danger: #ff8a7a;
+  --success: #7bcf8c;
+  --danger-bg: rgba(255, 138, 122, 0.12);
+  --accent-bg: rgba(122, 196, 224, 0.15);
+  --success-bg: rgba(123, 207, 140, 0.12);
   --scrollbar-thumb: rgba(0, 0, 0, 0.12);
   --scrollbar-thumb-hover: rgba(0, 0, 0, 0.20);
 }
