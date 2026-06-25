@@ -365,7 +365,7 @@ function buildFromData(dataItems) {
   return { nodes, edges };
 }
 
-const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabled }, ref) => {
+const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabled, timeTravelAt }, ref) => {
   const containerRef = useRef(null);
   const netRef = useRef(null);
   const nodesRef = useRef(null);
@@ -477,7 +477,7 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
       if (!evt.nodes.length) return;
       const vid = evt.nodes[0];
       try {
-        const res = await traverse(vid, null, graph);
+        const res = await traverse(vid, null, graph, timeTravelAt);
         if (!res?.data) return;
         for (const item of res.data) {
           if (item.type === 'vertex' && !nodes.get(item.id)) {

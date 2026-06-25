@@ -87,8 +87,9 @@ export default function ChatArea({
               { icon: '🔍', name: 'Searching knowledge graph', status: 'running', llmOutput: '' },
             ];
 
+        const ttMicros = timeTravel && timeTravelPoint ? localDatetimeToUTC(timeTravelPoint) : null;
         const progressMsgId = uid();
-        const progressMsg = { id: progressMsgId, type: 'search_progress', title: text, steps, timeTravelEnabled: timeTravelGraphs[defaultGraph] || false };
+        const progressMsg = { id: progressMsgId, type: 'search_progress', title: text, steps, timeTravelEnabled: timeTravelGraphs[defaultGraph] || false, timeTravelAt: ttMicros };
         setSearchStream(progressMsg); // only in stream, not saved to conversation
         setIsGenerating(true);
 
@@ -132,7 +133,6 @@ export default function ChatArea({
           // Step 2 (or only step for keyword): Search graph
           // When semantic mode, always use greedy for the API call
           const effectiveKwMode = isSemantic ? 'greedy' : kwSearchMode;
-          const ttMicros = timeTravel && timeTravelPoint ? localDatetimeToUTC(timeTravelPoint) : null;
           const gremlinSteps = [{ step: 'search', keywords: keywordsArr, mode: effectiveKwMode, at: ttMicros }];
           if (ttMicros) {
             gremlinSteps.push({ step: 'timeTravel', at: ttMicros });
@@ -145,7 +145,7 @@ export default function ChatArea({
             requestAnimationFrame(() => chatInputRef.current?.focus());
             abortRef.current = null;
             setIsGenerating(false);
-            onUpdateConv({ ...conv, messages: [...updatedMsgs, { ...progressMsg, steps: doneSteps, graphData: res, graphName: defaultGraph, timeTravelEnabled: timeTravelGraphs[defaultGraph] || false }] });
+            onUpdateConv({ ...conv, messages: [...updatedMsgs, { ...progressMsg, steps: doneSteps, graphData: res, graphName: defaultGraph, timeTravelEnabled: timeTravelGraphs[defaultGraph] || false, timeTravelAt: ttMicros }] });
             return;
           }
 
@@ -201,7 +201,7 @@ Return ONLY a comma-separated list of 1-based array indices of the selected item
 
           setSearchStream(null);
           const finalSteps = [step1done, step2done, { icon: '✅', name: 'Filtering completed', status: 'done', llmOutput: filterBuf }];
-          onUpdateConv({ ...conv, messages: [...updatedMsgs, { ...progressMsg, steps: finalSteps, graphData: filteredData, graphName: defaultGraph, timeTravelEnabled: timeTravelGraphs[defaultGraph] || false }] });
+          onUpdateConv({ ...conv, messages: [...updatedMsgs, { ...progressMsg, steps: finalSteps, graphData: filteredData, graphName: defaultGraph, timeTravelEnabled: timeTravelGraphs[defaultGraph] || false, timeTravelAt: ttMicros }] });
           requestAnimationFrame(() => chatInputRef.current?.focus());
         } catch (e) {
           const failedSteps = (steps || []).map((s) => ({ ...s, status: 'failed' }));

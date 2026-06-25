@@ -86,16 +86,19 @@ export async function listExtractTasks() {
   return res.json();
 }
 
-export async function traverse(vid, label = null, graph = 'default') {
+export async function traverse(vid, label = null, graph = 'default', at) {
   const edgeFilter = label ? { label } : {};
+  const timeTravelStep = at ? { step: 'timeTravel', at } : null;
   // Fetch both neighboring vertices AND edges in a single merged response
   const [vertRes, edgeRes] = await Promise.all([
     gremlin([
       { step: 'V', ids: [vid] },
+      ...(timeTravelStep ? [timeTravelStep] : []),
       { step: 'both', depth: 1, ...edgeFilter },
     ], graph),
     gremlin([
       { step: 'V', ids: [vid] },
+      ...(timeTravelStep ? [timeTravelStep] : []),
       { step: 'bothE', ...edgeFilter },
     ], graph),
   ]);
