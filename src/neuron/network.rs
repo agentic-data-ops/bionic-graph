@@ -257,7 +257,7 @@ impl NeuralNetwork {
 
     /// Run a single tick and return results.
     pub fn tick(&mut self) -> TickResult {
-        let result = activation::tick(&mut self.neurons, &self.synapses);
+        let result = activation::tick(&mut self.neurons, &self.synapses, None);
         self.total_ticks += 1;
         self.dirty = true;
         result

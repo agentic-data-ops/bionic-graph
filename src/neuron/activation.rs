@@ -71,6 +71,7 @@ impl Default for ActivationConfig {
 pub fn tick(
     neurons: &mut HashMap<NeuronId, Neuron>,
     synapses: &HashMap<NeuronId, Vec<Synapse>>,
+    search_at: Option<i64>,
 ) -> TickResult {
     // Phase 1: collect all neurons that fired on the previous tick
     // (they have activation >= threshold and haven't yet spread this tick)
@@ -88,6 +89,7 @@ pub fn tick(
     let mut total_activation = 0.0;
 
     for neuron in neurons.values_mut() {
+        if neuron.is_deleted_at(search_at) { continue; }
         let did_fire = neuron.tick();
         if did_fire {
             fired.push(neuron.id);
@@ -107,6 +109,7 @@ pub fn tick(
                 }
                 let post_activation = synapse.strength; // Pass fraction = strength
                 if let Some(post_neuron) = neurons.get_mut(&synapse.post_neuron_id) {
+                    if post_neuron.is_deleted_at(search_at) { continue; }
                     if !post_neuron.is_refractory() {
                         post_neuron.receive_activation(post_activation);
                     }
@@ -164,7 +167,7 @@ pub fn search(
     // Step 2: Run tick cycles
     let mut ticks_run = 0;
     for _ in 0..config.max_ticks {
-        let result = tick(neurons, synapses);
+        let result = tick(neurons, synapses, search_at);
         ticks_run += 1;
         if config.auto_stabilize && !result.has_activity {
             break;
