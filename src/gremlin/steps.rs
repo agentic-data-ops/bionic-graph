@@ -76,7 +76,14 @@ pub fn execute_query_with_llm(
                     .into_iter()
                     .take(100)
                     .map(|(vid, _score)| {
-                        if let Some(vertex) = g.get_vertex(vid) {
+                        // When search_at is set (time-travel), include deleted entities;
+                        // the neuron filtering already determined they should appear.
+                        let vertex = if search_at.is_some() {
+                            g.get_vertex_including_deleted(vid)
+                        } else {
+                            g.get_vertex(vid)
+                        };
+                        if let Some(vertex) = vertex {
                             let props: std::collections::HashMap<String, Value> = vertex
                                 .properties
                                 .iter()
@@ -107,7 +114,12 @@ pub fn execute_query_with_llm(
 
                 // Add edge results from search
                 for (eid, _score) in ranked_edges {
-                    if let Some(e) = g.get_edge(eid) {
+                    let edge = if search_at.is_some() {
+                        g.get_edge_including_deleted(eid)
+                    } else {
+                        g.get_edge(eid)
+                    };
+                    if let Some(e) = edge {
                         let eprops: std::collections::HashMap<String, Value> = e
                             .properties
                             .iter()
