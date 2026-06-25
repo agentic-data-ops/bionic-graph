@@ -55,6 +55,8 @@
   "graph.delete": "Delete",
   "graph.addProperty": "Add Property",
   "graph.confirmDelete": "Delete vertex #{{id}} ({{name}}) and all connected edges?",
+  "graph.deleteVertex": "Delete Vertex",
+  "graph.hardDelete": "Hard delete (cannot be recovered by time travel)",
   "graph.noData": "No data. Enter a search to begin.",
   "graph.loading": "Loading...",
   "chat.newChat": "New Chat",

@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import Sidebar from './components/Sidebar';
 import ChatArea from './components/ChatArea';
 import SettingsDialog from './components/SettingsDialog';
+import GraphManagerDialog from './components/GraphManagerDialog';
 import KnowledgeBase from './components/KnowledgeBase';
 import { listGraphs, fetchSettings, updateSettings } from './api';
 
@@ -95,6 +96,7 @@ export default function App() {
 
   // ── UI state ──
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [graphManagerOpen, setGraphManagerOpen] = useState(false);
   const [knowledgeBaseOpen, setKnowledgeBaseOpen] = useState(false);
   const [kbInitialContent, setKbInitialContent] = useState('');
   const [kbInitialGraph, setKbInitialGraph] = useState('');
@@ -287,6 +289,7 @@ export default function App() {
         onSwitchConv={handleSwitchConv}
         onDeleteConv={handleDeleteConv}
         onOpenSettings={() => setSettingsOpen(true)}
+        onOpenGraphManager={() => setGraphManagerOpen(true)}
         onOpenKnowledgeBase={() => setKnowledgeBaseOpen(true)}
       />
 
@@ -335,16 +338,22 @@ export default function App() {
         initialGraph={kbInitialGraph}
       />
 
+      {/* Graph Manager dialog */}
+      <GraphManagerDialog
+        open={graphManagerOpen}
+        onClose={() => setGraphManagerOpen(false)}
+        graphName={settings.defaultGraph}
+        onGraphNameChange={(g) => handleUpdateSettings({ defaultGraph: g })}
+        graphs={graphs}
+        onGraphsChange={setGraphs}
+      />
+
       {/* Settings dialog */}
       <SettingsDialog
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         providers={settings.providers}
         onUpdateProviders={handleUpdateProviders}
-        graphName={settings.defaultGraph}
-        onGraphNameChange={(g) => handleUpdateSettings({ defaultGraph: g })}
-        graphs={graphs}
-        onGraphsChange={setGraphs}
         activeProvider={settings.activeProvider}
         onProviderChange={(name) => handleUpdateSettings({ activeProvider: name })}
         theme={theme}

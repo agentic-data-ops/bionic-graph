@@ -541,10 +541,12 @@ async fn compact_handler(
 // ─── Vertex Delete ───────────────────────────────────────────────
 
 /// DELETE /vertices/{id} — Delete a vertex and its connected edges.
+/// Supports optional `?force=true` query param to override default behavior.
 async fn delete_vertex_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<u64>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let graph_name = resolve_graph_name(&headers);
     let mut gm = state.graph_manager.lock().unwrap();
@@ -561,7 +563,9 @@ async fn delete_vertex_handler(
         }
     }
     // Remove the vertex
-    let _ = g.remove_vertex(id, true);
+    // Priority: ?force=true query param > !g.time_travel_enabled (default)
+    let force = params.get("force").map(|v| v == "true").unwrap_or(!g.time_travel_enabled);
+    let _ = g.remove_vertex(id, force);
     if let Ok(mut wal) = handle.redolog_wal.lock() {
         let _ = wal.append_remove_vertex(id);
     }
@@ -890,7 +894,8 @@ async fn delete_document_handler(
                         }
                     }
                 }
-                let _ = g.remove_vertex(vid, true);
+                let force = !g.time_travel_enabled;
+                let _ = g.remove_vertex(vid, force);
                 if let Ok(mut wal) = handle.redolog_wal.lock() { let _ = wal.append_remove_vertex(vid); }
                 if let Ok(mut nn) = handle.neural_network.lock() {
                     use crate::neuron::neuron::EntityType;
@@ -1042,12 +1047,29 @@ async fn update_vertex_handler(
     let handle = gm.get_mut(&graph_name).ok_or_else(|| {
         (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "graph not found"})))
     })?;
+    let g = handle.graph.lock().unwrap();
+    let record_history = g.time_travel_enabled;
+    drop(g);
     let mut g = handle.graph.lock().unwrap();
     let vertex = g.get_vertex_mut(id).ok_or_else(|| {
         (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "vertex not found"})))
     })?;
     let props: std::collections::HashMap<String, crate::graph::PropertyValue> = req
         .properties.into_iter().map(|(k, v)| (k, json_to_property(&v))).collect();
+    if record_history {
+        let now = crate::graph::now_micros();
+        vertex._history.push(crate::graph::VersionRecord {
+            version: vertex._version,
+            updated_at: vertex._updated_at,
+            name: vertex.name.clone(),
+            keywords: vertex.keywords.clone(),
+            document: vertex.document.clone(),
+            labels: vertex.labels.clone(),
+            properties: vertex.properties.clone(),
+        });
+        vertex._version += 1;
+        vertex._updated_at = now;
+    }
     if let Some(name) = req.name {
         vertex.name = name;
     }

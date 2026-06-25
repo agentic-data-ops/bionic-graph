@@ -141,7 +141,7 @@ function ChatMessage({ message, graphRef, onMaximizeRef, theme, onEdit, onSaveTo
                   </svg>
                 </button>
               </div>
-              <div className="h-[420px] relative"><GraphViewer ref={graphRef} data={message.graphData} graph={message.graphName} theme={theme} /></div>
+              <div className="h-[420px] relative"><GraphViewer ref={graphRef} data={message.graphData} graph={message.graphName} theme={theme} timeTravelEnabled={message.timeTravelEnabled} /></div>
             </div>
           )}
         </div>
@@ -161,7 +161,7 @@ function ChatMessage({ message, graphRef, onMaximizeRef, theme, onEdit, onSaveTo
               </svg>
             </button>
           </div>
-          <div className="h-[420px] relative"><GraphViewer ref={graphRef} data={message.data} graph={message.graphName} theme={theme} /></div>
+          <div className="h-[420px] relative"><GraphViewer ref={graphRef} data={message.data} graph={message.graphName} theme={theme} timeTravelEnabled={message.timeTravelEnabled} /></div>
         </div>
       </div>
     );

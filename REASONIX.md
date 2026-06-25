@@ -46,12 +46,13 @@
 ### Layout
 ```
 App.jsx
-├── Sidebar.jsx          — 对话列表 + 知识库入口 + 设置入口
+├── Sidebar.jsx          — 对话列表 + 知识库入口 + 图库入口 + 设置入口
 ├── ChatArea.jsx         — 聊天主区域
 │   ├── MessageList.jsx  — 消息列表 (用户/助手/搜索进度/图谱结果)
 │   └── ChatInput.jsx    — 输入框 + 模型选择 + 图谱/时间旅行/搜索模式控制栏
 ├── KnowledgeBase.jsx    — 知识库弹窗 (文件管理 + LLM 提取)
-└── SettingsDialog.jsx   — 设置弹窗 (供应商/图库/搜索/通用)
+├── GraphManagerDialog.jsx — 图库管理弹窗 (创建/删除/归档/默认)
+└── SettingsDialog.jsx   — 设置弹窗 (供应商/搜索/通用)
 ```
 
 ### Conversation Flow

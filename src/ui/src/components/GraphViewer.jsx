@@ -158,7 +158,7 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument, o
                   <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                 </svg>
               </button>
-              <button className="w-5 h-5 rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--danger)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)]" onClick={() => { if (confirm(t('graph.confirmDelete', { id: item.id, name: item.name || item.id }))) onDelete?.(item.id); }} title={t('graph.delete')}>
+              <button className="w-5 h-5 rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--danger)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)]" onClick={() => onDelete?.(item.id, item.name || item.id)} title={t('graph.delete')}>
                 <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                 </svg>
@@ -365,13 +365,14 @@ function buildFromData(dataItems) {
   return { nodes, edges };
 }
 
-const GraphViewer = forwardRef(({ data, graph, className, theme }, ref) => {
+const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabled }, ref) => {
   const containerRef = useRef(null);
   const netRef = useRef(null);
   const nodesRef = useRef(null);
   const edgesRef = useRef(null);
   const [selected, setSelected] = useState(null);
   const [showDoc, setShowDoc] = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(null); // { vid, name }
   const dataRef = useRef(data);
 
   const selectVertex = useCallback((vid) => {
@@ -493,6 +494,28 @@ const GraphViewer = forwardRef(({ data, graph, className, theme }, ref) => {
     netRef.current = net;
   }, [data, graph, theme]);
 
+  const handleConfirmDelete = useCallback(async (force) => {
+    if (!confirmDelete) return;
+    const { vid, name } = confirmDelete;
+    try {
+      await deleteVertex(vid, graph, force);
+    } catch (e) {
+      console.error('Delete failed:', e);
+      setConfirmDelete(null);
+      return;
+    }
+    const ns = nodesRef.current;
+    const es = edgesRef.current;
+    if (!ns) return;
+    if (es) {
+      const toRemove = es.get().filter((e) => e.from === vid || e.to === vid);
+      toRemove.forEach((e) => es.remove(e.id));
+    }
+    ns.remove(vid);
+    setSelected(null);
+    setConfirmDelete(null);
+  }, [confirmDelete, graph]);
+
   if (!data?.data?.length) {
     return <div className="flex items-center justify-center text-[var(--text-tertiary)] text-sm min-h-[200px]">No graph data</div>;
   }
@@ -510,28 +533,68 @@ const GraphViewer = forwardRef(({ data, graph, className, theme }, ref) => {
           onClose={() => setSelected(null)}
           onShowDocument={(docId) => setShowDoc(docId)}
           onSelectVertex={selectVertex}
-          onDelete={async (vid) => {
-            try {
-              await deleteVertex(vid, graph);
-            } catch (e) {
-              console.error('Delete failed:', e);
-              return;
-            }
-            const ns = nodesRef.current;
-            const es = edgesRef.current;
-            if (!ns) return;
-            if (es) {
-              const toRemove = es.get().filter((e) => e.from === vid || e.to === vid);
-              toRemove.forEach((e) => es.remove(e.id));
-            }
-            ns.remove(vid);
-            setSelected(null);
-          }}
+          onDelete={(vid, name) => setConfirmDelete({ vid, name })}
         />
       )}
       {showDoc && <DocViewer docId={showDoc} onClose={() => setShowDoc(null)} />}
+
+      {/* Delete confirmation modal */}
+      {confirmDelete && (
+        <DeleteConfirmModal
+          vid={confirmDelete.vid}
+          name={confirmDelete.name}
+          timeTravelEnabled={timeTravelEnabled}
+          onConfirm={(force) => handleConfirmDelete(force)}
+          onCancel={() => setConfirmDelete(null)}
+        />
+      )}
     </div>
   );
 });
+
+/** Delete confirmation dialog with optional hard-delete checkbox. */
+function DeleteConfirmModal({ vid, name, timeTravelEnabled, onConfirm, onCancel }) {
+  const { t } = useTranslation();
+  const [hardDelete, setHardDelete] = useState(false);
+
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center" onClick={onCancel}>
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
+      <div className="relative bg-[var(--bg-secondary)] border border-[var(--border)] rounded-2xl p-6 max-w-sm shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3 tracking-tight">
+          {t('graph.deleteVertex')}
+        </h3>
+        <p className="text-xs text-[var(--text-secondary)] leading-relaxed mb-4">
+          {t('graph.confirmDelete', { id: vid, name: name || vid })}
+        </p>
+
+        {timeTravelEnabled && (
+          <label className="flex items-center gap-2 cursor-pointer select-none mb-4 px-1">
+            <input
+              type="checkbox"
+              checked={hardDelete}
+              onChange={(e) => setHardDelete(e.target.checked)}
+              className="w-3.5 h-3.5 rounded border-[var(--border)] bg-[var(--bg-tertiary)] checked:bg-[var(--danger)] checked:border-[var(--danger)] focus:ring-0 cursor-pointer"
+            />
+            <span className="text-xs text-[var(--text-secondary)]">{t('graph.hardDelete')}</span>
+          </label>
+        )}
+
+        <div className="flex gap-2 justify-end">
+          <button
+            className="px-4 py-1.5 rounded-lg bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs font-medium transition-all"
+            onClick={onCancel}
+          >{t('panel.close')}</button>
+          <button
+            className="px-4 py-1.5 rounded-lg bg-[var(--danger)] text-white text-xs font-medium hover:opacity-80 transition-all shadow-sm"
+            onClick={() => onConfirm(hardDelete)}
+          >{t('graph.delete')}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default GraphViewer;

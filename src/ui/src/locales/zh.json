@@ -55,6 +55,8 @@
   "graph.delete": "删除",
   "graph.addProperty": "添加属性",
   "graph.confirmDelete": "删除顶点 #{{id}} ({{name}}) 及所有关联边？",
+  "graph.deleteVertex": "删除顶点",
+  "graph.hardDelete": "硬删除（无法通过时光旅行恢复）",
   "graph.noData": "暂无数据，输入搜索开始。",
   "graph.loading": "加载中...",
   "chat.newChat": "新建对话",

@@ -394,8 +394,10 @@ export async function addEdge(label, source, target, properties = {}, graph = 'd
   });
 }
 
-export async function deleteVertex(id, graph = 'default') {
-  return api(`/vertices/${id}`, {
+export async function deleteVertex(id, graph = 'default', force) {
+  let url = `/vertices/${id}`;
+  if (force) url += '?force=true';
+  return api(url, {
     method: 'DELETE',
     headers: { 'X-Graph-Name': graph },
   });

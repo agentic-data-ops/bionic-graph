@@ -119,19 +119,43 @@ pub fn execute_query_with_llm(
             TraversalStep::V { ids } => {
                 let g = graph.lock().unwrap();
                 let results: Vec<TraversalResult> = if ids.is_empty() {
-                    // All vertices
+                    // All vertices — filter out soft-deleted
                     g.vertex_ids()
-                        .map(|&id| vertex_to_result(&g, id))
+                        .filter_map(|&id| {
+                            let v = g.get_vertex(id)?;
+                            let props: std::collections::HashMap<String, Value> = v
+                                .properties.iter()
+                                .map(|(k, pv)| (k.clone(), property_to_json(pv)))
+                                .collect();
+                            Some(TraversalResult::VertexResult(VertexResult {
+                                element_type: "vertex".to_string(),
+                                id: v.id,
+                                name: v.name.clone(),
+                                keywords: v.keywords.clone(),
+                                document: v.document.clone(),
+                                labels: v.labels.clone(),
+                                properties: props,
+                            }))
+                        })
                         .collect()
                 } else {
-                    // Specific vertices
+                    // Specific vertices — include deleted so timeTravel can reconstruct history
                     ids.iter()
                         .filter_map(|&id| {
-                            if g.get_vertex(id).is_some() {
-                                Some(vertex_to_result(&g, id))
-                            } else {
-                                None
-                            }
+                            let v = g.get_vertex_including_deleted(id)?;
+                            let props: std::collections::HashMap<String, Value> = v
+                                .properties.iter()
+                                .map(|(k, pv)| (k.clone(), property_to_json(pv)))
+                                .collect();
+                            Some(TraversalResult::VertexResult(VertexResult {
+                                element_type: "vertex".to_string(),
+                                id: v.id,
+                                name: v.name.clone(),
+                                keywords: v.keywords.clone(),
+                                document: v.document.clone(),
+                                labels: v.labels.clone(),
+                                properties: props,
+                            }))
                         })
                         .collect()
                 };

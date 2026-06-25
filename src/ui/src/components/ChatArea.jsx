@@ -144,7 +144,7 @@ export default function ChatArea({
             requestAnimationFrame(() => chatInputRef.current?.focus());
             abortRef.current = null;
             setIsGenerating(false);
-            onUpdateConv({ ...conv, messages: [...updatedMsgs, { ...progressMsg, steps: doneSteps, graphData: res, graphName: defaultGraph }] });
+            onUpdateConv({ ...conv, messages: [...updatedMsgs, { ...progressMsg, steps: doneSteps, graphData: res, graphName: defaultGraph, timeTravelEnabled: timeTravelGraphs[defaultGraph] || false }] });
             return;
           }
 
@@ -200,7 +200,7 @@ Return ONLY a comma-separated list of 1-based array indices of the selected item
 
           setSearchStream(null);
           const finalSteps = [step1done, step2done, { icon: '✅', name: 'Filtering completed', status: 'done', llmOutput: filterBuf }];
-          onUpdateConv({ ...conv, messages: [...updatedMsgs, { ...progressMsg, steps: finalSteps, graphData: filteredData, graphName: defaultGraph }] });
+          onUpdateConv({ ...conv, messages: [...updatedMsgs, { ...progressMsg, steps: finalSteps, graphData: filteredData, graphName: defaultGraph, timeTravelEnabled: timeTravelGraphs[defaultGraph] || false }] });
           requestAnimationFrame(() => chatInputRef.current?.focus());
         } catch (e) {
           const failedSteps = (steps || []).map((s) => ({ ...s, status: 'failed' }));

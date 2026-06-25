@@ -113,9 +113,9 @@ impl Vertex {
     pub fn from_history(id: VertexId, record: &VersionRecord) -> Self {
         Self {
             id,
-            name: String::new(),
-            keywords: Vec::new(),
-            document: String::new(),
+            name: record.name.clone(),
+            keywords: record.keywords.clone(),
+            document: record.document.clone(),
             labels: record.labels.clone(),
             properties: record.properties.clone(),
             _version: record.version,
