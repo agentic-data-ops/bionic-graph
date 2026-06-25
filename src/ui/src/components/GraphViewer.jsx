@@ -396,6 +396,7 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
   const [newEdgeLabel, setNewEdgeLabel] = useState('');
   const [newEdgeSource, setNewEdgeSource] = useState('');
   const [newEdgeTarget, setNewEdgeTarget] = useState('');
+  const [newEdgeProps, setNewEdgeProps] = useState([{ k: '', v: '' }]);
   const dataRef = useRef(data);
 
   const searchFiltered = useMemo(() => {
@@ -734,6 +735,26 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
                     ))}
                   </select>
                 </div>
+                {/* Properties */}
+                <div>
+                  <div className="text-[10px] text-[var(--text-tertiary)] mb-1 font-medium">Properties</div>
+                  {newEdgeProps.map((p, i) => (
+                    <div key={i} className="flex gap-1 mb-1">
+                      <input className="flex-1 px-2 py-1 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-[10px] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] font-mono"
+                        placeholder="key" value={p.k} onChange={(e) => {
+                          const copy = [...newEdgeProps]; copy[i] = { ...copy[i], k: e.target.value }; setNewEdgeProps(copy);
+                        }} />
+                      <input className="flex-1 px-2 py-1 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-[10px] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                        placeholder="value" value={p.v} onChange={(e) => {
+                          const copy = [...newEdgeProps]; copy[i] = { ...copy[i], v: e.target.value }; setNewEdgeProps(copy);
+                        }} />
+                      {i === newEdgeProps.length - 1 && (
+                        <button className="px-1.5 text-[var(--text-tertiary)] hover:text-[var(--accent)] text-xs"
+                          onClick={() => setNewEdgeProps([...newEdgeProps, { k: '', v: '' }])}>+</button>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
               <div className="flex gap-2 justify-end mt-4">
                 <button className="px-3 py-1.5 rounded-lg bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs font-medium transition-all"
@@ -744,18 +765,19 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
                     try {
                       const src = parseInt(newEdgeSource);
                       const tgt = parseInt(newEdgeTarget);
-                      const res = await addEdge(newEdgeLabel.trim(), src, tgt, {}, graph);
+                      const props = Object.fromEntries(newEdgeProps.filter(p => p.k.trim()).map(p => [p.k.trim(), p.v.trim()]));
+                      const res = await addEdge(newEdgeLabel.trim(), src, tgt, props, graph);
                       if (res.id) {
                         const es = edgesRef.current;
                         if (es) {
                           const exists = es.get({ filter: (e) => e.from === src && e.to === tgt });
-                          if (exists.length === 0) es.add({ id: res.id, from: src, to: tgt, label: newEdgeLabel.trim(), _original: { type: 'edge', id: res.id, label: newEdgeLabel.trim(), source: src, target: tgt } });
+                          if (exists.length === 0) es.add({ id: res.id, from: src, to: tgt, label: newEdgeLabel.trim(), _original: { type: 'edge', id: res.id, label: newEdgeLabel.trim(), source: src, target: tgt, properties: props } });
                         }
                         netRef.current?.fit({ animation: { duration: 300 } });
                       }
                     } catch (e) { console.error('Add edge failed:', e); }
                     setShowAddEdge(false);
-                    setNewEdgeLabel(''); setNewEdgeSource(''); setNewEdgeTarget('');
+                    setNewEdgeLabel(''); setNewEdgeSource(''); setNewEdgeTarget(''); setNewEdgeProps([{ k: '', v: '' }]);
                   }}>Create</button>
               </div>
             </div>
