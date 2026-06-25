@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, forwardRef, useImperativeHandle, useCallba
 import { useTranslation } from 'react-i18next';
 import { Network } from 'vis-network';
 import { DataSet } from 'vis-data';
-import { traverse, updateVertexProperties, updateEdgeProperties, deleteVertex, deleteEdge, getDocument, getDocumentContent } from '../api';
+import { traverse, updateVertexProperties, updateEdgeProperties, deleteVertex, deleteEdge, addVertex, addEdge, getDocument, getDocumentContent } from '../api';
 
 
 const DARK_OPTS = {
@@ -388,6 +388,14 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
   const [confirmDeleteEdge, setConfirmDeleteEdge] = useState(null); // { eid, label }
   const [searchQuery, setSearchQuery] = useState('');
   const [searchFocused, setSearchFocused] = useState(false);
+  const [showAddVertex, setShowAddVertex] = useState(false);
+  const [showAddEdge, setShowAddEdge] = useState(false);
+  const [newVertexName, setNewVertexName] = useState('');
+  const [newVertexKeywords, setNewVertexKeywords] = useState('');
+  const [newVertexLabels, setNewVertexLabels] = useState('');
+  const [newEdgeLabel, setNewEdgeLabel] = useState('');
+  const [newEdgeSource, setNewEdgeSource] = useState('');
+  const [newEdgeTarget, setNewEdgeTarget] = useState('');
   const dataRef = useRef(data);
 
   const searchFiltered = useMemo(() => {
@@ -617,35 +625,143 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
   return (
     <div className={`flex-1 flex min-h-0 ${className || ''}`} style={{ height: '100%', width: '100%' }}>
       <div className="relative flex-1 min-h-0">
-        {/* Search bar overlay */}
-        <div className="absolute top-3 left-3 z-10 w-56">
-          <input
-            className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-secondary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] placeholder-[var(--text-tertiary)] shadow-lg"
-            placeholder="Search graph..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            onFocus={() => setSearchFocused(true)}
-            onBlur={() => setTimeout(() => setSearchFocused(false), 200)}
-          />
-          {searchQuery && searchFocused && searchFiltered.length > 0 && (
-            <div className="absolute top-full left-0 right-0 mt-1 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-2xl max-h-60 overflow-y-auto z-20">
-              {searchFiltered.map((r) => (
-                <button
-                  key={`${r.type}-${r.id}`}
-                  className="w-full text-left px-3 py-2 text-xs text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-all flex items-center gap-2"
-                  onMouseDown={() => selectSearchResult(r)}
-                >
-                  <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${r.type === 'vertex' ? 'bg-[var(--accent)]' : 'bg-[var(--success)]'}`} />
-                  <span className="truncate">{r.label}</span>
-                  {r.type === 'edge' && (
-                    <span className="text-[10px] text-[var(--text-tertiary)] ml-1 flex-shrink-0">{r.fromLabel} → {r.toLabel}</span>
-                  )}
-                  <span className="text-[var(--text-tertiary)] font-mono ml-auto flex-shrink-0">#{r.id}</span>
-                </button>
-              ))}
+        {/* Toolbar: search + add buttons */}
+        <div className="absolute top-3 left-3 z-10 flex items-start gap-2">
+          <div className="w-48">
+            <input
+              className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-secondary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] placeholder-[var(--text-tertiary)] shadow-lg"
+              placeholder="Search graph..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onFocus={() => setSearchFocused(true)}
+              onBlur={() => setTimeout(() => setSearchFocused(false), 200)}
+            />
+            {searchQuery && searchFocused && searchFiltered.length > 0 && (
+              <div className="absolute top-full left-0 right-0 mt-1 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-2xl max-h-60 overflow-y-auto z-20">
+                {searchFiltered.map((r) => (
+                  <button
+                    key={`${r.type}-${r.id}`}
+                    className="w-full text-left px-3 py-2 text-xs text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-all flex items-center gap-2"
+                    onMouseDown={() => selectSearchResult(r)}
+                  >
+                    <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${r.type === 'vertex' ? 'bg-[var(--accent)]' : 'bg-[var(--success)]'}`} />
+                    <span className="truncate">{r.label}</span>
+                    {r.type === 'edge' && (
+                      <span className="text-[10px] text-[var(--text-tertiary)] ml-1 flex-shrink-0">{r.fromLabel} → {r.toLabel}</span>
+                    )}
+                    <span className="text-[var(--text-tertiary)] font-mono ml-auto flex-shrink-0">#{r.id}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          {!timeTravelAt && (
+            <div className="flex gap-1">
+              <button className="px-2.5 py-1.5 rounded-lg bg-[var(--bg-secondary)] text-[var(--text-primary)] text-xs font-medium hover:bg-[var(--accent)] hover:text-white transition-all shadow-lg whitespace-nowrap"
+                onClick={() => setShowAddVertex(true)}>+ Vertex</button>
+              <button className="px-2.5 py-1.5 rounded-lg bg-[var(--bg-secondary)] text-[var(--text-primary)] text-xs font-medium hover:bg-[var(--accent)] hover:text-white transition-all shadow-lg whitespace-nowrap"
+                onClick={() => setShowAddEdge(true)}>+ Edge</button>
             </div>
           )}
         </div>
+
+        {/* Add Vertex Modal */}
+        {showAddVertex && (
+          <div className="fixed inset-0 z-[200] flex items-center justify-center" onClick={() => setShowAddVertex(false)}>
+            <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
+            <div className="relative bg-[var(--bg-secondary)] border border-[var(--border)] rounded-2xl p-5 max-w-sm shadow-2xl w-80"
+              onClick={(e) => e.stopPropagation()}>
+              <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">Add Vertex</h3>
+              <div className="space-y-2.5">
+                <input className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                  placeholder="Name" value={newVertexName} onChange={(e) => setNewVertexName(e.target.value)} />
+                <input className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                  placeholder="Labels (comma-separated)" value={newVertexLabels} onChange={(e) => setNewVertexLabels(e.target.value)} />
+                <input className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                  placeholder="Keywords (comma-separated)" value={newVertexKeywords} onChange={(e) => setNewVertexKeywords(e.target.value)} />
+              </div>
+              <div className="flex gap-2 justify-end mt-4">
+                <button className="px-3 py-1.5 rounded-lg bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs font-medium transition-all"
+                  onClick={() => setShowAddVertex(false)}>Cancel</button>
+                <button className="px-3 py-1.5 rounded-lg bg-[var(--accent)] text-white text-xs font-medium hover:opacity-80 transition-all shadow-sm"
+                  onClick={async () => {
+                    if (!newVertexName.trim()) return;
+                    const labels = newVertexLabels.split(',').map(s => s.trim()).filter(Boolean);
+                    const keywords = newVertexKeywords.split(',').map(s => s.trim()).filter(Boolean);
+                    try {
+                      const res = await addVertex(labels, {}, graph, newVertexName.trim(), keywords);
+                      if (res.id) {
+                        const ns = nodesRef.current;
+                        if (ns) ns.add({ id: res.id, label: newVertexName.trim(), _original: { type: 'vertex', id: res.id, name: newVertexName.trim(), keywords, labels } });
+                        netRef.current?.fit({ animation: { duration: 300 } });
+                      }
+                    } catch (e) { console.error('Add vertex failed:', e); }
+                    setShowAddVertex(false);
+                    setNewVertexName(''); setNewVertexKeywords(''); setNewVertexLabels('');
+                  }}>Create</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Add Edge Modal */}
+        {showAddEdge && (
+          <div className="fixed inset-0 z-[200] flex items-center justify-center" onClick={() => setShowAddEdge(false)}>
+            <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
+            <div className="relative bg-[var(--bg-secondary)] border border-[var(--border)] rounded-2xl p-5 max-w-sm shadow-2xl w-80"
+              onClick={(e) => e.stopPropagation()}>
+              <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">Add Edge</h3>
+              <div className="space-y-2.5">
+                <input className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                  placeholder="Edge Label" value={newEdgeLabel} onChange={(e) => setNewEdgeLabel(e.target.value)} />
+                <div>
+                  <div className="text-[10px] text-[var(--text-tertiary)] mb-1 font-medium">Source vertex</div>
+                  <select className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] cursor-pointer"
+                    value={newEdgeSource} onChange={(e) => setNewEdgeSource(e.target.value)}>
+                    <option value="">-- Select --</option>
+                    {nodesRef.current?.get().map((n) => (
+                      <option key={n.id} value={n.id}>{n.label || `#${n.id}`}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <div className="text-[10px] text-[var(--text-tertiary)] mb-1 font-medium">Target vertex</div>
+                  <select className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] cursor-pointer"
+                    value={newEdgeTarget} onChange={(e) => setNewEdgeTarget(e.target.value)}>
+                    <option value="">-- Select --</option>
+                    {nodesRef.current?.get().map((n) => (
+                      <option key={n.id} value={n.id}>{n.label || `#${n.id}`}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="flex gap-2 justify-end mt-4">
+                <button className="px-3 py-1.5 rounded-lg bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs font-medium transition-all"
+                  onClick={() => setShowAddEdge(false)}>Cancel</button>
+                <button className="px-3 py-1.5 rounded-lg bg-[var(--accent)] text-white text-xs font-medium hover:opacity-80 transition-all shadow-sm"
+                  onClick={async () => {
+                    if (!newEdgeLabel.trim() || !newEdgeSource || !newEdgeTarget) return;
+                    try {
+                      const src = parseInt(newEdgeSource);
+                      const tgt = parseInt(newEdgeTarget);
+                      const res = await addEdge(newEdgeLabel.trim(), src, tgt, {}, graph);
+                      if (res.id) {
+                        const es = edgesRef.current;
+                        if (es) {
+                          const exists = es.get({ filter: (e) => e.from === src && e.to === tgt });
+                          if (exists.length === 0) es.add({ id: res.id, from: src, to: tgt, label: newEdgeLabel.trim(), _original: { type: 'edge', id: res.id, label: newEdgeLabel.trim(), source: src, target: tgt } });
+                        }
+                        netRef.current?.fit({ animation: { duration: 300 } });
+                      }
+                    } catch (e) { console.error('Add edge failed:', e); }
+                    setShowAddEdge(false);
+                    setNewEdgeLabel(''); setNewEdgeSource(''); setNewEdgeTarget('');
+                  }}>Create</button>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div ref={containerRef} className="w-full h-full" />
       </div>
       {selected && (
