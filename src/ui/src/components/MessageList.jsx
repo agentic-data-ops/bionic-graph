@@ -141,7 +141,7 @@ function ChatMessage({ message, graphRef, onMaximizeRef, theme, onEdit, onSaveTo
                   </svg>
                 </button>
               </div>
-              <div className="h-[420px] relative"><GraphViewer ref={graphRef} data={message.graphData} graph={message.graphName} theme={theme} timeTravelEnabled={message.timeTravelEnabled} /></div>
+              <div className="h-[420px] relative"><GraphViewer ref={graphRef} data={message.graphData} graph={message.graphName} theme={theme} timeTravelEnabled={message.timeTravelEnabled || false} /></div>
             </div>
           )}
         </div>
@@ -161,7 +161,7 @@ function ChatMessage({ message, graphRef, onMaximizeRef, theme, onEdit, onSaveTo
               </svg>
             </button>
           </div>
-          <div className="h-[420px] relative"><GraphViewer ref={graphRef} data={message.data} graph={message.graphName} theme={theme} timeTravelEnabled={message.timeTravelEnabled} /></div>
+          <div className="h-[420px] relative"><GraphViewer ref={graphRef} data={message.data} graph={message.graphName} theme={theme} timeTravelEnabled={message.timeTravelEnabled || false} /></div>
         </div>
       </div>
     );
@@ -201,6 +201,7 @@ export default function MessageList({ messages, searchStream, theme, onEdit, onS
     id: '__search_progress__', type: 'search_progress',
     title: searchStream.title || searchStream.query || 'Graph Search',
     steps: searchStream.steps || [], graphData: searchStream.graphData, graphName: searchStream.graphName,
+    timeTravelEnabled: searchStream.timeTravelEnabled || false,
   }] : messages;
 
   return (

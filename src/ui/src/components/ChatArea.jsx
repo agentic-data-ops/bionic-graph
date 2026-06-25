@@ -88,7 +88,7 @@ export default function ChatArea({
             ];
 
         const progressMsgId = uid();
-        const progressMsg = { id: progressMsgId, type: 'search_progress', title: text, steps };
+        const progressMsg = { id: progressMsgId, type: 'search_progress', title: text, steps, timeTravelEnabled: timeTravelGraphs[defaultGraph] || false };
         setSearchStream(progressMsg); // only in stream, not saved to conversation
         setIsGenerating(true);
 
@@ -254,7 +254,7 @@ Return ONLY a comma-separated list of 1-based array indices of the selected item
         }
       }
     },
-    [activeConv, useGraph, searchMode, defaultGraph, providers, activeProvider, onUpdateConv, chatModel, kwSearchMode, timeTravel, timeTravelPoint]
+    [activeConv, useGraph, searchMode, defaultGraph, providers, activeProvider, onUpdateConv, chatModel, kwSearchMode, timeTravel, timeTravelPoint, timeTravelGraphs]
   );
 
   const messages = activeConv?.messages || [];
