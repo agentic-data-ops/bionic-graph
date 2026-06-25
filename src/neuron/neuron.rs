@@ -275,7 +275,6 @@ impl Neuron {
                     let any_match = lower_keywords.iter().any(|k| {
                         k == token
                             || k.contains(token.as_str())
-                            || token.contains(k.as_str())
                             || (fuzzy_enabled && levenshtein_similarity(k, token) >= fuzzy_threshold)
                     });
                     if !any_match {
@@ -296,8 +295,8 @@ impl Neuron {
                     if lower_keywords.iter().any(|k| k == &lower_token) {
                         return scores.greedy_exact_score;
                     }
-                    // Substring/partial match
-                    if lower_keywords.iter().any(|k| k.contains(&lower_token) || lower_token.contains(k.as_str())) {
+                    // Substring/partial match — keyword contains query token
+                    if lower_keywords.iter().any(|k| k.contains(&lower_token)) {
                         return scores.greedy_partial_score;
                     }
                     // Fuzzy match fallback
