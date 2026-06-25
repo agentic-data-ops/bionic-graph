@@ -26,12 +26,6 @@ pub type StepCallback = Box<dyn Fn(&str, f64, Option<&str>) + Send + Sync>;
 /// Token overhead for system prompt + user instructions.
 const PROMPT_OVERHEAD_TOKENS: usize = 4096;
 
-/// System prompt for tag extraction.
-const TAG_EXTRACT_PROMPT: &str = r#"You are a knowledge graph assistant. Generate 1~5 most important tags from the markdown document below, to describe the content topic.
-
-Return ONLY valid JSON: {"tags": ["tag1", "tag2", ...]}
-"#;
-
 /// System prompt for full-document extraction.
 const FULL_DOC_PROMPT: &str = r#"You are a knowledge graph extractor. Extract entities and their relationships from the given markdown document.
 
@@ -56,7 +50,8 @@ Return ONLY valid JSON with this structure:
       "target": "EntityName",
       "relation": "relationship description"
     }
-  ]
+  ],
+  "tags": ["tag1", "tag2", ...]
 }
 
 - Extract entities and edges as many as possible.
@@ -65,14 +60,8 @@ Return ONLY valid JSON with this structure:
 - Relations should use clear, concise descriptions in the original language.
 - Entity type could be person, place, organization, concept, event, object or any other types identify what type of thing it is.
 - Entity name, type, keywords should be in the original language.
+- Generate 1~5 most important tags from the markdown document, to describe the content topic.
 "#;
-
-/// Parsed LLM response for tags.
-#[derive(Debug, Clone, Deserialize)]
-struct TagOutput {
-    #[serde(default)]
-    tags: Vec<String>,
-}
 
 /// Parsed LLM response for full-document extraction.
 #[derive(Debug, Clone, Deserialize)]
@@ -81,6 +70,8 @@ struct FullExtractionOutput {
     entities: Vec<EntityOutput>,
     #[serde(default)]
     relations: Vec<RelationOutput>,
+    #[serde(default)]
+    tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -139,55 +130,18 @@ fn split_by_chapters(content: &str) -> Vec<String> {
     parts
 }
 
-/// Call LLM for tags, with splitting if content is too large.
-async fn extract_tags(
-    config: &ExtractionConfig,
-    content: &str,
-    doc_title: &str,
-    on_step: &StepCallback,
-) -> Result<Vec<String>, String> {
-    if is_over_limit(config, content) {
-        let chapters = split_by_chapters(content);
-        let mut all_tags = Vec::new();
-        for (i, chapter) in chapters.iter().enumerate() {
-            on_step("Extracting tags", (i as f64 / chapters.len() as f64) * 50.0,
-                Some(&format!("Chapter {}/{}", i + 1, chapters.len())));
-            let user_msg = format!("Document section: {}\n\n---\n\n{}", doc_title, chapter);
-            let resp = chat_completion_with_retry(config, TAG_EXTRACT_PROMPT, &user_msg).await
-                .map_err(|e| format!("Tag LLM call failed: {}", e))?;
-            let cleaned = clean_json(&resp.content);
-            if let Ok(parsed) = serde_json::from_str::<TagOutput>(&cleaned) {
-                for tag in parsed.tags {
-                    if !all_tags.contains(&tag) {
-                        all_tags.push(tag);
-                    }
-                }
-            }
-        }
-        on_step("Extracting tags", 50.0, Some(&format!("{} tags merged", all_tags.len())));
-        Ok(all_tags)
-    } else {
-        let user_msg = format!("Document: {}\n\n---\n\n{}", doc_title, content);
-        let resp = chat_completion_with_retry(config, TAG_EXTRACT_PROMPT, &user_msg).await
-            .map_err(|e| format!("Tag LLM call failed: {}", e))?;
-        let cleaned = clean_json(&resp.content);
-        let parsed: TagOutput = serde_json::from_str(&cleaned)
-            .map_err(|e| format!("Failed to parse tag response: {}", e))?;
-        Ok(parsed.tags)
-    }
-}
-
-/// Call LLM for entities/relations, with splitting + merging.
+/// Call LLM for entities/relations (and tags), with splitting + merging.
 async fn extract_entities_and_relations(
     config: &ExtractionConfig,
     content: &str,
     doc_title: &str,
     on_step: &StepCallback,
-) -> Result<(Vec<EntityOutput>, Vec<RelationOutput>), String> {
+) -> Result<(Vec<EntityOutput>, Vec<RelationOutput>, Vec<String>), String> {
     if is_over_limit(config, content) {
         let chapters = split_by_chapters(content);
         let mut all_entities: Vec<EntityOutput> = Vec::new();
         let mut all_relations: Vec<RelationOutput> = Vec::new();
+        let mut all_tags: Vec<String> = Vec::new();
         for (i, chapter) in chapters.iter().enumerate() {
             on_step("Extracting knowledge", (i as f64 / chapters.len() as f64) * 80.0,
                 Some(&format!("Chapter {}/{}", i + 1, chapters.len())));
@@ -198,12 +152,17 @@ async fn extract_entities_and_relations(
             if let Ok(parsed) = serde_json::from_str::<FullExtractionOutput>(&cleaned) {
                 all_entities.extend(parsed.entities);
                 all_relations.extend(parsed.relations);
+                for tag in parsed.tags {
+                    if !all_tags.contains(&tag) {
+                        all_tags.push(tag);
+                    }
+                }
             }
         }
         on_step("Extracting knowledge", 80.0,
-            Some(&format!("{} entities, {} relations from {} chapters",
-                all_entities.len(), all_relations.len(), chapters.len())));
-        Ok((all_entities, all_relations))
+            Some(&format!("{} entities, {} relations, {} tags from {} chapters",
+                all_entities.len(), all_relations.len(), all_tags.len(), chapters.len())));
+        Ok((all_entities, all_relations, all_tags))
     } else {
         let user_msg = format!("Document: {}\n\n---\n\n{}", doc_title, content);
         let resp = chat_completion_with_retry(config, FULL_DOC_PROMPT, &user_msg).await
@@ -219,6 +178,7 @@ async fn extract_entities_and_relations(
                 let chapters = split_by_chapters(content);
                 let mut all_entities = Vec::new();
                 let mut all_relations = Vec::new();
+                let mut all_tags = Vec::new();
                 for (i, chapter) in chapters.iter().enumerate() {
                     on_step("Extracting knowledge (retry)", (i as f64 / chapters.len() as f64) * 80.0,
                         Some(&format!("Chapter {}/{}", i + 1, chapters.len())));
@@ -228,10 +188,15 @@ async fn extract_entities_and_relations(
                         if let Ok(parsed) = serde_json::from_str::<FullExtractionOutput>(&cleaned) {
                             all_entities.extend(parsed.entities);
                             all_relations.extend(parsed.relations);
+                            for tag in parsed.tags {
+                                if !all_tags.contains(&tag) {
+                                    all_tags.push(tag);
+                                }
+                            }
                         }
                     }
                 }
-                return Ok((all_entities, all_relations));
+                return Ok((all_entities, all_relations, all_tags));
             }
         }
 
@@ -244,7 +209,7 @@ async fn extract_entities_and_relations(
                     &resp.content[..resp.content.len().min(500)]
                 )
             })?;
-        Ok((parsed.entities, parsed.relations))
+        Ok((parsed.entities, parsed.relations, parsed.tags))
     }
 }
 
@@ -305,13 +270,14 @@ fn json_to_property_value(val: &serde_json::Value) -> PropertyValue {
 
 /// Extract entities and relations from document content.
 ///
-/// Steps reported via `on_step`:
-///   1. "Extracting tags" — call LLM for tags, split if needed
-///   2. "Extracting knowledge" — call LLM for entities+relations, split+merge if needed
-///   3. "Creating graph vertices" — dedup + save via GraphManager
-///   4. "Creating graph edges" — save via GraphManager
+/// Also extracts document tags from the same LLM call and returns them.
 ///
-/// Returns `ExtractionResult` with counts.
+/// Steps reported via `on_step`:
+///   1. "Extracting knowledge" — call LLM for entities+relations+tags, split+merge if needed
+///   2. "Creating graph vertices" — dedup + save via GraphManager
+///   3. "Creating graph edges" — save via GraphManager
+///
+/// Returns `ExtractionResult` with counts and merged tags.
 pub async fn extract_document_full(
     config: &ExtractionConfig,
     content: &str,
@@ -321,13 +287,9 @@ pub async fn extract_document_full(
     graph_name: &str,
     on_step: StepCallback,
 ) -> Result<ExtractionResult, String> {
-    // ── Step 1: Extract tags (with splitting if needed) ──────
-    on_step("Extracting tags", 0.0, None);
-    let tags = extract_tags(config, content, doc_title, &on_step).await?;
-
-    // ── Step 2: Extract entities + relations (with splitting if needed) ──
-    on_step("Extracting knowledge", 20.0, None);
-    let (entities, relations) = extract_entities_and_relations(
+    // ── Step 1: Extract entities + relations + tags ──────────
+    on_step("Extracting knowledge", 0.0, None);
+    let (entities, relations, tags) = extract_entities_and_relations(
         config, content, doc_title, &on_step,
     ).await?;
 
@@ -344,8 +306,8 @@ pub async fn extract_document_full(
         });
     }
 
-    // ── Step 3: Dedup + create vertices ──────────────────────
-    on_step("Creating graph vertices", 80.0, None);
+    // ── Step 2: Dedup + create vertices ──────────────────────
+    on_step("Creating graph vertices", 60.0, None);
     let deduped = dedup_entities(&entities);
     let total_deduped = deduped.len();
     let mut name_to_vid: HashMap<String, u64> = HashMap::new();
@@ -372,13 +334,13 @@ pub async fn extract_document_full(
         name_to_vid.insert(name.to_string(), vid);
         vertex_count += 1;
 
-        let pct = 80.0 + ((i + 1) as f64 / total_deduped.max(1) as f64) * 10.0;
+        let pct = 60.0 + ((i + 1) as f64 / total_deduped.max(1) as f64) * 20.0;
         on_step("Creating graph vertices", pct,
             Some(&format!("{}/{} vertices created", vertex_count, total_deduped)));
     }
 
-    // ── Step 4: Create edges ──────────────────────────────────
-    on_step("Creating graph edges", 90.0, None);
+    // ── Step 3: Create edges ──────────────────────────────────
+    on_step("Creating graph edges", 80.0, None);
 
     let total_relations = relations.len();
     let mut edge_count = 0usize;
@@ -399,7 +361,7 @@ pub async fn extract_document_full(
             }
         }
 
-        let pct = 90.0 + ((i + 1) as f64 / total_relations.max(1) as f64) * 10.0;
+        let pct = 80.0 + ((i + 1) as f64 / total_relations.max(1) as f64) * 20.0;
         on_step("Creating graph edges", pct,
             Some(&format!("{}/{} edges created", edge_count, total_relations)));
     }
