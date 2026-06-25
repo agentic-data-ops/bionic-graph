@@ -292,8 +292,15 @@ impl Graph {
         Ok(())
     }
 
-    /// Get an edge by ID.
+    /// Get an edge by ID. Returns `None` if soft-deleted (and time-travel enabled).
     pub fn get_edge(&self, id: EdgeId) -> Option<&Edge> {
+        self.edges.get(&id).and_then(|e| {
+            if self.time_travel_enabled && e._is_deleted { None } else { Some(e) }
+        })
+    }
+
+    /// Get edge regardless of deletion status.
+    pub fn get_edge_including_deleted(&self, id: EdgeId) -> Option<&Edge> {
         self.edges.get(&id)
     }
 
