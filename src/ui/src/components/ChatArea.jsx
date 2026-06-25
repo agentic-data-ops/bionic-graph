@@ -7,7 +7,14 @@ import {
   chatCompletionProxy,
   parseSSEStream,
   graphSearch,
+  gremlin,
 } from '../api';
+
+/** Convert HTML datetime-local value (local time, "YYYY-MM-DDTHH:MM") to UTC microseconds. */
+function localDatetimeToUTC(dt) {
+  const d = new Date(dt + ':00');
+  return d.getTime() * 1000;
+}
 
 let _idCounter = 0;
 function uid() {
@@ -27,6 +34,7 @@ export default function ChatArea({
   timeTravel,
   onTimeTravelToggle,
   timeTravelPoint,
+  onTimeTravelPointChange,
   defaultGraph,
   onDefaultGraphChange,
   graphs,
@@ -124,7 +132,11 @@ export default function ChatArea({
           // Step 2 (or only step for keyword): Search graph
           // When semantic mode, always use greedy for the API call
           const effectiveKwMode = isSemantic ? 'greedy' : kwSearchMode;
-          const res = await graphSearch(keywordsArr, defaultGraph, effectiveKwMode);
+          const gremlinSteps = [{ step: 'search', keywords: keywordsArr, mode: effectiveKwMode }];
+          if (timeTravel && timeTravelPoint) {
+            gremlinSteps.push({ step: 'timeTravel', at: localDatetimeToUTC(timeTravelPoint) });
+          }
+          const res = await gremlin(gremlinSteps, defaultGraph);
 
           if (!isSemantic) {
             const doneSteps = [{ icon: '✅', name: 'Graph search completed', status: 'done', llmOutput: '' }];
@@ -242,7 +254,7 @@ Return ONLY a comma-separated list of 1-based array indices of the selected item
         }
       }
     },
-    [activeConv, useGraph, searchMode, defaultGraph, providers, activeProvider, onUpdateConv, chatModel, kwSearchMode]
+    [activeConv, useGraph, searchMode, defaultGraph, providers, activeProvider, onUpdateConv, chatModel, kwSearchMode, timeTravel, timeTravelPoint]
   );
 
   const messages = activeConv?.messages || [];
@@ -303,7 +315,7 @@ Return ONLY a comma-separated list of 1-based array indices of the selected item
         timeTravel={timeTravel}
         onTimeTravelToggle={onTimeTravelToggle}
         timeTravelPoint={timeTravelPoint}
-        onTimeTravelPointChange={(v) => {}}
+        onTimeTravelPointChange={onTimeTravelPointChange}
         timeTravelGraphs={timeTravelGraphs}
         defaultModelKey={defaultModelKey}
         graphName={defaultGraph}
