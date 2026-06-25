@@ -212,7 +212,7 @@ curl localhost:8080/documents/{id}/content
 
 | Step | Parameters | Description |
 |------|-----------|-------------|
-| `search` | `keywords: [string], mode?: "greedy"\|"exact"` | 🔥 Neural index search (vertices + edges) |
+| `search` | `keywords: [string], mode?: "greedy"\|"exact", at?: int` | 🔥 Neural index search (vertices + edges). `at` enables time-travel filter: neurons deleted before `at` are excluded |
 | `V` | `ids?: [number]` | All or specific vertices |
 | `E` | `ids?: [number]` | All or specific edges |
 | `has` | `key, value` | Exact property filter |

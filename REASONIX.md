@@ -72,7 +72,7 @@ App.jsx
 ## Gremlin Steps (16 total)
 | Step | Description |
 |------|-------------|
-| `search` | Neural index search — returns vertices from matched/activated neurons. Supports `mode: "greedy"` (match ANY keyword) or `"exact"` (match ALL keywords). Default greedy. Capped at 100 results. |
+| `search` | Neural index search — returns vertices from matched/activated neurons. Supports `mode: "greedy"` (match ANY keyword) or `"exact"` (match ALL keywords). Optional `at` (Unix μs) for time-travel aware search. Default greedy. Capped at 100 results. |
 | `V` / `E` | All or specific vertices / edges |
 | `has` / `hasNot` / `hasKey` / `hasValue` / `hasLabel` / `hasText` | Property filters |
 | `out` / `in` / `both` | Vertex traversal (supports depth) |
