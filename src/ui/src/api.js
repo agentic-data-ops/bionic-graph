@@ -87,30 +87,17 @@ export async function listExtractTasks() {
 }
 
 export async function traverse(vid, label = null, graph = 'default', at) {
-  const edgeFilter = label ? { label } : {};
-  const timeTravelStep = at ? { step: 'timeTravel', at } : null;
-  // Fetch both neighboring vertices AND edges in a single merged response
-  const [vertRes, edgeRes] = await Promise.all([
-    gremlin([
-      { step: 'V', ids: [vid] },
-      ...(timeTravelStep ? [timeTravelStep] : []),
-      { step: 'both', depth: 1, ...edgeFilter },
-    ], graph),
-    gremlin([
-      { step: 'V', ids: [vid] },
-      ...(timeTravelStep ? [timeTravelStep] : []),
-      { step: 'bothE', ...edgeFilter },
-    ], graph),
-  ]);
-  // Merge: vertices from vertRes + edges from edgeRes
-  const merged = {
-    success: vertRes.success && edgeRes.success,
-    data: [...(vertRes.data || []), ...(edgeRes.data || [])],
-    error: vertRes.error || edgeRes.error,
-    ticks_used: vertRes.ticks_used,
-    neurons_fired: vertRes.neurons_fired,
-  };
-  return merged;
+  const steps = at
+    ? [
+        { step: 'timeTravel', at },
+        { step: 'V', ids: [vid] },
+        { step: 'expand', depth: 1, ...(label ? { label } : {}) },
+      ]
+    : [
+        { step: 'V', ids: [vid] },
+        { step: 'expand', depth: 1, ...(label ? { label } : {}) },
+      ];
+  return gremlin(steps, graph);
 }
 
 export async function getVertex(vid, graph = 'default') {

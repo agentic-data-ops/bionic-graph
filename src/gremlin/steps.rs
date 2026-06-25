@@ -359,6 +359,45 @@ pub fn execute_query_with_llm(
                 Ok(results)
             }
 
+            TraversalStep::Expand { label, depth } => {
+                let g = graph.lock().unwrap();
+                let _d = depth.unwrap_or(1);
+                let results: Vec<TraversalResult> = input
+                    .into_iter()
+                    .flat_map(|r| match r {
+                        TraversalResult::VertexResult(v) => {
+                            let mut items: Vec<TraversalResult> = Vec::new();
+                            // 1. Neighbor vertices (like both)
+                            for nid in g.both_neighbors(v.id, label.as_deref()) {
+                                if let Some(nv) = g.get_vertex(nid) {
+                                    let props = nv.properties.iter()
+                                        .map(|(k, pv)| (k.clone(), property_to_json(pv)))
+                                        .collect();
+                                    items.push(TraversalResult::VertexResult(VertexResult {
+                                        element_type: "vertex".to_string(),
+                                        id: nv.id, name: nv.name.clone(),
+                                        keywords: nv.keywords.clone(),
+                                        document: nv.document.clone(),
+                                        labels: nv.labels.clone(), properties: props,
+                                    }));
+                                }
+                            }
+                            // 2. Connected edges (like bothE)
+                            let eids: Vec<_> = g.outgoing_edges(v.id).into_iter()
+                                .chain(g.incoming_edges(v.id).into_iter())
+                                .filter_map(|eid| g.get_edge(eid))
+                                .filter(|e| label.as_deref().map_or(true, |l| e.label == l))
+                                .map(|e| edge_to_result(e))
+                                .collect();
+                            items.extend(eids);
+                            items
+                        }
+                        other => vec![other],
+                    })
+                    .collect();
+                Ok(results)
+            }
+
             TraversalStep::HasText { key, pattern } => {
                 let pattern_lower = pattern.to_lowercase();
                 let results: Vec<TraversalResult> = input
@@ -725,6 +764,40 @@ fn run_steps(
                     .filter_map(|eid| g.get_edge(*eid))
                     .map(|e| edge_to_result(e))
                     .collect::<Vec<_>>()
+            }
+
+            TraversalStep::Expand { label, depth } => {
+                let g = graph.lock().unwrap();
+                let _d = depth.unwrap_or(1);
+                current = current.iter().flat_map(|r| match r {
+                    TraversalResult::VertexResult(v) => {
+                        let mut items: Vec<TraversalResult> = Vec::new();
+                        for nid in g.both_neighbors(v.id, label.as_deref()) {
+                            if let Some(nv) = g.get_vertex(nid) {
+                                let props = nv.properties.iter()
+                                    .map(|(k, pv)| (k.clone(), property_to_json(pv)))
+                                    .collect();
+                                items.push(TraversalResult::VertexResult(VertexResult {
+                                    element_type: "vertex".to_string(),
+                                    id: nv.id, name: nv.name.clone(),
+                                    keywords: nv.keywords.clone(),
+                                    document: nv.document.clone(),
+                                    labels: nv.labels.clone(), properties: props,
+                                }));
+                            }
+                        }
+                        let eids: Vec<_> = g.outgoing_edges(v.id).into_iter()
+                            .chain(g.incoming_edges(v.id).into_iter())
+                            .filter_map(|eid| g.get_edge(eid))
+                            .filter(|e| label.as_deref().map_or(true, |l| e.label == *l))
+                            .map(|e| edge_to_result(e))
+                            .collect();
+                        items.extend(eids);
+                        items
+                    }
+                    _ => vec![],
+                }).collect();
+                current
             }
 
             TraversalStep::Has { key, value } => {

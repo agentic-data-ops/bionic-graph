@@ -112,6 +112,16 @@ pub enum TraversalStep {
         label: Option<String>,
     },
 
+    /// Expand a vertex: returns neighbor vertices + connected edges in one step.
+    /// Combines `both` and `bothE` into a single result set.
+    #[serde(rename = "expand")]
+    Expand {
+        #[serde(default)]
+        label: Option<String>,
+        #[serde(default)]
+        depth: Option<usize>,
+    },
+
     /// Get values of a specific property.
     #[serde(rename = "values")]
     Values {
