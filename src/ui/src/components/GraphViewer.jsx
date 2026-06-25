@@ -393,6 +393,7 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
   const [newVertexName, setNewVertexName] = useState('');
   const [newVertexKeywords, setNewVertexKeywords] = useState('');
   const [newVertexLabels, setNewVertexLabels] = useState('');
+  const [newVertexProps, setNewVertexProps] = useState([{ k: '', v: '' }]);
   const [newEdgeLabel, setNewEdgeLabel] = useState('');
   const [newEdgeSource, setNewEdgeSource] = useState('');
   const [newEdgeTarget, setNewEdgeTarget] = useState('');
@@ -680,6 +681,25 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
                   placeholder="Labels (comma-separated)" value={newVertexLabels} onChange={(e) => setNewVertexLabels(e.target.value)} />
                 <input className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
                   placeholder="Keywords (comma-separated)" value={newVertexKeywords} onChange={(e) => setNewVertexKeywords(e.target.value)} />
+                <div>
+                  <div className="text-[10px] text-[var(--text-tertiary)] mb-1 font-medium">Properties</div>
+                  {newVertexProps.map((p, i) => (
+                    <div key={i} className="flex gap-1 mb-1">
+                      <input className="flex-1 px-2 py-1 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-[10px] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] font-mono"
+                        placeholder="key" value={p.k} onChange={(e) => {
+                          const copy = [...newVertexProps]; copy[i] = { ...copy[i], k: e.target.value }; setNewVertexProps(copy);
+                        }} />
+                      <input className="flex-1 px-2 py-1 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-[10px] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                        placeholder="value" value={p.v} onChange={(e) => {
+                          const copy = [...newVertexProps]; copy[i] = { ...copy[i], v: e.target.value }; setNewVertexProps(copy);
+                        }} />
+                      {i === newVertexProps.length - 1 && (
+                        <button className="px-1.5 text-[var(--text-tertiary)] hover:text-[var(--accent)] text-xs"
+                          onClick={() => setNewVertexProps([...newVertexProps, { k: '', v: '' }])}>+</button>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
               <div className="flex gap-2 justify-end mt-4">
                 <button className="px-3 py-1.5 rounded-lg bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs font-medium transition-all"
@@ -690,7 +710,7 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
                     const labels = newVertexLabels.split(',').map(s => s.trim()).filter(Boolean);
                     const keywords = newVertexKeywords.split(',').map(s => s.trim()).filter(Boolean);
                     try {
-                      const res = await addVertex(labels, {}, graph, newVertexName.trim(), keywords);
+                      const res = await addVertex(labels, props, graph, newVertexName.trim(), keywords);
                       if (res.id) {
                         const ns = nodesRef.current;
                         if (ns) ns.add({ id: res.id, label: newVertexName.trim(), _original: { type: 'vertex', id: res.id, name: newVertexName.trim(), keywords, labels } });
@@ -698,7 +718,7 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
                       }
                     } catch (e) { console.error('Add vertex failed:', e); }
                     setShowAddVertex(false);
-                    setNewVertexName(''); setNewVertexKeywords(''); setNewVertexLabels('');
+                    setNewVertexName(''); setNewVertexKeywords(''); setNewVertexLabels(''); setNewVertexProps([{ k: '', v: '' }]);
                   }}>Create</button>
               </div>
             </div>
