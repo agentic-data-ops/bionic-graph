@@ -400,9 +400,12 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
       }
     }
     if (edgesRef.current) {
+      const ns = nodesRef.current;
       for (const e of edgesRef.current.get()) {
         if (e.label && e.label.toLowerCase().includes(q)) {
-          results.push({ type: 'edge', id: e.id, label: `[edge] ${e.label}` });
+          const fromLabel = ns.get(e.from)?.label || `#${e.from}`;
+          const toLabel = ns.get(e.to)?.label || `#${e.to}`;
+          results.push({ type: 'edge', id: e.id, label: `[edge] ${e.label}`, fromLabel, toLabel });
         }
       }
     }
@@ -634,6 +637,9 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
                 >
                   <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${r.type === 'vertex' ? 'bg-[var(--accent)]' : 'bg-[var(--success)]'}`} />
                   <span className="truncate">{r.label}</span>
+                  {r.type === 'edge' && (
+                    <span className="text-[10px] text-[var(--text-tertiary)] ml-1 flex-shrink-0">{r.fromLabel} → {r.toLabel}</span>
+                  )}
                   <span className="text-[var(--text-tertiary)] font-mono ml-auto flex-shrink-0">#{r.id}</span>
                 </button>
               ))}
