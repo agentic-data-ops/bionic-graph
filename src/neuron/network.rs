@@ -158,10 +158,13 @@ impl NeuralNetwork {
 
     /// Search the neural index with query keywords.
     ///
+    /// `search_at` — optional timestamp for time-travel queries; filters out
+    /// neurons that were soft-deleted before this time.
     /// Returns ranked vertices, fired neuron IDs, hot neuron IDs, and ticks run.
     pub fn search(
         &mut self,
         query: &str,
+        search_at: Option<i64>,
     ) -> (Vec<(VertexId, u32)>, Vec<(EdgeId, u32)>, Vec<NeuronId>, Vec<NeuronId>, usize) {
         // Reset all neuron states to ensure deterministic results per query
         activation::reset(&mut self.neurons);
@@ -182,6 +185,7 @@ impl NeuralNetwork {
             &self.synapses,
             &self.activation_config,
             &tokens,
+            search_at,
         );
 
         // Run Hebbian learning

@@ -11,6 +11,10 @@ pub enum TraversalStep {
         keywords: Vec<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         mode: Option<String>,
+        /// Optional timestamp (Unix μs) for time-travel aware search.
+        /// If set, neurons soft-deleted before this time are excluded.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        at: Option<i64>,
     },
 
     /// Start with all vertices, or specific vertices by ID.
@@ -455,7 +459,7 @@ mod tests {
     #[test]
     fn test_search_step() {
         roundtrip(
-            TraversalStep::Search { keywords: vec!["AI".into(), "engineer".into()], mode: None },
+            TraversalStep::Search { keywords: vec!["AI".into(), "engineer".into()], mode: None, at: None },
             r#"{"step":"search","keywords":["AI","engineer"]}"#,
         );
     }

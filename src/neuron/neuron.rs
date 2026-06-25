@@ -165,6 +165,9 @@ pub struct Neuron {
     pub _version: u64,
     pub _updated_at: i64,
     pub _is_deleted: bool,
+    /// Microsecond timestamp when this neuron was soft-deleted (0 = not deleted).
+    #[serde(default)]
+    pub _deleted_at: i64,
 }
 
 impl Neuron {
@@ -185,6 +188,7 @@ impl Neuron {
             _version: 1,
             _updated_at: crate::graph::vertex::now_micros(),
             _is_deleted: false,
+            _deleted_at: 0,
         }
     }
 
@@ -201,6 +205,12 @@ impl Neuron {
         let mut n = Self::new(id, label);
         n.entity_type = Some(EntityType::Edge(eid));
         n
+    }
+
+    /// Mark this neuron as soft-deleted with the given timestamp.
+    pub fn mark_deleted(&mut self, deleted_at: i64) {
+        self._is_deleted = true;
+        self._deleted_at = deleted_at;
     }
 
     /// Set the keywords that trigger this neuron.
@@ -235,6 +245,16 @@ impl Neuron {
             strength: strength.clamp(0.0, 1.0),
             plasticity,
         });
+    }
+
+    /// Check if this neuron was already deleted at `search_at` time.
+    /// If `search_at` is None, checks if deleted at all.
+    pub fn is_deleted_at(&self, search_at: Option<i64>) -> bool {
+        if !self._is_deleted { return false; }
+        match search_at {
+            Some(ts) => self._deleted_at <= ts,
+            None => true,
+        }
     }
 
     /// Check if any keyword matches the given query tokens.

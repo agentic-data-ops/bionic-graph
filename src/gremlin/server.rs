@@ -476,6 +476,7 @@ async fn search_handler(
     };
     let gremlin_query = GremlinQuery::new(vec![
         super::query::TraversalStep::Search {
+            at: None,
             mode: body.get("mode").and_then(|v| v.as_str().map(|s| s.to_string())),
             keywords: query_text.split_whitespace().map(|s| s.to_string()).collect(),
         },
@@ -572,6 +573,7 @@ async fn delete_vertex_handler(
     // Remove associated neuron
     if let Ok(mut nn) = handle.neural_network.lock() {
         use crate::neuron::neuron::EntityType;
+        let now = crate::graph::vertex::now_micros();
         let nid = nn.all_neurons().find_map(|n| {
             if matches!(n.entity_type, Some(EntityType::Vertex(v)) if v == id) {
                 Some(n.id)
@@ -580,9 +582,15 @@ async fn delete_vertex_handler(
             }
         });
         if let Some(nid) = nid {
-            nn.remove_neuron(nid);
+            let neuron_data;
+            {
+                let neuron = nn.get_neuron_mut(nid).expect("neuron should exist");
+                neuron.mark_deleted(now);
+                neuron_data = neuron.clone();
+            }
+            nn.mark_dirty();
             if let Ok(mut wal) = handle.redolog_wal.lock() {
-                let _ = wal.append_remove_neuron(nid);
+                let _ = wal.append_update_neuron(&neuron_data);
             }
         }
     }
@@ -899,12 +907,19 @@ async fn delete_document_handler(
                 if let Ok(mut wal) = handle.redolog_wal.lock() { let _ = wal.append_remove_vertex(vid); }
                 if let Ok(mut nn) = handle.neural_network.lock() {
                     use crate::neuron::neuron::EntityType;
+                    let now = crate::graph::vertex::now_micros();
                     let nid = nn.all_neurons().find_map(|n| {
                         if matches!(n.entity_type, Some(EntityType::Vertex(v)) if v == vid) { Some(n.id) } else { None }
                     });
                     if let Some(nid) = nid {
-                        nn.remove_neuron(nid);
-                        if let Ok(mut wal) = handle.redolog_wal.lock() { let _ = wal.append_remove_neuron(nid); }
+                        let neuron_data;
+                        {
+                            let neuron = nn.get_neuron_mut(nid).expect("neuron should exist");
+                            neuron.mark_deleted(now);
+                            neuron_data = neuron.clone();
+                        }
+                        nn.mark_dirty();
+                        if let Ok(mut wal) = handle.redolog_wal.lock() { let _ = wal.append_update_neuron(&neuron_data); }
                     }
                 }
             }

@@ -142,9 +142,11 @@ pub fn search(
     synapses: &HashMap<NeuronId, Vec<Synapse>>,
     config: &ActivationConfig,
     query_tokens: &[&str],
+    search_at: Option<i64>,
 ) -> (Vec<(VertexId, u32)>, Vec<(EdgeId, u32)>, Vec<NeuronId>, Vec<NeuronId>, usize) {
-    // Step 1: Activate input neurons by keyword matching
+    // Step 1: Activate input neurons by keyword matching (skip soft-deleted)
     for neuron in neurons.values_mut() {
+        if neuron.is_deleted_at(search_at) { continue; }
         let score_config = ScoreConfig::new(
             config.search_mode,
             config.greedy_exact_score,

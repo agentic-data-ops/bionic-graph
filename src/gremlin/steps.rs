@@ -50,11 +50,24 @@ pub fn execute_query_with_llm(
         };
 
         current = match step {
-            TraversalStep::Search { keywords, mode } => {
+            TraversalStep::Search { keywords, mode, at } => {
                 let mut nn = neural_network.lock().unwrap();
                 let query_str = keywords.join(" ");
                 nn.set_search_mode(mode.as_deref());
-                let (ranked_vertices, ranked_edges, fired, _hot, ticks) = nn.search(&query_str);
+                // If search doesn't specify at but timeTravel follows in the pipeline, inject it
+                let search_at = at.or_else(|| {
+                    // Look ahead for a timeTravel step in remaining query steps
+                    let pos = query.steps.iter().position(|s| matches!(s, TraversalStep::Search { .. })).unwrap_or(0);
+                    let remaining = &query.steps[pos + 1..];
+                    remaining.iter().find_map(|s| {
+                        if let TraversalStep::TimeTravel { at } = s {
+                            parse_time_value(at).ok()
+                        } else {
+                            None
+                        }
+                    })
+                });
+                let (ranked_vertices, ranked_edges, fired, _hot, ticks) = nn.search(&query_str, search_at);
                 ticks_used = Some(ticks);
                 neurons_fired = Some(fired);
 
@@ -1407,7 +1420,7 @@ mod tests {
         let g = setup_graph();
         let nn = setup_neural_network();
         let resp = run_query(&g, &nn, vec![
-            TraversalStep::Search { keywords: vec!["person".into()], mode: None },
+            TraversalStep::Search { keywords: vec!["person".into()], mode: None, at: None },
         ]);
         // Search through neural network — may return results or empty
         assert!(resp.success, "Search should succeed");

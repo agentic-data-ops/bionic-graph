@@ -132,9 +132,10 @@ export default function ChatArea({
           // Step 2 (or only step for keyword): Search graph
           // When semantic mode, always use greedy for the API call
           const effectiveKwMode = isSemantic ? 'greedy' : kwSearchMode;
-          const gremlinSteps = [{ step: 'search', keywords: keywordsArr, mode: effectiveKwMode }];
-          if (timeTravel && timeTravelPoint) {
-            gremlinSteps.push({ step: 'timeTravel', at: localDatetimeToUTC(timeTravelPoint) });
+          const ttMicros = timeTravel && timeTravelPoint ? localDatetimeToUTC(timeTravelPoint) : null;
+          const gremlinSteps = [{ step: 'search', keywords: keywordsArr, mode: effectiveKwMode, at: ttMicros }];
+          if (ttMicros) {
+            gremlinSteps.push({ step: 'timeTravel', at: ttMicros });
           }
           const res = await gremlin(gremlinSteps, defaultGraph);
 

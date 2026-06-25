@@ -107,7 +107,7 @@ fn main() {
 
     // ── Step 3: Neural search ────────────────────────────
     println!("🔍 Step 3: Neural search — query: 'ai engineering'");
-    let (vertices, _edges, fired, _hot, ticks) = nn.search("ai engineering");
+    let (vertices, _edges, fired, _hot, ticks) = nn.search("ai engineering", None);
     println!("   Fired {} neurons across {} ticks", fired.len(), ticks);
     println!("   Found {} vertices via spreading activation:", vertices.len());
     for (vid, score) in &vertices {
@@ -150,7 +150,7 @@ fn main() {
     
     // Simulate repeated co-firing
     for _ in 0..5 {
-        let (_v, _e, fired, _hot, _) = nn.search("ai engineering");
+        let (_v, _e, fired, _hot, _) = nn.search("ai engineering", None);
         // Hebbian learning happens inside search()
         println!("   Co-firing: {:?} → synapse strengthens", fired);
     }
