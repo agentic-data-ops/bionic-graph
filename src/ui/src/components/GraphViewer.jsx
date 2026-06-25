@@ -709,6 +709,7 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
                     if (!newVertexName.trim()) return;
                     const labels = newVertexLabels.split(',').map(s => s.trim()).filter(Boolean);
                     const keywords = newVertexKeywords.split(',').map(s => s.trim()).filter(Boolean);
+                    const props = Object.fromEntries(newVertexProps.filter(p => p.k.trim()).map(p => [p.k.trim(), p.v.trim()]));
                     try {
                       const res = await addVertex(labels, props, graph, newVertexName.trim(), keywords);
                       if (res.id) {
