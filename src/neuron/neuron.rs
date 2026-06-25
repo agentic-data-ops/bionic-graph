@@ -208,9 +208,12 @@ impl Neuron {
     }
 
     /// Mark this neuron as soft-deleted with the given timestamp.
+    /// Idempotent — subsequent calls keep the original `_deleted_at`.
     pub fn mark_deleted(&mut self, deleted_at: i64) {
-        self._is_deleted = true;
-        self._deleted_at = deleted_at;
+        if !self._is_deleted {
+            self._is_deleted = true;
+            self._deleted_at = deleted_at;
+        }
     }
 
     /// Set the keywords that trigger this neuron.
