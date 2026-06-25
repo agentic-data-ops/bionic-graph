@@ -441,7 +441,10 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
         setSelected({ item: edgeData, type: 'edge' });
       }
       net.selectEdges([result.id]);
-      net.focus(result.id, { scale: 1.5, animation: { duration: 300, easingFunction: 'easeInOutQuad' } });
+      // Focus on the source node of the edge (vis-network focus() only works on nodes)
+      if (edgeData.from) {
+        net.focus(edgeData.from, { scale: 1.5, animation: { duration: 300, easingFunction: 'easeInOutQuad' } });
+      }
     }
   }, []);
 
