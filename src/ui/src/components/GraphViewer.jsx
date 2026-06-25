@@ -103,13 +103,18 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument, o
   const labels = item.labels || [];
 
   const startEdit = useCallback(() => {
-    setEditLabels(labels.join(', '));
+    // For edges, use item.label (singular); for vertices, use item.labels (array)
+    if (type === 'edge') {
+      setEditLabels(item.label || '');
+    } else {
+      setEditLabels(labels.join(', '));
+    }
     setLocalName(item.name || '');
     setLocalKeywords((item.keywords || []).join(', '));
     setEditProps(Object.fromEntries(Object.entries(props).map(([k, v]) => [k, String(v)])));
     setError('');
     setEditing(true);
-  }, [labels, props]);
+  }, [labels, props, type, item]);
 
   const cancelEdit = useCallback(() => {
     setEditing(false);
