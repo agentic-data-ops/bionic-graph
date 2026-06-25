@@ -77,7 +77,7 @@ function DocViewer({ docId, onClose }) {
 function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument, onSelectVertex, graphData, nodesRef }) {
   const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
-  const [editLabels, setEditLabels] = useState('');
+  const [editLabel, setEditLabel] = useState('');
   const [editProps, setEditProps] = useState({});
   const [localName, setLocalName] = useState("");
   const [localKeywords, setLocalKeywords] = useState("");
@@ -104,9 +104,9 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument, o
 
   const startEdit = useCallback(() => {
     if (type === 'vertex') {
-      setEditLabels(labels.join(', '));
+      setEditLabel(labels.join(', '));
     } else {
-      setEditLabels(item.label || '');
+      setEditLabel(item.label || '');
     }
     setLocalName(item.name || '');
     setLocalKeywords((item.keywords || []).join(', '));
@@ -124,7 +124,7 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument, o
     setSaving(true);
     setError('');
     try {
-      const newLabels = editLabels.split(',').map((s) => s.trim()).filter(Boolean);
+      const newLabels = editLabel.split(',').map((s) => s.trim()).filter(Boolean);
       const newProps = Object.fromEntries(
         Object.entries(editProps).map(([k, v]) => [k, v])
       );
@@ -133,7 +133,7 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument, o
       if (type === 'vertex') {
         await updateVertexProperties(item.id, newLabels, editProps, graphName, name, keywords);
       } else {
-        const newLabel = editLabels.trim() || item.label || '';
+        const newLabel = editLabel.trim() || item.label || '';
         await updateEdgeProperties(item.id, newLabel, editProps, graphName);
       }
       item.labels = newLabels;
@@ -145,7 +145,7 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument, o
       setError(e.message || 'Save failed');
     }
     setSaving(false);
-  }, [editLabels, editProps, item, type, graphName, localName, localKeywords]);
+  }, [editLabel, editProps, item, type, graphName, localName, localKeywords]);
 
   return (
     <div className="w-72 bg-[var(--bg-secondary)] border-l border-[var(--border)] flex flex-col h-full overflow-y-auto flex-shrink-0 select-text">
@@ -195,8 +195,8 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument, o
           ) : editing ? (
             <input
               className="w-full px-2.5 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
-              value={editLabels}
-              onChange={(e) => setEditLabels(e.target.value)}
+              value={editLabel}
+              onChange={(e) => setEditLabel(e.target.value)}
             />
           ) : (
             <div className="flex flex-wrap gap-1.5">
