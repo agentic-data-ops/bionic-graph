@@ -302,46 +302,13 @@ async fn add_vertex_handler(
     Json(req): Json<AddVertexRequest>,
 ) -> Result<Json<AddVertexResponse>, (StatusCode, Json<Value>)> {
     let graph_name = resolve_graph_name(&headers);
-    let mut gm = state.graph_manager.lock().unwrap();
-    let handle = gm.get_mut(&graph_name).ok_or_else(|| {
-        (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "graph not found"})))
-    })?;
-    let labels = req.labels;
-    let mut g = handle.graph.lock().unwrap();
+    let gm = state.graph_manager.lock().unwrap();
     let props: std::collections::HashMap<String, crate::graph::PropertyValue> = req
         .properties.into_iter().map(|(k, v)| (k, json_to_property(&v))).collect();
-    let id = g.create_vertex(labels.clone());
-    if let Some(v) = g.get_vertex_mut(id) {
-        v.name = req.name.clone();
-        v.keywords = req.keywords.clone();
-        // Remove built-in fields from custom properties
-        let mut clean_props = props;
-        clean_props.remove("name");
-        clean_props.remove("keywords");
-        v.properties = clean_props;
+    match gm.add_vertex_to_graph(&graph_name, &req.name, &req.keywords, &req.labels, &props) {
+        Ok(id) => Ok(Json(AddVertexResponse { id })),
+        Err(e) => Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e})))),
     }
-    // Graph WAL
-    if let Ok(mut wal) = handle.redolog_wal.lock() {
-        let _ = wal.append_add_vertex(id, &labels);
-    }
-    // Auto-create a neuron for this vertex (keywords include name for search)
-    let nn_label = labels.first().cloned().unwrap_or_else(|| "entity".to_string());
-    let mut keywords = labels.clone();
-    keywords.push(req.name.clone());
-    for kw in &req.keywords {
-        keywords.push(kw.clone());
-    }
-    {
-        let mut nn = handle.neural_network.lock().unwrap();
-        let nid = nn.neuron_count() as u64 + 1;
-        let mut neuron = crate::neuron::neuron::Neuron::for_vertex(nid, &nn_label, id);
-        neuron.keywords = keywords;
-        nn.add_neuron(neuron.clone());
-        if let Ok(mut wal) = handle.redolog_wal.lock() {
-            let _ = wal.append_add_neuron(&neuron);
-        }
-    }
-    Ok(Json(AddVertexResponse { id }))
 }
 
 /// POST /edges — Add an edge.
@@ -351,36 +318,13 @@ async fn add_edge_handler(
     Json(req): Json<AddEdgeRequest>,
 ) -> Result<Json<AddEdgeResponse>, (StatusCode, Json<Value>)> {
     let graph_name = resolve_graph_name(&headers);
-    let mut gm = state.graph_manager.lock().unwrap();
-    let handle = gm.get_mut(&graph_name).ok_or_else(|| {
-        (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "graph not found"})))
-    })?;
-    let label = req.label.clone();
-    let mut g = handle.graph.lock().unwrap();
-    let id = g.create_edge(label.clone(), req.source, req.target).map_err(|e| {
-        (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()})))
-    })?;
-    if let Ok(mut wal) = handle.redolog_wal.lock() {
-        let _ = wal.append_add_edge(id, &label, req.source, req.target);
+    let gm = state.graph_manager.lock().unwrap();
+    let props: std::collections::HashMap<String, crate::graph::PropertyValue> = req
+        .properties.into_iter().map(|(k, v)| (k, json_to_property(&v))).collect();
+    match gm.add_edge_to_graph(&graph_name, &req.label, req.source, req.target, &props) {
+        Ok(id) => Ok(Json(AddEdgeResponse { id })),
+        Err(e) => Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e})))),
     }
-    if let Some(e) = g.get_edge_mut(id) {
-        e.properties = req.properties.into_iter().map(|(k, v)| (k, json_to_property(&v))).collect();
-    }
-    drop(g);
-    // Auto-create a neuron for this edge
-    let mut nn = handle.neural_network.lock().unwrap();
-    let nid = (nn.neuron_count() as u64) + 1;
-    let mut neuron = crate::neuron::neuron::Neuron::for_edge(nid, &label, id);
-    neuron.vertex_refs = vec![req.source, req.target];
-    neuron.keywords = vec![label.clone()];
-    nn.add_neuron(neuron.clone());
-    // WAL: log the new neuron
-    if let Ok(mut wal) = handle.redolog_wal.lock() {
-        let _ = wal.append_add_neuron(&neuron);
-    }
-    // Auto-create neural synapses between neurons referencing the two vertices
-    nn.auto_synapse(req.source, req.target);
-    Ok(Json(AddEdgeResponse { id }))
 }
 
 /// POST /neurons — Create a neuron.
@@ -1010,15 +954,6 @@ async fn start_extraction_handler(
     let content = state.document_manager.get_content(&id)
         .ok_or_else(|| (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Document content not found"}))))?;
 
-    // Get graph handle from X-Graph-Name header
-    let (graph, neural) = {
-        let gm = state.graph_manager.lock().unwrap();
-        let handle = gm.get(&graph_name).ok_or_else(|| {
-            (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": format!("Graph '{}' not found", graph_name)})))
-        })?;
-        (handle.graph.clone(), handle.neural_network.clone())
-    };
-
     let title = doc.title.clone();
 
     // Build ExtractionConfig from current settings at runtime.
@@ -1045,8 +980,7 @@ async fn start_extraction_handler(
         content,
         title,
         graph_name.clone(),
-        graph,
-        neural,
+        state.graph_manager.clone(),
         Arc::new(state.document_manager.clone()),
     );
 

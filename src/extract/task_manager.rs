@@ -12,6 +12,7 @@ use super::pipeline::ExtractionStats;
 use super::extract_content_raw_with_nn_and_progress;
 
 use crate::graph::Graph;
+use crate::graph_manager::GraphManager;
 use crate::neuron::NeuralNetwork;
 
 // ─── Task Status ─────────────────────────────────────────────────
@@ -379,8 +380,7 @@ impl ExtractionTaskManager {
         doc_content: String,
         doc_title: String,
         graph_name: String,
-        graph: Arc<Mutex<Graph>>,
-        neural: Arc<Mutex<NeuralNetwork>>,
+        graph_manager: Arc<Mutex<GraphManager>>,
         doc_manager: Arc<DocumentManager>,
     ) -> String {
         let task_id = self.create_task("default", &doc_title);
@@ -420,8 +420,8 @@ impl ExtractionTaskManager {
                 &doc_content,
                 &doc_title,
                 &doc_id,
-                &graph,
-                &neural,
+                &graph_manager,
+                &graph_name,
                 on_step,
             )
             .await;

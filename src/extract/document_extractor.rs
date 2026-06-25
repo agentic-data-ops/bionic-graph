@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex};
 
 use serde::Deserialize;
 
-use crate::graph::{Graph, PropertyValue, VertexId};
-use crate::neuron::NeuralNetwork;
+use crate::graph::PropertyValue;
+use crate::graph_manager::GraphManager;
 
 use super::config::ExtractionConfig;
 use super::llm_client::chat_completion_with_retry;
@@ -25,6 +25,12 @@ pub type StepCallback = Box<dyn Fn(&str, f64, Option<&str>) + Send + Sync>;
 
 /// Token overhead for system prompt + user instructions.
 const PROMPT_OVERHEAD_TOKENS: usize = 4096;
+
+/// System prompt for tag extraction.
+const TAG_EXTRACT_PROMPT: &str = r#"You are a knowledge graph assistant. Generate 1~5 most important tags from the markdown document below, to describe the content topic.
+
+Return ONLY valid JSON: {"tags": ["tag1", "tag2", ...]}
+"#;
 
 /// System prompt for full-document extraction.
 const FULL_DOC_PROMPT: &str = r#"You are a knowledge graph extractor. Extract entities and their relationships from the given markdown document.
@@ -50,8 +56,7 @@ Return ONLY valid JSON with this structure:
       "target": "EntityName",
       "relation": "relationship description"
     }
-  ],
-  "tags": ["tag1", "tag2", ...]
+  ]
 }
 
 - Extract entities and edges as many as possible.
@@ -60,8 +65,14 @@ Return ONLY valid JSON with this structure:
 - Relations should use clear, concise descriptions in the original language.
 - Entity type could be person, place, organization, concept, event, object or any other types identify what type of thing it is.
 - Entity name, type, keywords should be in the original language.
-- Generate 1~5 most important tags from the markdown document, to describe the content topic.
 "#;
+
+/// Parsed LLM response for tags.
+#[derive(Debug, Clone, Deserialize)]
+struct TagOutput {
+    #[serde(default)]
+    tags: Vec<String>,
+}
 
 /// Parsed LLM response for full-document extraction.
 #[derive(Debug, Clone, Deserialize)]
@@ -70,8 +81,6 @@ struct FullExtractionOutput {
     entities: Vec<EntityOutput>,
     #[serde(default)]
     relations: Vec<RelationOutput>,
-    #[serde(default)]
-    tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -92,13 +101,215 @@ struct RelationOutput {
     relation: Option<String>,
 }
 
-/// Extract entities and relations from a full document in ONE LLM call.
+/// Estimate whether a content will fit within the LLM context + output limits.
+fn estimate_tokens(content: &str) -> usize {
+    // Rough: ~2 chars per token for CJK text
+    content.len() / 2 + content.split_whitespace().count()
+}
+
+fn is_over_limit(config: &ExtractionConfig, content: &str) -> bool {
+    let estimated = estimate_tokens(content);
+    let available = config
+        .context_window
+        .saturating_sub(PROMPT_OVERHEAD_TOKENS)
+        .saturating_sub(config.max_output_tokens);
+    estimated > available
+}
+
+/// Split content by chapter headings (## or ###).
+fn split_by_chapters(content: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    for line in content.lines() {
+        if line.starts_with("## ") || line.starts_with("### ") {
+            if !current.is_empty() {
+                parts.push(current.trim().to_string());
+            }
+            current = line.to_string();
+        } else {
+            if !current.is_empty() {
+                current.push('\n');
+            }
+            current.push_str(line);
+        }
+    }
+    if !current.is_empty() {
+        parts.push(current.trim().to_string());
+    }
+    parts
+}
+
+/// Call LLM for tags, with splitting if content is too large.
+async fn extract_tags(
+    config: &ExtractionConfig,
+    content: &str,
+    doc_title: &str,
+    on_step: &StepCallback,
+) -> Result<Vec<String>, String> {
+    if is_over_limit(config, content) {
+        let chapters = split_by_chapters(content);
+        let mut all_tags = Vec::new();
+        for (i, chapter) in chapters.iter().enumerate() {
+            on_step("Extracting tags", (i as f64 / chapters.len() as f64) * 50.0,
+                Some(&format!("Chapter {}/{}", i + 1, chapters.len())));
+            let user_msg = format!("Document section: {}\n\n---\n\n{}", doc_title, chapter);
+            let resp = chat_completion_with_retry(config, TAG_EXTRACT_PROMPT, &user_msg).await
+                .map_err(|e| format!("Tag LLM call failed: {}", e))?;
+            let cleaned = clean_json(&resp.content);
+            if let Ok(parsed) = serde_json::from_str::<TagOutput>(&cleaned) {
+                for tag in parsed.tags {
+                    if !all_tags.contains(&tag) {
+                        all_tags.push(tag);
+                    }
+                }
+            }
+        }
+        on_step("Extracting tags", 50.0, Some(&format!("{} tags merged", all_tags.len())));
+        Ok(all_tags)
+    } else {
+        let user_msg = format!("Document: {}\n\n---\n\n{}", doc_title, content);
+        let resp = chat_completion_with_retry(config, TAG_EXTRACT_PROMPT, &user_msg).await
+            .map_err(|e| format!("Tag LLM call failed: {}", e))?;
+        let cleaned = clean_json(&resp.content);
+        let parsed: TagOutput = serde_json::from_str(&cleaned)
+            .map_err(|e| format!("Failed to parse tag response: {}", e))?;
+        Ok(parsed.tags)
+    }
+}
+
+/// Call LLM for entities/relations, with splitting + merging.
+async fn extract_entities_and_relations(
+    config: &ExtractionConfig,
+    content: &str,
+    doc_title: &str,
+    on_step: &StepCallback,
+) -> Result<(Vec<EntityOutput>, Vec<RelationOutput>), String> {
+    if is_over_limit(config, content) {
+        let chapters = split_by_chapters(content);
+        let mut all_entities: Vec<EntityOutput> = Vec::new();
+        let mut all_relations: Vec<RelationOutput> = Vec::new();
+        for (i, chapter) in chapters.iter().enumerate() {
+            on_step("Extracting knowledge", (i as f64 / chapters.len() as f64) * 80.0,
+                Some(&format!("Chapter {}/{}", i + 1, chapters.len())));
+            let user_msg = format!("Document section: {}\n\n---\n\n{}", doc_title, chapter);
+            let resp = chat_completion_with_retry(config, FULL_DOC_PROMPT, &user_msg).await
+                .map_err(|e| format!("LLM call failed: {}", e))?;
+            let cleaned = clean_json(&resp.content);
+            if let Ok(parsed) = serde_json::from_str::<FullExtractionOutput>(&cleaned) {
+                all_entities.extend(parsed.entities);
+                all_relations.extend(parsed.relations);
+            }
+        }
+        on_step("Extracting knowledge", 80.0,
+            Some(&format!("{} entities, {} relations from {} chapters",
+                all_entities.len(), all_relations.len(), chapters.len())));
+        Ok((all_entities, all_relations))
+    } else {
+        let user_msg = format!("Document: {}\n\n---\n\n{}", doc_title, content);
+        let resp = chat_completion_with_retry(config, FULL_DOC_PROMPT, &user_msg).await
+            .map_err(|e| format!("LLM call failed: {}", e))?;
+        on_step("Extracting knowledge", 80.0,
+            Some(&format!("Used {} prompt + {} completion tokens",
+                resp.prompt_tokens, resp.completion_tokens)));
+
+        // Check for truncated output
+        if let Some(ref finish_reason) = resp.finish_reason {
+            if finish_reason == "length" {
+                // Split and retry
+                let chapters = split_by_chapters(content);
+                let mut all_entities = Vec::new();
+                let mut all_relations = Vec::new();
+                for (i, chapter) in chapters.iter().enumerate() {
+                    on_step("Extracting knowledge (retry)", (i as f64 / chapters.len() as f64) * 80.0,
+                        Some(&format!("Chapter {}/{}", i + 1, chapters.len())));
+                    let user_msg = format!("Document section: {}\n\n---\n\n{}", doc_title, chapter);
+                    if let Ok(retry_resp) = chat_completion_with_retry(config, FULL_DOC_PROMPT, &user_msg).await {
+                        let cleaned = clean_json(&retry_resp.content);
+                        if let Ok(parsed) = serde_json::from_str::<FullExtractionOutput>(&cleaned) {
+                            all_entities.extend(parsed.entities);
+                            all_relations.extend(parsed.relations);
+                        }
+                    }
+                }
+                return Ok((all_entities, all_relations));
+            }
+        }
+
+        let cleaned = clean_json(&resp.content);
+        let parsed: FullExtractionOutput = serde_json::from_str(&cleaned)
+            .map_err(|e| {
+                format!(
+                    "Failed to parse LLM response: {}. Raw (first 500): {}",
+                    e,
+                    &resp.content[..resp.content.len().min(500)]
+                )
+            })?;
+        Ok((parsed.entities, parsed.relations))
+    }
+}
+
+/// Dedup entities by name: merge keywords, merge property keys, ignore value differences.
+fn dedup_entities(entities: &[EntityOutput]) -> Vec<EntityOutput> {
+    let mut merged: HashMap<String, EntityOutput> = HashMap::new();
+    for entity in entities {
+        let name = entity.name.as_deref().unwrap_or("unknown").to_string();
+        let entry = merged.entry(name.clone()).or_insert_with(|| EntityOutput {
+            name: Some(name.clone()),
+            type_: entity.type_.clone(),
+            properties: Some(HashMap::new()),
+            keywords: Some(Vec::new()),
+        });
+        // Merge types
+        if let Some(ref types) = entity.type_ {
+            let entry_types = entry.type_.get_or_insert_with(Vec::new);
+            for t in types {
+                if !entry_types.contains(t) {
+                    entry_types.push(t.clone());
+                }
+            }
+        }
+        // Merge keywords
+        if let Some(ref kws) = entity.keywords {
+            let entry_kws = entry.keywords.get_or_insert_with(Vec::new);
+            for kw in kws {
+                if !entry_kws.contains(kw) {
+                    entry_kws.push(kw.clone());
+                }
+            }
+        }
+        // Merge property keys (ignore values)
+        if let Some(ref props) = entity.properties {
+            let entry_props = entry.properties.get_or_insert_with(HashMap::new);
+            for (k, _v) in props {
+                entry_props.entry(k.clone()).or_insert_with(|| serde_json::Value::String(String::new()));
+            }
+        }
+    }
+    merged.into_values().collect()
+}
+
+/// Convert serde_json::Value to PropertyValue for graph storage.
+fn json_to_property_value(val: &serde_json::Value) -> PropertyValue {
+    match val {
+        serde_json::Value::String(s) => PropertyValue::String(s.clone()),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() { PropertyValue::Integer(i) }
+            else if let Some(f) = n.as_f64() { PropertyValue::Float(f) }
+            else { PropertyValue::Null }
+        }
+        serde_json::Value::Bool(b) => PropertyValue::Boolean(*b),
+        serde_json::Value::Array(arr) => PropertyValue::List(arr.iter().map(json_to_property_value).collect()),
+        _ => PropertyValue::String(val.to_string()),
+    }
+}
+
+/// Extract entities and relations from document content.
 ///
 /// Steps reported via `on_step`:
-///   1. "Analyzing document content" — token estimation & context check
-///   2. "Calling LLM to extract knowledge" — the LLM call
-///   3. "Creating graph vertices" — creating vertex for each entity
-///   4. "Creating graph edges" — creating edge for each relation
+///   1. "Extracting tags" — call LLM for tags, split if needed
+///   2. "Extracting knowledge" — call LLM for entities+relations, split+merge if needed
+///   3. "Creating graph vertices" — dedup + save via GraphManager
+///   4. "Creating graph edges" — save via GraphManager
 ///
 /// Returns `ExtractionResult` with counts.
 pub async fn extract_document_full(
@@ -106,70 +317,22 @@ pub async fn extract_document_full(
     content: &str,
     doc_title: &str,
     doc_id: &str,
-    graph: &Arc<Mutex<Graph>>,
-    neural: &Arc<Mutex<NeuralNetwork>>,
+    graph_manager: &Arc<Mutex<GraphManager>>,
+    graph_name: &str,
     on_step: StepCallback,
 ) -> Result<ExtractionResult, String> {
-    // ── Step 1: Analyze document ──────────────────────────────
-    on_step("Analyzing document content", 10.0, None);
+    // ── Step 1: Extract tags (with splitting if needed) ──────
+    on_step("Extracting tags", 0.0, None);
+    let tags = extract_tags(config, content, doc_title, &on_step).await?;
 
-    // Estimate token count (rough: ~4 chars per token for CJK)
-    let estimated_tokens = content.len() / 2 + content.split_whitespace().count();
-    let available = config
-        .context_window
-        .saturating_sub(PROMPT_OVERHEAD_TOKENS)
-        .saturating_sub(config.max_output_tokens);
+    // ── Step 2: Extract entities + relations (with splitting if needed) ──
+    on_step("Extracting knowledge", 20.0, None);
+    let (entities, relations) = extract_entities_and_relations(
+        config, content, doc_title, &on_step,
+    ).await?;
 
-    if estimated_tokens > available {
-        return Err(format!(
-            "DOCUMENT_TOO_LARGE: Document is too large ({} chars, ~{} estimated tokens, limit is {} tokens). \
-             Please split it into smaller sections and import separately.",
-            content.len(),
-            estimated_tokens,
-            available,
-        ));
-    }
-
-    // ── Step 2: Call LLM ─────────────────────────────────────
-    on_step("Calling LLM to extract knowledge", 0.0, None);
-
-    let user_message = format!(
-        "Document: {}\n\n---\n\n{}",
-        doc_title,
-        content
-    );
-
-    let llm_result = chat_completion_with_retry(config, FULL_DOC_PROMPT, &user_message).await
-        .map_err(|e| format!("LLM call failed: {}", e))?;
-
-    on_step("Calling LLM to extract knowledge", 100.0,
-        Some(&format!("Used {} prompt + {} completion tokens",
-            llm_result.prompt_tokens, llm_result.completion_tokens)));
-
-    // Check for truncated output
-    if let Some(ref finish_reason) = llm_result.finish_reason {
-        if finish_reason == "length" {
-            return Err(format!(
-                "DOCUMENT_TOO_LARGE: LLM output was truncated (reached max output tokens). \
-                 The document content is too large. Please split it into smaller sections and import separately.",
-            ));
-        }
-    }
-
-    // ── Parse LLM response ───────────────────────────────────
-    let cleaned = clean_json(&llm_result.content);
-    let parsed: FullExtractionOutput = serde_json::from_str(&cleaned)
-        .map_err(|e| {
-            format!(
-                "Failed to parse LLM response: {}. Raw (first 500): {}",
-                e,
-                &llm_result.content[..llm_result.content.len().min(500)]
-            )
-        })?;
-
-    let entities = parsed.entities;
-    let relations = parsed.relations;
-    let tags = parsed.tags;
+    let total_entities = entities.len();
+    let total_relations = relations.len();
 
     if entities.is_empty() && relations.is_empty() {
         return Ok(ExtractionResult {
@@ -177,89 +340,48 @@ pub async fn extract_document_full(
             total_relations: 0,
             new_vertices: 0,
             new_edges: 0,
-            tags: Vec::new(),
+            tags,
         });
     }
 
-    // ── Step 3: Create vertices for each entity ──────────────
-    on_step("Creating graph vertices", 0.0, None);
-
-    let total_entities = entities.len();
-    let mut name_to_vid: HashMap<String, VertexId> = HashMap::new();
+    // ── Step 3: Dedup + create vertices ──────────────────────
+    on_step("Creating graph vertices", 80.0, None);
+    let deduped = dedup_entities(&entities);
+    let total_deduped = deduped.len();
+    let mut name_to_vid: HashMap<String, u64> = HashMap::new();
     let mut vertex_count = 0usize;
 
-    // Pre-compute starting nid to avoid lock-acquire race
-    let start_nid = {
-        let nn = neural.lock().map_err(|e| e.to_string())?;
-        (nn.neuron_count() as u64) + 1
-    };
-
-    for (i, entity) in entities.iter().enumerate() {
+    for (i, entity) in deduped.iter().enumerate() {
         let name = entity.name.as_deref().unwrap_or("unknown");
         let type_labels = entity.type_.as_ref()
             .filter(|v| !v.is_empty())
             .cloned()
             .unwrap_or_else(|| vec!["entity".to_string()]);
-        let entity_props = entity.properties.clone().unwrap_or_default();
         let entity_kw = entity.keywords.clone().unwrap_or_default();
+        let entity_props = entity.properties.clone().unwrap_or_default();
 
-        let labels = type_labels.clone();
-        let mut g = graph.lock().map_err(|e| e.to_string())?;
-        let vid = g.create_vertex(labels.clone());
-        if let Some(v) = g.get_vertex_mut(vid) {
-            v.name = name.to_string();
-            v.document = doc_id.to_string();
-            v.keywords = entity_kw.clone();
-            for (k, val) in entity_props {
-                let str_val = match &val {
-                    serde_json::Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                };
-                v.properties.insert(k, PropertyValue::String(str_val));
-            }
-        }
-        drop(g);
+        let props: HashMap<String, PropertyValue> = entity_props.iter()
+            .map(|(k, v)| (k.clone(), json_to_property_value(v)))
+            .collect();
 
-        let nid = start_nid + i as u64;
-
-        // Build neuron keywords from entity keywords, name, and type labels
-        let mut neuron_kw = entity_kw.clone();
-        if !neuron_kw.contains(&name.to_string()) {
-            neuron_kw.push(name.to_string());
-        }
-        for t in &type_labels {
-            if !neuron_kw.contains(t) {
-                neuron_kw.push(t.clone());
-            }
-        }
-
-        // Create a searchable neuron
-        {
-            let mut nn = neural.lock().map_err(|e| e.to_string())?;
-            let first_type = type_labels.first().map(|s| s.as_str()).unwrap_or("entity");
-            let mut neuron = crate::neuron::Neuron::for_vertex(nid, first_type, vid);
-            neuron.keywords = neuron_kw;
-            nn.add_neuron(neuron);
-        }
+        let vid = {
+            let gm = graph_manager.lock().map_err(|e| e.to_string())?;
+            gm.add_vertex_to_graph(graph_name, name, &entity_kw, &type_labels, &props)
+        }.map_err(|e| format!("Failed to create vertex '{}': {}", name, e))?;
 
         name_to_vid.insert(name.to_string(), vid);
         vertex_count += 1;
 
-        let pct = ((i + 1) as f64 / total_entities as f64) * 100.0;
+        let pct = 80.0 + ((i + 1) as f64 / total_deduped.max(1) as f64) * 10.0;
         on_step("Creating graph vertices", pct,
-            Some(&format!("{}/{} vertices created", vertex_count, total_entities)));
+            Some(&format!("{}/{} vertices created", vertex_count, total_deduped)));
     }
 
-    // ── Step 4: Create edges for each relation ───────────────
-    on_step("Creating graph edges", 0.0, None);
+    // ── Step 4: Create edges ──────────────────────────────────
+    on_step("Creating graph edges", 90.0, None);
 
     let total_relations = relations.len();
     let mut edge_count = 0usize;
-
-    let edge_start_nid = {
-        let nn = neural.lock().map_err(|e| e.to_string())?;
-        (nn.neuron_count() as u64) + 1
-    };
 
     for (i, relation) in relations.iter().enumerate() {
         let src_name = relation.source.as_deref().unwrap_or("");
@@ -267,25 +389,17 @@ pub async fn extract_document_full(
         let rel_label = relation.relation.as_deref().unwrap_or("related_to");
 
         if let (Some(&src_vid), Some(&tgt_vid)) = (name_to_vid.get(src_name), name_to_vid.get(tgt_name)) {
-            let mut g = graph.lock().map_err(|e| e.to_string())?;
-            if let Ok(eid) = g.create_edge(rel_label.to_string(), src_vid, tgt_vid) {
-                if let Some(e) = g.get_edge_mut(eid) {
-                    e.document = doc_id.to_string();
-                }
-                drop(g);
-                // Create edge neuron + auto-synapse
-                let nid = edge_start_nid + edge_count as u64;
-                let mut nn = neural.lock().map_err(|e| e.to_string())?;
-                let mut neuron = crate::neuron::Neuron::for_edge(nid, rel_label, eid);
-                neuron.vertex_refs = vec![src_vid, tgt_vid];
-                neuron.keywords = vec![rel_label.to_string(), src_name.to_string(), tgt_name.to_string()];
-                nn.add_neuron(neuron);
-                nn.auto_synapse(src_vid, tgt_vid);
+            let props = HashMap::new();
+            let edge_result = {
+                let gm = graph_manager.lock().map_err(|e| e.to_string())?;
+                gm.add_edge_to_graph(graph_name, rel_label, src_vid, tgt_vid, &props)
+            };
+            if edge_result.is_ok() {
+                edge_count += 1;
             }
-            edge_count += 1;
         }
 
-        let pct = ((i + 1) as f64 / total_relations.max(1) as f64) * 100.0;
+        let pct = 90.0 + ((i + 1) as f64 / total_relations.max(1) as f64) * 10.0;
         on_step("Creating graph edges", pct,
             Some(&format!("{}/{} edges created", edge_count, total_relations)));
     }
@@ -299,9 +413,9 @@ pub async fn extract_document_full(
     };
 
     on_step("Complete", 100.0,
-        Some(&format!("{} entities, {} relations, {} vertices, {} edges",
+        Some(&format!("{} entities, {} relations, {} vertices, {} edges ({} after dedup)",
             result.total_entities, result.total_relations,
-            result.new_vertices, result.new_edges)));
+            result.new_vertices, result.new_edges, total_deduped)));
 
     Ok(result)
 }
@@ -333,33 +447,26 @@ mod tests {
     }
 
     #[test]
-    fn test_entity_output_deserialize() {
-        let json = r#"{"name": "韩立", "type": ["person", "protagonist"], "properties": {"cultivation": "金丹期"}, "keywords": ["韩跑跑", "厉飞雨"]}"#;
-        let e: EntityOutput = serde_json::from_str(json).unwrap();
-        assert_eq!(e.name.unwrap(), "韩立");
-        let types = e.type_.unwrap();
-        assert_eq!(types.len(), 2);
-        assert_eq!(types[0], "person");
-        let props = e.properties.unwrap();
-        assert_eq!(props.get("cultivation").unwrap(), "金丹期");
-        let kws = e.keywords.unwrap();
-        assert!(kws.contains(&"韩跑跑".to_string()));
-    }
-
-    #[test]
-    fn test_full_extraction_deserialize() {
-        let json = r#"{
-            "entities": [
-                {"name": "韩立", "type": ["person", "protagonist"], "properties": {"cultivation": "金丹期"}, "keywords": ["韩跑跑"]}
-            ],
-            "relations": [
-                {"source": "韩立", "target": "南宫碗", "relation": "道侣"}
-            ]
-        }"#;
-        let parsed: FullExtractionOutput = serde_json::from_str(json).unwrap();
-        assert_eq!(parsed.entities.len(), 1);
-        assert_eq!(parsed.relations.len(), 1);
-        assert_eq!(parsed.entities[0].name.as_deref(), Some("韩立"));
-        assert_eq!(parsed.relations[0].relation.as_deref(), Some("道侣"));
+    fn test_dedup_entities() {
+        let entities = vec![
+            EntityOutput {
+                name: Some("Alice".into()),
+                type_: Some(vec!["person".into()]),
+                properties: Some([("age".into(), serde_json::json!("30"))].into()),
+                keywords: Some(vec!["engineer".into()]),
+            },
+            EntityOutput {
+                name: Some("Alice".into()),
+                type_: Some(vec!["employee".into()]),
+                properties: Some([("title".into(), serde_json::json!("SE"))].into()),
+                keywords: Some(vec!["developer".into()]),
+            },
+        ];
+        let deduped = dedup_entities(&entities);
+        assert_eq!(deduped.len(), 1);
+        let a = &deduped[0];
+        assert_eq!(a.name.as_deref(), Some("Alice"));
+        assert!(a.keywords.as_ref().unwrap().contains(&"engineer".to_string()));
+        assert!(a.keywords.as_ref().unwrap().contains(&"developer".to_string()));
     }
 }

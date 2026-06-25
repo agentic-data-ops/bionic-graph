@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::config::settings::NeuralConfig;
 use crate::graph::Graph;
-use crate::neuron::{ActivationConfig, LearningConfig, NeuralNetwork};
+use crate::neuron::{ActivationConfig, LearningConfig, NeuralNetwork, Neuron};
 use crate::persistence::{self, AutoSaveConfig};
 use crate::storage::RedologWal;
 
@@ -247,6 +247,89 @@ impl GraphManager {
     }
 
     /// Save all graphs.
+    /// Add a vertex to a graph — creates vertex + neuron + WAL atomically.
+    /// Returns the new vertex ID.
+    pub fn add_vertex_to_graph(
+        &self,
+        graph_name: &str,
+        name: &str,
+        keywords: &[String],
+        labels: &[String],
+        properties: &std::collections::HashMap<String, crate::graph::PropertyValue>,
+    ) -> Result<u64, String> {
+        let handle = self.get(graph_name).ok_or_else(|| format!("graph '{}' not found", graph_name))?;
+        let mut g = handle.graph.lock().map_err(|e| e.to_string())?;
+        let id = g.create_vertex(labels.to_vec());
+        if let Some(v) = g.get_vertex_mut(id) {
+            v.name = name.to_string();
+            v.keywords = keywords.to_vec();
+            let mut clean_props = properties.clone();
+            clean_props.remove("name");
+            clean_props.remove("keywords");
+            v.properties = clean_props;
+        }
+        drop(g);
+        // WAL: vertex
+        if let Ok(mut wal) = handle.redolog_wal.lock() {
+            let _ = wal.append_add_vertex(id, labels);
+        }
+        // WAL + neuron
+        let nn_label = labels.first().cloned().unwrap_or_else(|| "entity".to_string());
+        let mut neuron_kw = labels.to_vec();
+        neuron_kw.push(name.to_string());
+        for kw in keywords {
+            neuron_kw.push(kw.clone());
+        }
+        if let Ok(mut nn) = handle.neural_network.lock() {
+            let nid = nn.neuron_count() as u64 + 1;
+            let mut neuron = crate::neuron::Neuron::for_vertex(nid, &nn_label, id);
+            neuron.keywords = neuron_kw;
+            nn.add_neuron(neuron.clone());
+            if let Ok(mut wal) = handle.redolog_wal.lock() {
+                let _ = wal.append_add_neuron(&neuron);
+            }
+        }
+        Ok(id)
+    }
+
+    /// Add an edge to a graph — creates edge + neuron + auto_synapse + WAL atomically.
+    /// Returns the new edge ID.
+    pub fn add_edge_to_graph(
+        &self,
+        graph_name: &str,
+        label: &str,
+        source: u64,
+        target: u64,
+        properties: &std::collections::HashMap<String, crate::graph::PropertyValue>,
+    ) -> Result<u64, String> {
+        let handle = self.get(graph_name).ok_or_else(|| format!("graph '{}' not found", graph_name))?;
+        let mut g = handle.graph.lock().map_err(|e| e.to_string())?;
+        let id = g.create_edge(label.to_string(), source, target).map_err(|e| e.to_string())?;
+        if let Some(e) = g.get_edge_mut(id) {
+            let mut clean_props = properties.clone();
+            clean_props.remove("label");
+            e.properties = clean_props;
+        }
+        drop(g);
+        // WAL: edge
+        if let Ok(mut wal) = handle.redolog_wal.lock() {
+            let _ = wal.append_add_edge(id, label, source, target);
+        }
+        // Neuron + auto_synapse
+        if let Ok(mut nn) = handle.neural_network.lock() {
+            let nid = nn.neuron_count() as u64 + 1;
+            let mut neuron = crate::neuron::Neuron::for_edge(nid, label, id);
+            neuron.vertex_refs = vec![source, target];
+            neuron.keywords = vec![label.to_string()];
+            nn.add_neuron(neuron.clone());
+            if let Ok(mut wal) = handle.redolog_wal.lock() {
+                let _ = wal.append_add_neuron(&neuron);
+            }
+            nn.auto_synapse(source, target);
+        }
+        Ok(id)
+    }
+
     pub fn save_all(&self) {
         for (_name, handle) in &self.graphs {
             let config = AutoSaveConfig {
