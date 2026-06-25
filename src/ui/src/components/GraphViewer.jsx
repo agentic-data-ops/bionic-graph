@@ -74,7 +74,7 @@ function DocViewer({ docId, onClose }) {
   );
 }
 
-function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument, onSelectVertex, graphData, nodesRef }) {
+function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument, onSelectVertex, graphData, nodesRef, readOnly }) {
   const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const [editLabel, setEditLabel] = useState('');
@@ -155,7 +155,7 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onShowDocument, o
           <span className="text-[var(--text-muted)] font-mono ml-2 normal-case">#{item.id}</span>
         </span>
         <div className="flex items-center gap-1">
-          {!editing && (
+          {!editing && !readOnly && (
             <>
               <button className="w-5 h-5 rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] text-[11px]" onClick={startEdit} title={t('graph.modify')}>
                 <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
@@ -650,6 +650,7 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
           onShowDocument={(docId) => setShowDoc(docId)}
           onSelectVertex={selectVertex}
           onDelete={(vid, name) => setConfirmDelete({ vid, name })}
+          readOnly={!!timeTravelAt}
         />
       )}
       {showDoc && <DocViewer docId={showDoc} onClose={() => setShowDoc(null)} />}
