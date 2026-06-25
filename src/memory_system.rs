@@ -265,11 +265,11 @@ impl MemorySystem {
         data_dir: impl Into<PathBuf>,
     ) -> axum::Router {
         let data_root: PathBuf = data_dir.into();
-        let graph_dir = data_root.join("graphs").join("default");
+        let graph_dir = data_root.join("graphs").join("graph0");
         let redolog_path = graph_dir.join("redolog.wal");
         let mut gm = GraphManager::empty(data_root.clone());
-        gm.insert("default".to_string(), GraphHandle {
-            name: "default".to_string(),
+        gm.insert("graph0".to_string(), GraphHandle {
+            name: "graph0".to_string(),
             graph,
             neural_network,
             redolog_wal: Arc::new(Mutex::new(

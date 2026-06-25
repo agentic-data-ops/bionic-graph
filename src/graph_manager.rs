@@ -38,7 +38,7 @@ impl GraphManager {
     /// Open (or create) all graphs found under `data_root/graphs/`.
     ///
     /// Scans `data_root/graphs/` for subdirectories, opens each one as a graph.
-    /// If no graphs exist, creates a `"default"` graph.
+    /// If no graphs exist, creates a `"graph0"` graph (with time-travel enabled).
     /// `neural_config` provides activation and learning parameters for new NeuralNetworks.
     pub fn open(data_root: impl Into<PathBuf>, neural_config: &NeuralConfig) -> Result<Self, String> {
         let data_root: PathBuf = data_root.into();
@@ -74,9 +74,9 @@ impl GraphManager {
 
         // If no graphs found, create default
         if graphs.is_empty() {
-            let default_path = graphs_root.join("default");
-            let handle = Self::create_graph_internal("default", &default_path, false, &act_cfg, &learn_cfg)?;
-            graphs.insert("default".to_string(), handle);
+            let default_path = graphs_root.join("graph0");
+            let handle = Self::create_graph_internal("graph0", &default_path, true, &act_cfg, &learn_cfg)?;
+            graphs.insert("graph0".to_string(), handle);
             log::info!("Created default graph at {:?}", default_path);
         }
 
@@ -132,7 +132,7 @@ impl GraphManager {
 
     /// Delete a graph (removes from memory and deletes data directory).
     pub fn delete(&mut self, name: &str) -> Result<(), String> {
-        if name == "default" {
+        if name == "graph0" {
             return Err("Cannot delete the default graph".to_string());
         }
         let handle = self.graphs.remove(name).ok_or_else(|| format!("Graph '{}' not found", name))?;

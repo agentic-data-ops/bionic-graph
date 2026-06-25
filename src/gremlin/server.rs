@@ -32,7 +32,7 @@ pub struct AppState {
 }
 
 /// Default graph name used when no X-Graph-Name header is present.
-const DEFAULT_GRAPH: &str = "default";
+const DEFAULT_GRAPH: &str = "graph0";
 
 fn resolve_graph_name(headers: &HeaderMap) -> String {
     headers
@@ -116,7 +116,7 @@ pub fn build_router(state: AppState) -> Router {
         // Graph management
         .route("/graphs", get(list_graphs_handler))
         .route("/graphs", post(create_graph_handler))
-        .route("/graphs/:name", delete(delete_graph_handler))
+        .route("/graphs/:id", delete(delete_graph_handler))
 
         // Gremlin query
         .route("/gremlin", post(gremlin_handler))
