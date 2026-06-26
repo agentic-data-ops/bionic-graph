@@ -135,6 +135,31 @@ impl NeuralNetwork {
     /// Auto-create synapses between neurons that reference two vertices.
     /// For every neuron whose vertex_refs contains `source`, creates a synapse
     /// to every neuron whose vertex_refs contains `target` (if not already present).
+    /// Rebuild synapses for all edge neurons from scratch.
+    /// Used after WAL replay to recover auto_synapse connections that
+    /// were never written to the WAL.
+    pub fn rebuild_synapses(&mut self) {
+        let pairs: Vec<(VertexId, VertexId)> = self.neurons.values()
+            .filter_map(|n| {
+                if let Some(crate::neuron::neuron::EntityType::Edge(_)) = &n.entity_type {
+                    if n.vertex_refs.len() >= 2 {
+                        Some((n.vertex_refs[0], n.vertex_refs[1]))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for (source, target) in pairs {
+            self.auto_synapse(source, target);
+        }
+    }
+
+    /// Auto-create synapses between neurons that reference two vertices.
+    /// For every neuron whose vertex_refs contains `source`, creates a synapse
+    /// to every neuron whose vertex_refs contains `target` (if not already present).
     pub fn auto_synapse(&mut self, source: VertexId, target: VertexId) {
         let src_ids: Vec<NeuronId> = self.neurons.iter()
             .filter(|(_, n)| n.vertex_refs.contains(&source))

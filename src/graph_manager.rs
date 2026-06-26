@@ -223,6 +223,8 @@ impl GraphManager {
         if let Err(e) = redolog_wal.replay(&mut graph, &mut neural_network) {
             log::warn!("Redolog WAL recovery error for '{}': {}", name, e);
         }
+        // Rebuild synapses from edge neurons — auto_synapse was never WAL-logged
+        neural_network.rebuild_synapses();
 
         Ok(GraphHandle {
             name: name.to_string(),
