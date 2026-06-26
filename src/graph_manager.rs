@@ -206,21 +206,37 @@ impl GraphManager {
     // ─── Internal helpers ──────────────────────────────────────
 
     fn open_graph(name: &str, data_dir: &Path, act_cfg: &ActivationConfig, learn_cfg: &LearningConfig) -> Result<GraphHandle, String> {
-        let config = AutoSaveConfig {
-            graph_path: data_dir.join("graph.bin"),
-            neural_path: data_dir.join("neural.bin"),
-            disk_data_dir: data_dir.to_path_buf(),
-            ..Default::default()
+        let neural_path = data_dir.join("neural.bin");
+
+        // Load graph from subgraph files (new) or fall back to graph.bin (legacy)
+        let subgraphs_dir = data_dir.join("subgraphs");
+        let mut graph = if subgraphs_dir.exists() {
+            Self::load_subgraph_checkpoint(&subgraphs_dir)?
+        } else {
+            let config = AutoSaveConfig {
+                graph_path: data_dir.join("graph.bin"),
+                neural_path: neural_path.clone(),
+                disk_data_dir: data_dir.to_path_buf(),
+                ..Default::default()
+            };
+            let (g, _) = persistence::load_or_create(&config, act_cfg, learn_cfg)
+                .map_err(|e| format!("Failed to load graph '{}': {}", name, e))?;
+            g
         };
 
-        let (mut graph, mut neural_network) = persistence::load_or_create(&config, act_cfg, learn_cfg)
-            .map_err(|e| format!("Failed to load graph '{}': {}", name, e))?;
+        // Load neural network
+        let mut neural_network = if neural_path.exists() {
+            persistence::neuron_store::load_neural_network(&neural_path)
+                .map_err(|e| format!("Failed to load neural network '{}': {}", name, e))?
+        } else {
+            NeuralNetwork::with_config(act_cfg.clone(), learn_cfg.clone())
+        };
 
         // Replay all archived WALs (redolog.wal.*) in sequence, then current
-        let redolog_path = data_dir.join("redolog.wal");
         if let Err(e) = RedologWal::replay_archived(&data_dir.to_path_buf(), &mut graph, &mut neural_network) {
             log::warn!("Redolog archived WAL recovery error for '{}': {}", name, e);
         }
+        let redolog_path = data_dir.join("redolog.wal");
         let mut redolog_wal = RedologWal::open(&redolog_path)
             .map_err(|e| format!("Failed to open Redolog WAL for '{}': {}", name, e))?;
         if let Err(e) = redolog_wal.replay(&mut graph, &mut neural_network) {
@@ -236,6 +252,50 @@ impl GraphManager {
             redolog_wal: Arc::new(Mutex::new(redolog_wal)),
             data_dir: data_dir.to_path_buf(),
         })
+    }
+
+    /// Load graph from subgraph checkpoint files, reconstructing the in-memory Graph.
+    fn load_subgraph_checkpoint(subgraphs_dir: &Path) -> Result<Graph, String> {
+        use crate::graph::Graph as GraphImpl;
+        let mut g = GraphImpl::new();
+
+        // Read all subgraph .bin files
+        let mut sg_files: Vec<_> = std::fs::read_dir(subgraphs_dir)
+            .map_err(|e| format!("Cannot read subgraphs dir: {}", e))?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map(|ext| ext == "bin").unwrap_or(false))
+            .collect();
+        sg_files.sort_by_key(|e| e.file_name());
+
+        for entry in &sg_files {
+            let bytes = std::fs::read(entry.path())
+                .map_err(|e| format!("Cannot read {}: {}", entry.path().display(), e))?;
+            if let Some((sg, _version)) = crate::storage::Subgraph::from_bytes(&bytes) {
+                // Restore vertices
+                for v in &sg.vertices {
+                    let _ = g.restore_vertex(v.id, v.labels.clone());
+                    if let Some(vertex) = g.get_vertex_mut(v.id) {
+                        vertex.name = v.name.clone();
+                        vertex.keywords = v.keywords.clone();
+                        vertex.properties = v.properties.clone();
+                        vertex.document = v.document.clone();
+                        vertex._history = v._history.clone();
+                        vertex._version = v._version;
+                        vertex._updated_at = v._updated_at;
+                        vertex._is_deleted = v._is_deleted;
+                    }
+                }
+                // Restore edges
+                for e in &sg.edges {
+                    let _ = g.restore_edge(e.id, e.label.clone(), e.source, e.target);
+                    if let Some(edge) = g.get_edge_mut(e.id) {
+                        edge.properties = e.properties.clone();
+                    }
+                }
+            }
+        }
+
+        Ok(g)
     }
 
     fn create_graph_internal(name: &str, data_dir: &Path, time_travel: bool, act_cfg: &ActivationConfig, learn_cfg: &LearningConfig) -> Result<GraphHandle, String> {
@@ -415,25 +475,72 @@ impl GraphManager {
     }
 
     fn save_graph_snapshot(&self, handle: &GraphHandle) {
-        let config = AutoSaveConfig {
-            graph_path: handle.data_dir.join("graph.bin"),
-            neural_path: handle.data_dir.join("neural.bin"),
-            disk_data_dir: handle.data_dir.clone(),
-            ..Default::default()
+        // ── Step 1: Subgraph-partitioned checkpoint ──────────
+        let subgraphs_dir = handle.data_dir.join("subgraphs");
+        let _ = std::fs::create_dir_all(&subgraphs_dir);
+        let manifest_path = subgraphs_dir.join("manifest.json");
+
+        // Partition the graph into subgraphs
+        let subgraphs = {
+            let g = handle.graph.lock().unwrap();
+            let partition_config = crate::storage::PartitionConfig {
+                max_vertices_per_subgraph: 10000,
+                cluster_bfs_depth: 3,
+                ..Default::default()
+            };
+            let result = crate::storage::partition_graph(&g, &partition_config, 1);
+            result.subgraphs
         };
-        if let Ok(g) = handle.graph.lock() {
-            let _ = persistence::graph_store::save_graph(&g, &config.graph_path);
+
+        // Load previous manifest to detect unchanged subgraphs
+        let prev_hashes: std::collections::HashMap<u64, String> =
+            std::fs::read_to_string(&manifest_path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
+
+        let mut new_manifest: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
+        let mut dirty_count = 0;
+        let mut clean_count = 0;
+
+        for sg in &subgraphs {
+            let bytes = sg.to_bytes();
+            let hash = format!("{:x}", crc32fast::hash(&bytes));
+            new_manifest.insert(sg.id, hash.clone());
+
+            // Skip if content unchanged
+            if prev_hashes.get(&sg.id).map(|h| h == &hash).unwrap_or(false) {
+                clean_count += 1;
+                continue;
+            }
+
+            // Write subgraph file
+            let sg_path = subgraphs_dir.join(format!("{:08x}.bin", sg.id));
+            let _ = std::fs::write(&sg_path, &bytes);
+            dirty_count += 1;
         }
+
+        // Write updated manifest
+        let _ = std::fs::write(&manifest_path, serde_json::to_string_pretty(&new_manifest).unwrap());
+
+        // ── Step 2: Neural network snapshot ──────────────────
+        let neural_path = handle.data_dir.join("neural.bin");
         if let Ok(mut nn) = handle.neural_network.lock() {
             if nn.is_dirty() {
-                let _ = persistence::neuron_store::save_neural_network(&nn, &config.neural_path);
+                let _ = persistence::neuron_store::save_neural_network(&nn, &neural_path);
                 nn.mark_clean();
             }
         }
-        // Rotate WAL: checkpoint + rename + open fresh
+
+        log::info!(
+            "Checkpoint '{}': {} subgraphs ({} dirty, {} clean), WAL rotated",
+            handle.name, subgraphs.len(), dirty_count, clean_count,
+        );
+
+        // ── Step 3: Rotate WAL ───────────────────────────────
         if let Ok(mut wal) = handle.redolog_wal.lock() {
             let _ = wal.rotate();
-            let _ = wal.clean_archived(2); // keep at most 2 archived WALs
+            let _ = wal.clean_archived(2);
         }
     }
 }
