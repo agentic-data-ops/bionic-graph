@@ -382,28 +382,55 @@ impl GraphManager {
         Ok(id)
     }
 
+    /// WAL size threshold in bytes — when exceeded, a full snapshot is written.
+    const SNAPSHOT_WAL_THRESHOLD: u64 = 64 * 1024 * 1024; // 64 MB
+
+    /// Periodic incremental save — writes a full snapshot + checkpoints WAL
+    /// ONLY when the WAL file exceeds `SNAPSHOT_WAL_THRESHOLD`.
+    /// Under light load, this is a no-op — all data survives via WAL replay.
     pub fn save_all(&self) {
         for (_name, handle) in &self.graphs {
-            let config = AutoSaveConfig {
-                graph_path: handle.data_dir.join("graph.bin"),
-                neural_path: handle.data_dir.join("neural.bin"),
-                disk_data_dir: handle.data_dir.clone(),
-                ..Default::default()
-            };
-            if let Ok(g) = handle.graph.lock() {
-                let _ = persistence::graph_store::save_graph(&g, &config.graph_path);
+            // Check WAL size — skip snapshot if small
+            let needs_snapshot = handle.redolog_wal.lock()
+                .ok()
+                .and_then(|wal| wal.file_size().ok())
+                .map(|sz| sz >= Self::SNAPSHOT_WAL_THRESHOLD)
+                .unwrap_or(false);
+            if !needs_snapshot {
+                continue;
             }
-            if let Ok(mut nn) = handle.neural_network.lock() {
-                if nn.is_dirty() {
-                    let _ = persistence::neuron_store::save_neural_network(&nn, &config.neural_path);
-                    nn.mark_clean();
-                }
+            self.save_graph_snapshot(handle);
+        }
+    }
+
+    /// Write full snapshots (graph.bin + neural.bin) and checkpoint/truncate WAL.
+    /// Called on shutdown and when WAL exceeds threshold.
+    pub fn save_snapshot(&self) {
+        for (_name, handle) in &self.graphs {
+            self.save_graph_snapshot(handle);
+        }
+    }
+
+    fn save_graph_snapshot(&self, handle: &GraphHandle) {
+        let config = AutoSaveConfig {
+            graph_path: handle.data_dir.join("graph.bin"),
+            neural_path: handle.data_dir.join("neural.bin"),
+            disk_data_dir: handle.data_dir.clone(),
+            ..Default::default()
+        };
+        if let Ok(g) = handle.graph.lock() {
+            let _ = persistence::graph_store::save_graph(&g, &config.graph_path);
+        }
+        if let Ok(mut nn) = handle.neural_network.lock() {
+            if nn.is_dirty() {
+                let _ = persistence::neuron_store::save_neural_network(&nn, &config.neural_path);
+                nn.mark_clean();
             }
-            // Redolog WAL checkpoint after saving both snapshots
-            if let Ok(mut wal) = handle.redolog_wal.lock() {
-                let _ = wal.checkpoint();
-                let _ = wal.truncate_after_checkpoint();
-            }
+        }
+        // Redolog WAL checkpoint after saving both snapshots
+        if let Ok(mut wal) = handle.redolog_wal.lock() {
+            let _ = wal.checkpoint();
+            let _ = wal.truncate_after_checkpoint();
         }
     }
 }

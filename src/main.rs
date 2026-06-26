@@ -174,9 +174,9 @@ async fn main() {
         .expect("Server error");
 
     // 2) All requests done — safe to save without concurrent mutations
-    log::info!("Saving all graphs...");
+    log::info!("Saving all graphs (full snapshot)...");
     if let Ok(gm) = gm_save.lock() {
-        gm.save_all();
+        gm.save_snapshot();
     }
     log::info!("All data saved. Goodbye.");
 }

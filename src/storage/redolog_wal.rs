@@ -82,6 +82,14 @@ impl RedologWal {
         Self { file: None, path: PathBuf::new() }
     }
 
+    /// Return the WAL file size in bytes. Returns 0 for in-memory WALs.
+    pub fn file_size(&self) -> std::io::Result<u64> {
+        if self.path.as_os_str().is_empty() {
+            return Ok(0);
+        }
+        std::fs::metadata(&self.path).map(|m| m.len())
+    }
+
     // ─── Entry encoding helpers ────────────────────────────────
 
     /// Encode a single WAL entry (type + length + data + CRC32).
