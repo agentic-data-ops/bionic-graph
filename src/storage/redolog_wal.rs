@@ -27,16 +27,16 @@ pub const OP_CHECKPOINT: u8 = 0xFF;
 // ─── Payloads (re-exported from graph_wal/neuron_wal patterns) ──
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct AddVertexPayload {
-    id: VertexId, labels: Vec<String>,
+pub(crate) struct AddVertexPayload {
+    pub id: VertexId, pub labels: Vec<String>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct RemoveVertexPayload {
     id: VertexId,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct AddEdgePayload {
-    id: EdgeId, label: String, source: VertexId, target: VertexId,
+pub(crate) struct AddEdgePayload {
+    pub id: EdgeId, pub label: String, pub source: VertexId, pub target: VertexId,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct RemoveEdgePayload {
@@ -84,7 +84,9 @@ impl RedologWal {
 
     // ─── Entry encoding helpers ────────────────────────────────
 
-    fn encode(entry_type: u8, data: &[u8]) -> Vec<u8> {
+    /// Encode a single WAL entry (type + length + data + CRC32).
+    /// Public so callers can build batch entries for `write_batch`.
+    pub fn encode(entry_type: u8, data: &[u8]) -> Vec<u8> {
         let mut buf = Vec::with_capacity(1 + 4 + data.len() + 4);
         buf.push(entry_type);
         buf.extend_from_slice(&(data.len() as u32).to_le_bytes());

@@ -249,8 +249,8 @@ impl GraphManager {
     }
 
     /// Save all graphs.
-    /// Add a vertex to a graph — creates vertex + neuron + WAL atomically.
-    /// Returns the new vertex ID.
+    /// Add a vertex to a graph — transactional: all in-memory mutations first,
+    /// then atomic WAL batch. On WAL failure, memory is rolled back.
     pub fn add_vertex_to_graph(
         &self,
         graph_name: &str,
@@ -260,6 +260,7 @@ impl GraphManager {
         properties: &std::collections::HashMap<String, crate::graph::PropertyValue>,
     ) -> Result<u64, String> {
         let handle = self.get(graph_name).ok_or_else(|| format!("graph '{}' not found", graph_name))?;
+        // ── Step 1: In-memory vertex ────────────────────────────
         let mut g = handle.graph.lock().map_err(|e| e.to_string())?;
         let id = g.create_vertex(labels.to_vec());
         if let Some(v) = g.get_vertex_mut(id) {
@@ -271,31 +272,54 @@ impl GraphManager {
             v.properties = clean_props;
         }
         drop(g);
-        // WAL: vertex
-        if let Ok(mut wal) = handle.redolog_wal.lock() {
-            let _ = wal.append_add_vertex(id, labels);
-        }
-        // WAL + neuron
+        // ── Step 2: In-memory neuron ────────────────────────────
         let nn_label = labels.first().cloned().unwrap_or_else(|| "entity".to_string());
         let mut neuron_kw = labels.to_vec();
         neuron_kw.push(name.to_string());
         for kw in keywords {
             neuron_kw.push(kw.clone());
         }
+        let neuron: crate::neuron::Neuron;
         if let Ok(mut nn) = handle.neural_network.lock() {
             let nid = nn.neuron_count() as u64 + 1;
-            let mut neuron = crate::neuron::Neuron::for_vertex(nid, &nn_label, id);
-            neuron.keywords = neuron_kw;
-            nn.add_neuron(neuron.clone());
-            if let Ok(mut wal) = handle.redolog_wal.lock() {
-                let _ = wal.append_add_neuron(&neuron);
+            let mut n = crate::neuron::Neuron::for_vertex(nid, &nn_label, id);
+            n.keywords = neuron_kw;
+            nn.add_neuron(n.clone());
+            neuron = n;
+        } else {
+            // NN lock failed — rollback vertex
+            if let Ok(mut g) = handle.graph.lock() {
+                let _ = g.remove_vertex(id, true);
+            }
+            return Err("Failed to lock neural network".to_string());
+        }
+        // ── Step 3: Atomic WAL batch ────────────────────────────
+        let vertex_payload = bincode::serialize(
+            &crate::storage::redolog_wal::AddVertexPayload { id, labels: labels.to_vec() }
+        ).map_err(|e| format!("Serialization error: {}", e))?;
+        let neuron_payload = bincode::serialize(&neuron)
+            .map_err(|e| format!("Serialization error: {}", e))?;
+        let entries = vec![
+            (crate::storage::redolog_wal::OP_ADD_VERTEX, vertex_payload),
+            (crate::storage::redolog_wal::OP_ADD_NEURON, neuron_payload),
+        ];
+        if let Ok(mut wal) = handle.redolog_wal.lock() {
+            if let Err(e) = wal.write_batch(&entries) {
+                // WAL failed — rollback both memory changes
+                if let Ok(mut nn) = handle.neural_network.lock() {
+                    nn.remove_neuron(neuron.id);
+                }
+                if let Ok(mut g) = handle.graph.lock() {
+                    let _ = g.remove_vertex(id, true);
+                }
+                return Err(format!("WAL write failed: {}", e));
             }
         }
         Ok(id)
     }
 
-    /// Add an edge to a graph — creates edge + neuron + auto_synapse + WAL atomically.
-    /// Returns the new edge ID.
+    /// Add an edge to a graph — transactional: all in-memory mutations first,
+    /// then atomic WAL batch. On WAL failure, memory is rolled back.
     pub fn add_edge_to_graph(
         &self,
         graph_name: &str,
@@ -305,6 +329,7 @@ impl GraphManager {
         properties: &std::collections::HashMap<String, crate::graph::PropertyValue>,
     ) -> Result<u64, String> {
         let handle = self.get(graph_name).ok_or_else(|| format!("graph '{}' not found", graph_name))?;
+        // ── Step 1: In-memory edge ──────────────────────────────
         let mut g = handle.graph.lock().map_err(|e| e.to_string())?;
         let id = g.create_edge(label.to_string(), source, target).map_err(|e| e.to_string())?;
         if let Some(e) = g.get_edge_mut(id) {
@@ -313,21 +338,46 @@ impl GraphManager {
             e.properties = clean_props;
         }
         drop(g);
-        // WAL: edge
-        if let Ok(mut wal) = handle.redolog_wal.lock() {
-            let _ = wal.append_add_edge(id, label, source, target);
-        }
-        // Neuron + auto_synapse
+        // ── Step 2: In-memory neuron + auto_synapse ─────────────
+        let neuron: crate::neuron::Neuron;
         if let Ok(mut nn) = handle.neural_network.lock() {
             let nid = nn.neuron_count() as u64 + 1;
-            let mut neuron = crate::neuron::Neuron::for_edge(nid, label, id);
-            neuron.vertex_refs = vec![source, target];
-            neuron.keywords = vec![label.to_string()];
-            nn.add_neuron(neuron.clone());
-            if let Ok(mut wal) = handle.redolog_wal.lock() {
-                let _ = wal.append_add_neuron(&neuron);
-            }
+            let mut n = crate::neuron::Neuron::for_edge(nid, label, id);
+            n.vertex_refs = vec![source, target];
+            n.keywords = vec![label.to_string()];
+            nn.add_neuron(n.clone());
             nn.auto_synapse(source, target);
+            neuron = n;
+        } else {
+            // NN lock failed — rollback edge
+            if let Ok(mut g) = handle.graph.lock() {
+                let _ = g.remove_edge(id);
+            }
+            return Err("Failed to lock neural network".to_string());
+        }
+        // ── Step 3: Atomic WAL batch ────────────────────────────
+        let edge_payload = bincode::serialize(
+            &crate::storage::redolog_wal::AddEdgePayload {
+                id, label: label.to_string(), source, target,
+            }
+        ).map_err(|e| format!("Serialization error: {}", e))?;
+        let neuron_payload = bincode::serialize(&neuron)
+            .map_err(|e| format!("Serialization error: {}", e))?;
+        let entries = vec![
+            (crate::storage::redolog_wal::OP_ADD_EDGE, edge_payload),
+            (crate::storage::redolog_wal::OP_ADD_NEURON, neuron_payload),
+        ];
+        if let Ok(mut wal) = handle.redolog_wal.lock() {
+            if let Err(e) = wal.write_batch(&entries) {
+                // WAL failed — rollback both memory changes
+                if let Ok(mut nn) = handle.neural_network.lock() {
+                    nn.remove_neuron(neuron.id);
+                }
+                if let Ok(mut g) = handle.graph.lock() {
+                    let _ = g.remove_edge(id);
+                }
+                return Err(format!("WAL write failed: {}", e));
+            }
         }
         Ok(id)
     }
