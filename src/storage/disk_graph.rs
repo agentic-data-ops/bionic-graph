@@ -263,7 +263,11 @@ impl DiskGraph {
 
             self.edge_index.insert(eid, src_sg);
             if let Some(sg) = self.cache.get_mut(src_sg, &self.subgraph_index) {
-                let _ = sg.add_edge(label, source, target);
+                let local_id = sg.add_edge(label, source, target).unwrap_or(0);
+                // Override subgraph-local edge ID with global ID
+                if let Some(e) = sg.edges.iter_mut().find(|e| e.id == local_id) {
+                    e.id = eid;
+                }
             }
         } else {
             // Cross-subgraph edge

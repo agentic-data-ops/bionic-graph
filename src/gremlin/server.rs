@@ -506,7 +506,7 @@ async fn delete_vertex_handler(
     let edge_ids: Vec<u64> = g.all_edges().into_iter().filter(|e| e.source == id || e.target == id).map(|e| e.id).collect();
     // Save edge clones for rollback (only needed for hard-delete)
     let saved_edges: Vec<crate::graph::Edge> = if force {
-        edge_ids.iter().into_iter().filter_map(|eid| g.get_edge(eid)).collect()
+        edge_ids.iter().filter_map(|eid| g.get_edge(*eid)).collect()
     } else { vec![] };
     drop(g);
     // ── Step 2: Collect neuron snapshots + do in-memory ─────
@@ -894,8 +894,8 @@ async fn delete_document_handler(
             let mut g = handle.disk_graph.lock().unwrap();
             let to_delete: Vec<u64> = g.vertex_ids()
                 .into_iter().filter_map(|vid| {
-                    let v = g.get_vertex(*vid)?;
-                    if v.document == id { Some(*vid) } else { None }
+                    let v = g.get_vertex(vid)?;
+                    if v.document == id { Some(vid) } else { None }
                 })
                 .collect();
             let total = to_delete.len();
@@ -905,7 +905,7 @@ async fn delete_document_handler(
                     .map(|e| e.id).collect();
                 let edge_force = !g.time_travel_enabled;
                 let edge_now = crate::graph::vertex::now_micros();
-                for eid in &edge_ids {
+                for &eid in &edge_ids {
                     if edge_force {
                         let _ = g.remove_edge(eid);
                     } else {
@@ -933,7 +933,7 @@ async fn delete_document_handler(
                         }
                     }
                 }
-                let force = !g.time_travel_enabled;
+                let _force = !g.time_travel_enabled;
                 let _ = g.remove_vertex(vid);
                 if let Ok(mut wal) = handle.redolog_wal.lock() { let _ = wal.append_remove_vertex(vid); }
                 if let Ok(mut nn) = handle.neural_network.lock() {
@@ -1083,7 +1083,7 @@ async fn update_vertex_handler(
     let handle = gm.get_mut(&graph_name).ok_or_else(|| {
         (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "graph not found"})))
     })?;
-    let mut g = handle.disk_graph.lock().unwrap();
+    let g = handle.disk_graph.lock().unwrap();
     let record_history = g.time_travel_enabled;
     drop(g);
     // ── Step 1: In-memory vertex update & save old state ──────
@@ -1391,7 +1391,7 @@ async fn delete_edge_handler(
     let force = params.get("force").map(|v| v == "true").unwrap_or(!g.time_travel_enabled);
     let now = crate::graph::vertex::now_micros();
     // ── Step 1: Save old state + in-memory delete ───────────
-    let saved_edge = if force { g.get_edge(id).cloned() } else { None };
+    let saved_edge = if force { g.get_edge(id) } else { None };
     if force { let _ = g.remove_edge(id); }
     else { let _ = g.soft_delete_edge(id, true); }
     drop(g);

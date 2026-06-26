@@ -80,14 +80,14 @@ async fn main() {
         let names = graph_manager.list();
         for name in &names {
             if let Some(handle) = graph_manager.get(name) {
-                let g = handle.graph.lock().unwrap();
+                let mut g = handle.disk_graph.lock().unwrap();
                 // Simple auto-index: create neurons from vertex labels
                 let mut label_groups: std::collections::HashMap<String, Vec<u64>> =
                     std::collections::HashMap::new();
                 for vid in g.vertex_ids() {
-                    if let Some(v) = g.get_vertex(*vid) {
+                    if let Some(v) = g.get_vertex(vid) {
                         for label in &v.labels {
-                            label_groups.entry(label.clone()).or_default().push(*vid);
+                            label_groups.entry(label.clone()).or_default().push(vid);
                         }
                     }
                 }

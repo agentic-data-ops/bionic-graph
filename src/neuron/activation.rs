@@ -148,6 +148,8 @@ pub fn search(
     search_at: Option<i64>,
 ) -> (Vec<(VertexId, u32)>, Vec<(EdgeId, u32)>, Vec<NeuronId>, Vec<NeuronId>, usize) {
     // Step 1: Activate input neurons by keyword matching (skip soft-deleted)
+    // Track which neurons were directly activated by the query (vs. spread activation)
+    let mut directly_activated: Vec<NeuronId> = Vec::new();
     for neuron in neurons.values_mut() {
         if neuron.is_deleted_at(search_at) { continue; }
         let score_config = ScoreConfig::new(
@@ -161,10 +163,11 @@ pub fn search(
         let score = neuron.match_keywords(query_tokens, &score_config);
         if score > 0.0 {
             neuron.activation = score;
+            directly_activated.push(neuron.id);
         }
     }
 
-    // Step 2: Run tick cycles
+    // Step 2: Run tick cycles (spreading activation)
     let mut ticks_run = 0;
     for _ in 0..config.max_ticks {
         let result = tick(neurons, synapses, search_at);
@@ -174,21 +177,22 @@ pub fn search(
         }
     }
 
-    // Step 3: Collect results — only from neurons that participated in the query
+    // Step 3: Collect results — ONLY from directly-activated neurons
+    // to prevent cross-domain contamination via spreading activation.
+    let direct_set: HashSet<NeuronId> = directly_activated.into_iter().collect();
     let mut vertex_score: HashMap<VertexId, u32> = HashMap::new();
     let mut edge_score: HashMap<EdgeId, u32> = HashMap::new();
     let mut fired_ids = Vec::new();
     let mut hot_ids = Vec::new();
 
     for neuron in neurons.values() {
-        let is_active = neuron.activation > 0.0 || neuron.is_refractory();
-        if !is_active {
-            continue; // Skip neurons that never matched or received activation
+        if !direct_set.contains(&neuron.id) {
+            continue; // Only collect from neurons that matched the query directly
         }
         if neuron.activation >= config.hot_threshold {
             hot_ids.push(neuron.id);
         }
-        // Collect vertex refs — only from active/fired neurons
+        // Collect vertex refs
         for &vref in &neuron.vertex_refs {
             *vertex_score.entry(vref).or_insert(0) += 1;
         }
@@ -201,8 +205,9 @@ pub fn search(
         }
     }
 
-    // Track which neurons fired or were involved
+    // Track which neurons fired or were involved (directly matched only)
     for neuron in neurons.values() {
+        if !direct_set.contains(&neuron.id) { continue; }
         if !(neuron.activation > 0.0 || neuron.is_refractory()) {
             continue;
         }
