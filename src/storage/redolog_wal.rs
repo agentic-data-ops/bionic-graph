@@ -31,24 +31,24 @@ pub(crate) struct AddVertexPayload {
     pub id: VertexId, pub labels: Vec<String>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct RemoveVertexPayload {
-    id: VertexId,
+pub(crate) struct RemoveVertexPayload {
+    pub id: VertexId,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct AddEdgePayload {
     pub id: EdgeId, pub label: String, pub source: VertexId, pub target: VertexId,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct RemoveEdgePayload {
-    id: EdgeId,
+pub(crate) struct RemoveEdgePayload {
+    pub id: EdgeId,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct UpdateVertexPayload {
-    id: VertexId, labels: Vec<String>, properties: HashMap<String, PropertyValue>,
+pub(crate) struct UpdateVertexPayload {
+    pub id: VertexId, pub labels: Vec<String>, pub properties: HashMap<String, PropertyValue>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct UpdateEdgePayload {
-    id: EdgeId, label: String, properties: HashMap<String, PropertyValue>,
+pub(crate) struct UpdateEdgePayload {
+    pub id: EdgeId, pub label: String, pub properties: HashMap<String, PropertyValue>,
 }
 
 // ─── RedologWal ──────────────────────────────────────────────────

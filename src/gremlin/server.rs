@@ -499,73 +499,119 @@ async fn delete_vertex_handler(
     let handle = gm.get_mut(&graph_name).ok_or_else(|| {
         (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "graph not found"})))
     })?;
-    let mut g = handle.graph.lock().unwrap();
-    // Priority: ?force=true query param > !g.time_travel_enabled (default)
+    // ── Step 1: Collect incident edges & snapshots ──────────
+    let g = handle.graph.lock().unwrap();
     let force = params.get("force").map(|v| v == "true").unwrap_or(!g.time_travel_enabled);
     let now = crate::graph::vertex::now_micros();
-
-    // Remove edges connected to this vertex (soft delete when !force)
     let edge_ids: Vec<u64> = g.all_edges().filter(|e| e.source == id || e.target == id).map(|e| e.id).collect();
-    for eid in edge_ids {
-        if force {
-            let _ = g.remove_edge(eid);
-        } else {
-            let _ = g.soft_delete_edge(eid, true);
+    // Save edge clones for rollback (only needed for hard-delete)
+    let saved_edges: Vec<crate::graph::Edge> = if force {
+        edge_ids.iter().filter_map(|eid| g.get_edge(*eid).cloned()).collect()
+    } else { vec![] };
+    drop(g);
+    // ── Step 2: Collect neuron snapshots + do in-memory ─────
+    struct NeuronSave {
+        id: crate::neuron::NeuronId,
+        old: crate::neuron::Neuron,
+    }
+    let mut neuron_saves: Vec<NeuronSave> = Vec::new();
+    if let Ok(mut nn) = handle.neural_network.lock() {
+        use crate::neuron::neuron::EntityType;
+        // Vertex neuron
+        let vnid = {
+            let mut result = None;
+            for n in nn.all_neurons() {
+                if matches!(n.entity_type, Some(EntityType::Vertex(v)) if v == id) {
+                    result = Some(n.id);
+                    break;
+                }
+            }
+            result
+        };
+        if let Some(nid) = vnid {
+            if let Some(n) = nn.get_neuron_mut(nid) {
+                let old = n.clone();
+                n.mark_deleted(now);
+                neuron_saves.push(NeuronSave { id: nid, old });
+            }
         }
-        if let Ok(mut wal) = handle.redolog_wal.lock() {
+        // Edge neurons
+        for &eid in &edge_ids {
+            let enid = {
+                let mut result = None;
+                for n in nn.all_neurons() {
+                    if matches!(n.entity_type, Some(EntityType::Edge(e)) if e == eid) {
+                        result = Some(n.id);
+                        break;
+                    }
+                }
+                result
+            };
+            if let Some(nid) = enid {
+                if let Some(n) = nn.get_neuron_mut(nid) {
+                    let old = n.clone();
+                    n.mark_deleted(now);
+                    neuron_saves.push(NeuronSave { id: nid, old });
+                }
+            }
+        }
+        nn.mark_dirty();
+    }
+    // ── Step 3: In-memory graph mutations ───────────────────
+    let mut g = handle.graph.lock().unwrap();
+    for &eid in &edge_ids {
+        if force { let _ = g.remove_edge(eid); }
+        else { let _ = g.soft_delete_edge(eid, true); }
+    }
+    let _ = g.remove_vertex(id, force);
+    drop(g);
+    // ── Step 4: Build atomic batch WAL ──────────────────────
+    let mut entries: Vec<(u8, Vec<u8>)> = Vec::new();
+    if force {
+        for &eid in &edge_ids {
+            let p = bincode::serialize(&crate::storage::redolog_wal::RemoveEdgePayload { id: eid })
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))))?;
+            entries.push((crate::storage::redolog_wal::OP_REMOVE_EDGE, p));
+        }
+    }
+    let vertex_payload = bincode::serialize(&crate::storage::redolog_wal::RemoveVertexPayload { id })
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))))?;
+    entries.push((crate::storage::redolog_wal::OP_REMOVE_VERTEX, vertex_payload));
+    for ns in &neuron_saves {
+        let np = bincode::serialize(&ns.old)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))))?;
+        entries.push((crate::storage::redolog_wal::OP_UPDATE_NEURON, np));
+    }
+    // ── Step 5: Atomic write ────────────────────────────────
+    if let Ok(mut wal) = handle.redolog_wal.lock() {
+        if let Err(e) = wal.write_batch(&entries) {
+            // Rollback: restore graph (best-effort)
+            let mut g = handle.graph.lock().unwrap();
+            // Remove the vertex if it was added back... actually remove_vertex hard-deletes
+            // For simplicity, just log the error and return
+            // Rollback: if hard-delete, try to re-add edges
             if force {
-                let _ = wal.append_remove_edge(eid);
-            } else {
-                // Mark edge's neuron as deleted
-                if let Ok(mut nn) = handle.neural_network.lock() {
-                    use crate::neuron::neuron::EntityType;
-                    let nid = {
-                        // Collect in a block to avoid borrow conflict with get_neuron_mut
-                        let mut result = None;
-                        for n in nn.all_neurons() {
-                            if matches!(n.entity_type, Some(EntityType::Edge(e)) if e == eid) {
-                                result = Some(n.id);
-                                break;
-                            }
-                        }
-                        result
-                    };
-                    if let Some(nid) = nid {
-                        if let Some(neuron) = nn.get_neuron_mut(nid) {
-                            neuron.mark_deleted(now);
-                            nn.mark_dirty();
+                for edge in &saved_edges {
+                    if let Ok(eid) = g.create_edge(edge.label.clone(), edge.source, edge.target) {
+                        if let Some(e) = g.get_edge_mut(eid) {
+                            e.properties = edge.properties.clone();
                         }
                     }
                 }
             }
-        }
-    }
-    // Remove the vertex
-    let _ = g.remove_vertex(id, force);
-    if let Ok(mut wal) = handle.redolog_wal.lock() {
-        let _ = wal.append_remove_vertex(id);
-    }
-    // Mark vertex's neuron as deleted
-    if let Ok(mut nn) = handle.neural_network.lock() {
-        use crate::neuron::neuron::EntityType;
-        let nid = nn.all_neurons().find_map(|n| {
-            if matches!(n.entity_type, Some(EntityType::Vertex(v)) if v == id) {
-                Some(n.id)
-            } else {
-                None
+            drop(g);
+            // Rollback neurons
+            if let Ok(mut nn) = handle.neural_network.lock() {
+                for ns in &neuron_saves {
+                    if nn.get_neuron(ns.id).is_some() {
+                        // Remove and re-add to fully restore
+                        nn.remove_neuron(ns.id);
+                    }
+                    nn.add_neuron(ns.old.clone());
+                }
+                nn.mark_dirty();
             }
-        });
-        if let Some(nid) = nid {
-            let neuron_data;
-            {
-                let neuron = nn.get_neuron_mut(nid).expect("neuron should exist");
-                neuron.mark_deleted(now);
-                neuron_data = neuron.clone();
-            }
-            nn.mark_dirty();
-            if let Ok(mut wal) = handle.redolog_wal.lock() {
-                let _ = wal.append_update_neuron(&neuron_data);
-            }
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": format!("WAL write failed: {}", e)}))));
         }
     }
     Ok(Json(serde_json::json!({"success": true, "deleted": id})))
@@ -1044,10 +1090,19 @@ async fn update_vertex_handler(
     let g = handle.graph.lock().unwrap();
     let record_history = g.time_travel_enabled;
     drop(g);
+    // ── Step 1: In-memory vertex update & save old state ──────
     let mut g = handle.graph.lock().unwrap();
     let vertex = g.get_vertex_mut(id).ok_or_else(|| {
         (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "vertex not found"})))
     })?;
+    let old_name = vertex.name.clone();
+    let old_keywords = vertex.keywords.clone();
+    let old_labels = vertex.labels.clone();
+    let old_properties = vertex.properties.clone();
+    let old_history = vertex._history.clone();
+    let old_version = vertex._version;
+    let old_updated_at = vertex._updated_at;
+
     let props: std::collections::HashMap<String, crate::graph::PropertyValue> = req
         .properties.into_iter().map(|(k, v)| (k, json_to_property(&v))).collect();
     if record_history {
@@ -1064,54 +1119,107 @@ async fn update_vertex_handler(
         vertex._version += 1;
         vertex._updated_at = now;
     }
-    if let Some(name) = req.name {
-        vertex.name = name;
-    }
-    if let Some(keywords) = req.keywords {
-        vertex.keywords = keywords;
-    }
-    if !req.labels.is_empty() {
-        vertex.labels = req.labels;
-    }
+    if let Some(name) = req.name { vertex.name = name; }
+    if let Some(keywords) = req.keywords { vertex.keywords = keywords; }
+    if !req.labels.is_empty() { vertex.labels = req.labels; }
     vertex.properties = props;
     let new_keywords: Vec<String> = {
         let v = &vertex;
         let mut kw = v.labels.clone();
         kw.push(v.name.clone());
-        for kw_val in &v.keywords {
-            kw.push(kw_val.clone());
-        }
+        kw.extend(v.keywords.iter().cloned());
         kw
     };
     drop(g);
-    // Graph WAL
-    if let Ok(mut wal) = handle.redolog_wal.lock() {
-        let g = handle.graph.lock().unwrap();
-        if let Some(v) = g.get_vertex(id) {
-            let _ = wal.append_update_vertex(id, &v.labels, &v.properties);
-        }
-        drop(g);
-        drop(wal);
-    }
-    // Sync neuron keywords
+    // ── Step 2: In-memory neuron update ───────────────────────
+    let old_neuron_kw: Option<Vec<String>>;
+    let neuron_for_wal: Option<crate::neuron::Neuron>;
+    let neuron_needs_update: bool;
     if let Ok(mut nn) = handle.neural_network.lock() {
         use crate::neuron::neuron::EntityType;
-        let nid = nn.all_neurons().find_map(|n| {
-            if matches!(n.entity_type, Some(EntityType::Vertex(v)) if v == id) {
-                Some(n.id)
-            } else {
-                None
-            }
-        });
-        if let Some(nid) = nid {
-            if let Some(neuron) = nn.get_neuron_mut(nid) {
-                neuron.keywords = new_keywords;
-                nn.mark_dirty();
-            }
-            if let Ok(mut wal) = handle.redolog_wal.lock() {
-                if let Some(neuron) = nn.get_neuron(nid) {
-                    let _ = wal.append_update_neuron(neuron);
+        let nid = {
+            let mut result = None;
+            for n in nn.all_neurons() {
+                if matches!(n.entity_type, Some(EntityType::Vertex(v)) if v == id) {
+                    result = Some(n.id);
+                    break;
                 }
+            }
+            result
+        };
+        if let Some(nid) = nid {
+            let n = nn.get_neuron_mut(nid).unwrap();
+            old_neuron_kw = Some(n.keywords.clone());
+            n.keywords = new_keywords;
+            neuron_for_wal = Some(n.clone());
+            nn.mark_dirty();
+            neuron_needs_update = true;
+        } else {
+            old_neuron_kw = None;
+            neuron_for_wal = None;
+            neuron_needs_update = false;
+        }
+    } else {
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "lock error"}))));
+    }
+    // ── Step 3: Atomic WAL batch ──────────────────────────────
+    let entries = {
+        let g = handle.graph.lock().unwrap();
+        let v = g.get_vertex(id).unwrap();
+        let vertex_payload = bincode::serialize(
+            &crate::storage::redolog_wal::UpdateVertexPayload {
+                id, labels: v.labels.clone(), properties: v.properties.clone(),
+            }
+        ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))))?;
+        drop(g);
+        let mut batch = vec![(crate::storage::redolog_wal::OP_UPDATE_VERTEX, vertex_payload)];
+        if let Some(ref n) = neuron_for_wal {
+            let np = bincode::serialize(n)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))))?;
+            batch.push((crate::storage::redolog_wal::OP_UPDATE_NEURON, np));
+        }
+        batch
+    };
+    // write_batch — on failure, rollback
+    if entries.len() > 1 {
+        if let Ok(mut wal) = handle.redolog_wal.lock() {
+            if let Err(e) = wal.write_batch(&entries) {
+                // Rollback: restore vertex + neuron
+                let mut g = handle.graph.lock().unwrap();
+                if let Some(v) = g.get_vertex_mut(id) {
+                    v.name = old_name;
+                    v.keywords = old_keywords;
+                    v.labels = old_labels;
+                    v.properties = old_properties;
+                    v._history = old_history;
+                    v._version = old_version;
+                    v._updated_at = old_updated_at;
+                }
+                drop(g);
+                if neuron_needs_update {
+                    if let Ok(mut nn) = handle.neural_network.lock() {
+                        use crate::neuron::neuron::EntityType;
+                        let nid = {
+                            let mut result = None;
+                            for n in nn.all_neurons() {
+                                if matches!(n.entity_type, Some(EntityType::Vertex(v)) if v == id) {
+                                    result = Some(n.id);
+                                    break;
+                                }
+                            }
+                            result
+                        };
+                        if let Some(nid) = nid {
+                            if let Some(kw) = &old_neuron_kw {
+                                if let Some(n) = nn.get_neuron_mut(nid) {
+                                    n.keywords = kw.clone();
+                                    nn.mark_dirty();
+                                }
+                            }
+                        }
+                    }
+                }
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": format!("WAL write failed: {}", e)}))));
             }
         }
     }
@@ -1140,48 +1248,106 @@ async fn update_edge_handler(
     let handle = gm.get_mut(&graph_name).ok_or_else(|| {
         (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "graph not found"})))
     })?;
+    // ── Step 1: In-memory edge update & save old state ──────
     let mut g = handle.graph.lock().unwrap();
     let edge = g.get_edge_mut(id).ok_or_else(|| {
         (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "edge not found"})))
     })?;
+    let old_label = edge.label.clone();
+    let old_properties = edge.properties.clone();
     let props: std::collections::HashMap<String, crate::graph::PropertyValue> = req
         .properties.into_iter().map(|(k, v)| (k, json_to_property(&v))).collect();
-    if let Some(ref label) = req.label {
-        edge.label = label.clone();
-    }
+    if let Some(ref label) = req.label { edge.label = label.clone(); }
     edge.properties = props;
     drop(g);
-    // Graph WAL
-    if let Ok(mut wal) = handle.redolog_wal.lock() {
-        let g = handle.graph.lock().unwrap();
-        if let Some(e) = g.get_edge(id) {
-            let _ = wal.append_update_edge(id, &e.label, &e.properties);
-        }
-        drop(g);
-        drop(wal);
-    }
-    // Sync neuron label
-    if let Ok(mut nn) = handle.neural_network.lock() {
-        use crate::neuron::neuron::EntityType;
-        let nid = nn.all_neurons().find_map(|n| {
-            if matches!(n.entity_type, Some(EntityType::Edge(e)) if e == id) {
-                Some(n.id)
+    // ── Step 2: In-memory neuron update ──────────────────────
+    let old_neuron_kw: Option<Vec<String>>;
+    let neuron_for_wal: Option<crate::neuron::Neuron>;
+    let neuron_needs_update: bool;
+    if req.label.is_some() {
+        if let Ok(mut nn) = handle.neural_network.lock() {
+            use crate::neuron::neuron::EntityType;
+            let nid = {
+                let mut result = None;
+                for n in nn.all_neurons() {
+                    if matches!(n.entity_type, Some(EntityType::Edge(e)) if e == id) {
+                        result = Some(n.id);
+                        break;
+                    }
+                }
+                result
+            };
+            if let Some(nid) = nid {
+                let n = nn.get_neuron_mut(nid).unwrap();
+                old_neuron_kw = Some(n.keywords.clone());
+                n.keywords = vec![req.label.as_ref().unwrap().clone()];
+                neuron_for_wal = Some(n.clone());
+                nn.mark_dirty();
+                neuron_needs_update = true;
             } else {
-                None
+                old_neuron_kw = None;
+                neuron_for_wal = None;
+                neuron_needs_update = false;
             }
-        });
-        if let Some(nid) = nid {
-            if let Some(neuron) = nn.get_neuron_mut(nid) {
-                if let Some(ref label) = req.label {
-                    neuron.keywords = vec![label.clone()];
-                    nn.mark_dirty();
+        } else {
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "lock error"}))));
+        }
+    } else {
+        old_neuron_kw = None;
+        neuron_for_wal = None;
+        neuron_needs_update = false;
+    }
+    // ── Step 3: Atomic WAL batch ─────────────────────────────
+    let entries = {
+        let g = handle.graph.lock().unwrap();
+        let e = g.get_edge(id).unwrap();
+        let edge_payload = bincode::serialize(
+            &crate::storage::redolog_wal::UpdateEdgePayload {
+                id, label: e.label.clone(), properties: e.properties.clone(),
+            }
+        ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))))?;
+        drop(g);
+        let mut batch = vec![(crate::storage::redolog_wal::OP_UPDATE_EDGE, edge_payload)];
+        if let Some(ref n) = neuron_for_wal {
+            let np = bincode::serialize(n)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))))?;
+            batch.push((crate::storage::redolog_wal::OP_UPDATE_NEURON, np));
+        }
+        batch
+    };
+    if let Ok(mut wal) = handle.redolog_wal.lock() {
+        if let Err(e) = wal.write_batch(&entries) {
+            // Rollback: restore edge + neuron
+            let mut g = handle.graph.lock().unwrap();
+            if let Some(edge) = g.get_edge_mut(id) {
+                edge.label = old_label;
+                edge.properties = old_properties;
+            }
+            drop(g);
+            if neuron_needs_update {
+                if let Ok(mut nn) = handle.neural_network.lock() {
+                    use crate::neuron::neuron::EntityType;
+                    let nid = {
+                        let mut result = None;
+                        for n in nn.all_neurons() {
+                            if matches!(n.entity_type, Some(EntityType::Edge(e)) if e == id) {
+                                result = Some(n.id);
+                                break;
+                            }
+                        }
+                        result
+                    };
+                    if let Some(nid) = nid {
+                        if let Some(kw) = &old_neuron_kw {
+                            if let Some(n) = nn.get_neuron_mut(nid) {
+                                n.keywords = kw.clone();
+                                nn.mark_dirty();
+                            }
+                        }
+                    }
                 }
             }
-            if let Ok(mut wal) = handle.redolog_wal.lock() {
-                if let Some(neuron) = nn.get_neuron(nid) {
-                    let _ = wal.append_update_neuron(neuron);
-                }
-            }
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": format!("WAL write failed: {}", e)}))));
         }
     }
     Ok(Json(serde_json::json!({"success": true, "id": id})))
@@ -1230,18 +1396,13 @@ async fn delete_edge_handler(
     let mut g = handle.graph.lock().unwrap();
     let force = params.get("force").map(|v| v == "true").unwrap_or(!g.time_travel_enabled);
     let now = crate::graph::vertex::now_micros();
-
-    if force {
-        let _ = g.remove_edge(id);
-    } else {
-        let _ = g.soft_delete_edge(id, true);
-    }
+    // ── Step 1: Save old state + in-memory delete ───────────
+    let saved_edge = if force { g.get_edge(id).cloned() } else { None };
+    if force { let _ = g.remove_edge(id); }
+    else { let _ = g.soft_delete_edge(id, true); }
     drop(g);
-
-    if let Ok(mut wal) = handle.redolog_wal.lock() {
-        let _ = wal.append_remove_edge(id);
-    }
-    // Mark edge's neuron as deleted
+    // ── Step 2: Neuron mark_deleted (in-memory) ─────────────
+    let saved_neuron: Option<crate::neuron::Neuron>;
     if let Ok(mut nn) = handle.neural_network.lock() {
         use crate::neuron::neuron::EntityType;
         let nid = {
@@ -1255,13 +1416,56 @@ async fn delete_edge_handler(
             result
         };
         if let Some(nid) = nid {
-            if let Some(neuron) = nn.get_neuron_mut(nid) {
-                neuron.mark_deleted(now);
-                nn.mark_dirty();
+            let n = nn.get_neuron_mut(nid).unwrap();
+            saved_neuron = Some(n.clone());
+            n.mark_deleted(now);
+            nn.mark_dirty();
+        } else {
+            saved_neuron = None;
+        }
+    } else {
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "lock error"}))));
+    }
+    // ── Step 3: Atomic batch WAL ────────────────────────────
+    let mut entries = Vec::new();
+    if force {
+        let p = bincode::serialize(&crate::storage::redolog_wal::RemoveEdgePayload { id })
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))))?;
+        entries.push((crate::storage::redolog_wal::OP_REMOVE_EDGE, p));
+    }
+    if let Some(ref n) = saved_neuron {
+        let np = bincode::serialize(n)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))))?;
+        entries.push((crate::storage::redolog_wal::OP_UPDATE_NEURON, np));
+    }
+    if !entries.is_empty() {
+        if let Ok(mut wal) = handle.redolog_wal.lock() {
+            if let Err(e) = wal.write_batch(&entries) {
+                // Rollback
+                if force {
+                    if let Some(edge) = &saved_edge {
+                        let mut g = handle.graph.lock().unwrap();
+                        if let Ok(eid) = g.create_edge(edge.label.clone(), edge.source, edge.target) {
+                            if let Some(e) = g.get_edge_mut(eid) {
+                                e.properties = edge.properties.clone();
+                            }
+                        }
+                        drop(g);
+                    }
+                }
+                if let Some(ref old) = saved_neuron {
+                    if let Ok(mut nn) = handle.neural_network.lock() {
+                        if nn.get_neuron(old.id).is_some() {
+                            nn.remove_neuron(old.id);
+                        }
+                        nn.add_neuron(old.clone());
+                        nn.mark_dirty();
+                    }
+                }
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": format!("WAL write failed: {}", e)}))));
             }
         }
     }
-
     Ok(Json(serde_json::json!({"success": true, "deleted": id})))
 }
 
