@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use crate::graph::{Graph, VertexId};
 use crate::graph_manager::GraphManager;
 use crate::gremlin::{
-    build_router, execute_query, AppState, GremlinQuery, QueryResponse,
+    build_router, execute_query_graph, AppState, GremlinQuery, QueryResponse,
 };
 use crate::neuron::{ActivationConfig, LearningConfig, NeuralNetwork, Neuron, NeuronId};
 use crate::persistence::{
@@ -208,12 +208,12 @@ impl MemorySystem {
             },
         ]);
 
-        execute_query_graph(execute_query(&self.graphself.graph, &self.neural_network, &gremlin_query)
+        execute_query_graph(&self.graph, &self.neural_network, &gremlin_query)
     }
 
     /// Execute a full Gremlin pipeline query.
     pub fn query_gremlin(&self, query: &GremlinQuery) -> QueryResponse {
-        execute_query_graph(execute_query(&self.graphself.graph, &self.neural_network, query)
+        execute_query_graph(&self.graph, &self.neural_network, query)
     }
 
     /// Get neural network statistics.

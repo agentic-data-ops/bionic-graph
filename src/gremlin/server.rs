@@ -463,7 +463,7 @@ async fn compact_handler(
         (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "graph not found"})))
     })?;
 
-    let mut g = handle.disk_graph.lock().unwrap();
+    let mut g = handle.disk_graph.lock().unwrap().snapshot();
     let stats = crate::storage::compaction::compact_graph(
         &mut g,
         handle.data_dir(),
@@ -506,7 +506,7 @@ async fn delete_vertex_handler(
     let edge_ids: Vec<u64> = g.all_edges().into_iter().filter(|e| e.source == id || e.target == id).map(|e| e.id).collect();
     // Save edge clones for rollback (only needed for hard-delete)
     let saved_edges: Vec<crate::graph::Edge> = if force {
-        edge_ids.iter().filter_map(|eid| g.get_edge(*eid)).collect()
+        edge_ids.iter().into_iter().filter_map(|eid| g.get_edge(eid)).collect()
     } else { vec![] };
     drop(g);
     // ── Step 2: Collect neuron snapshots + do in-memory ─────
@@ -893,7 +893,7 @@ async fn delete_document_handler(
         if let Some(handle) = gm.get(graph_name) {
             let mut g = handle.disk_graph.lock().unwrap();
             let to_delete: Vec<u64> = g.vertex_ids()
-                .filter_map(|vid| {
+                .into_iter().filter_map(|vid| {
                     let v = g.get_vertex(*vid)?;
                     if v.document == id { Some(*vid) } else { None }
                 })
@@ -907,18 +907,18 @@ async fn delete_document_handler(
                 let edge_now = crate::graph::vertex::now_micros();
                 for eid in &edge_ids {
                     if edge_force {
-                        let _ = g.remove_edge(*eid);
+                        let _ = g.remove_edge(eid);
                     } else {
-                        let _ = g.soft_delete_edge(*eid, true);
+                        let _ = g.soft_delete_edge(eid, true);
                     }
-                    if let Ok(mut wal) = handle.redolog_wal.lock() { let _ = wal.append_remove_edge(*eid); }
+                    if let Ok(mut wal) = handle.redolog_wal.lock() { let _ = wal.append_remove_edge(eid); }
                     // Mark the edge's neuron as deleted
                     if let Ok(mut nn) = handle.neural_network.lock() {
                         use crate::neuron::neuron::EntityType;
                         let nid = {
                             let mut result = None;
                             for n in nn.all_neurons() {
-                                if matches!(n.entity_type, Some(EntityType::Edge(e)) if e == *eid) {
+                                if matches!(n.entity_type, Some(EntityType::Edge(e)) if e == eid) {
                                     result = Some(n.id);
                                     break;
                                 }
@@ -934,7 +934,7 @@ async fn delete_document_handler(
                     }
                 }
                 let force = !g.time_travel_enabled;
-                let _ = g.remove_vertex(vid, force);
+                let _ = g.remove_vertex(vid);
                 if let Ok(mut wal) = handle.redolog_wal.lock() { let _ = wal.append_remove_vertex(vid); }
                 if let Ok(mut nn) = handle.neural_network.lock() {
                     use crate::neuron::neuron::EntityType;
@@ -1360,7 +1360,9 @@ async fn reindex_handler(
     })?;
 
     let count = {
-        let mut g = handle.disk_graph.lock().unwrap();
+        let mut dg = handle.disk_graph.lock().unwrap();
+        let g = dg.snapshot();
+        drop(dg);
         let mut nn = handle.neural_network.lock().unwrap();
         nn.reindex_edges(&g)
     };
@@ -1437,11 +1439,7 @@ async fn delete_edge_handler(
                 if force {
                     if let Some(edge) = &saved_edge {
                         let mut g = handle.disk_graph.lock().unwrap();
-                        if let Ok(eid) = g.create_edge(edge.label.clone(), edge.source, edge.target) {
-                            if let Some(e) = g.update_edge(eid) {
-                                e.properties = edge.properties.clone();
-                            }
-                        }
+                        let _ = g.add_edge_with_props(edge.label.clone(), edge.source, edge.target, edge.properties.clone());
                         drop(g);
                     }
                 }
