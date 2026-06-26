@@ -4,7 +4,6 @@ use std::sync::{Arc, Mutex};
 
 use crate::config::settings::NeuralConfig;
 use crate::graph::Graph;
-
 use crate::neuron::{ActivationConfig, LearningConfig, NeuralNetwork};
 use crate::persistence;
 use crate::storage::{DiskGraph, RedologWal};
@@ -13,9 +12,7 @@ use crate::storage::{DiskGraph, RedologWal};
 #[derive(Clone)]
 pub struct GraphHandle {
     pub name: String,
-    /// In-memory Graph for Gremlin queries, populated from DiskGraph on startup.
-    pub graph: Arc<Mutex<Graph>>,
-    /// Disk-backed graph for incremental persistence (subgraphs, LRU cache).
+    /// Disk-backed graph with LRU-cached subgraph loading (SubgraphCache).
     pub disk_graph: Arc<Mutex<DiskGraph>>,
     pub neural_network: Arc<Mutex<NeuralNetwork>>,
     pub redolog_wal: Arc<Mutex<RedologWal>>,
@@ -213,37 +210,9 @@ impl GraphManager {
         let neural_path = data_dir.join("neural.bin");
 
         // Open DiskGraph (subgraph-based, LRU-cached incremental persistence)
-        let mut disk_graph = DiskGraph::open(data_dir)
+        // Subgraphs are loaded on demand — no full preload.
+        let disk_graph = DiskGraph::open(data_dir)
             .map_err(|e| format!("Failed to open DiskGraph '{}': {}", name, e))?;
-
-        // Build in-memory Graph from DiskGraph
-        let mut graph = Graph::new();
-        {
-            let dg = &mut disk_graph;
-            // Copy all vertices
-            for vid in dg.vertex_ids() {
-                if let Some(v) = dg.get_vertex(vid) {
-                    let _ = graph.restore_vertex(v.id, v.labels.clone());
-                    if let Some(gv) = graph.get_vertex_mut(v.id) {
-                        gv.name = v.name.clone();
-                        gv.keywords = v.keywords.clone();
-                        gv.properties = v.properties.clone();
-                        gv.document = v.document.clone();
-                        gv._history = v._history.clone();
-                        gv._version = v._version;
-                        gv._updated_at = v._updated_at;
-                        gv._is_deleted = v._is_deleted;
-                    }
-                }
-            }
-            // Copy all edges
-            for e in dg.all_edges() {
-                let _ = graph.restore_edge(e.id, e.label.clone(), e.source, e.target);
-                if let Some(ge) = graph.get_edge_mut(e.id) {
-                    ge.properties = e.properties.clone();
-                }
-            }
-        }
 
         // Load neural network
         let mut neural_network = if neural_path.exists() {
@@ -253,14 +222,16 @@ impl GraphManager {
             NeuralNetwork::with_config(act_cfg.clone(), learn_cfg.clone())
         };
 
-        // Replay neuron ops from RedologWal (graph ops are handled by DiskGraph's own RedoLog)
-        if let Err(e) = RedologWal::replay_archived(&data_dir.to_path_buf(), &mut graph, &mut neural_network) {
+        // RedologWal replay: only neuron ops (graph ops handled by DiskGraph's own RedoLog)
+        // A temporary Graph is needed because RedologWal::replay() expects &mut Graph.
+        let mut wal_graph = Graph::new();
+        if let Err(e) = RedologWal::replay_archived(&data_dir.to_path_buf(), &mut wal_graph, &mut neural_network) {
             log::warn!("Redolog archived WAL recovery error for '{}': {}", name, e);
         }
         let redolog_path = data_dir.join("redolog.wal");
         let mut redolog_wal = RedologWal::open(&redolog_path)
             .map_err(|e| format!("Failed to open Redolog WAL for '{}': {}", name, e))?;
-        if let Err(e) = redolog_wal.replay(&mut graph, &mut neural_network) {
+        if let Err(e) = redolog_wal.replay(&mut wal_graph, &mut neural_network) {
             log::warn!("Redolog WAL recovery error for '{}': {}", name, e);
         }
         // Rebuild synapses from edge neurons — auto_synapse was never WAL-logged
@@ -268,7 +239,6 @@ impl GraphManager {
 
         Ok(GraphHandle {
             name: name.to_string(),
-            graph: Arc::new(Mutex::new(graph)),
             disk_graph: Arc::new(Mutex::new(disk_graph)),
             neural_network: Arc::new(Mutex::new(neural_network)),
             redolog_wal: Arc::new(Mutex::new(redolog_wal)),
@@ -280,18 +250,18 @@ impl GraphManager {
         std::fs::create_dir_all(data_dir)
             .map_err(|e| format!("Cannot create graph dir: {}", e))?;
         let handle = Self::open_graph(name, data_dir, act_cfg, learn_cfg)?;
-        // Set time_travel on the underlying Graph
+        // Set time_travel on the underlying DiskGraph
         if time_travel {
-            if let Ok(mut g) = handle.graph.lock() {
-                g.time_travel_enabled = true;
+            if let Ok(mut dg) = handle.disk_graph.lock() {
+                dg.time_travel_enabled = true;
             }
         }
         Ok(handle)
     }
 
     /// Save all graphs.
-    /// Add a vertex to a graph — transactional: all in-memory mutations first,
-    /// then atomic WAL batch. On WAL failure, memory is rolled back.
+    /// Add a vertex to a graph — creates vertex via DiskGraph (LRU cached),
+    /// then atomically writes WAL for neuron ops.
     pub fn add_vertex_to_graph(
         &self,
         graph_name: &str,
@@ -301,17 +271,20 @@ impl GraphManager {
         properties: &std::collections::HashMap<String, crate::graph::PropertyValue>,
     ) -> Result<u64, String> {
         let handle = self.get(graph_name).ok_or_else(|| format!("graph '{}' not found", graph_name))?;
-        let mut g = handle.graph.lock().map_err(|e| e.to_string())?;
-        let id = g.create_vertex(labels.to_vec());
-        if let Some(v) = g.get_vertex_mut(id) {
-            v.name = name.to_string();
-            v.keywords = keywords.to_vec();
-            let mut clean_props = properties.clone();
-            clean_props.remove("name");
-            clean_props.remove("keywords");
-            v.properties = clean_props;
-        }
-        drop(g);
+        let mut clean_props = properties.clone();
+        clean_props.remove("name");
+        clean_props.remove("keywords");
+        let id = {
+            let mut dg = handle.disk_graph.lock().map_err(|e| e.to_string())?;
+            let vid = dg.add_vertex(labels.to_vec())
+                .map_err(|e| format!("Failed to create vertex: {:?}", e))?;
+            if let Some(v) = dg.get_vertex_mut(vid) {
+                v.name = name.to_string();
+                v.keywords = keywords.to_vec();
+                v.properties = clean_props;
+            }
+            vid
+        };
         let nn_label = labels.first().cloned().unwrap_or_else(|| "entity".to_string());
         let mut neuron_kw = labels.to_vec();
         neuron_kw.push(name.to_string());
@@ -324,7 +297,7 @@ impl GraphManager {
             nn.add_neuron(n.clone());
             neuron = n;
         } else {
-            if let Ok(mut g) = handle.graph.lock() { let _ = g.remove_vertex(id, true); }
+            if let Ok(mut dg) = handle.disk_graph.lock() { let _ = dg.remove_vertex(id); }
             return Err("Failed to lock neural network".to_string());
         }
         let vertex_payload = bincode::serialize(
@@ -339,15 +312,15 @@ impl GraphManager {
         if let Ok(mut wal) = handle.redolog_wal.lock() {
             if let Err(e) = wal.write_batch(&entries) {
                 if let Ok(mut nn) = handle.neural_network.lock() { nn.remove_neuron(neuron.id); }
-                if let Ok(mut g) = handle.graph.lock() { let _ = g.remove_vertex(id, true); }
+                if let Ok(mut dg) = handle.disk_graph.lock() { let _ = dg.remove_vertex(id); }
                 return Err(format!("WAL write failed: {}", e));
             }
         }
         Ok(id)
     }
 
-    /// Add an edge to a graph — transactional: all in-memory mutations first,
-    /// then atomic WAL batch. On WAL failure, memory is rolled back.
+    /// Add an edge to a graph — creates edge via DiskGraph (LRU cached),
+    /// then atomically writes WAL for neuron ops.
     pub fn add_edge_to_graph(
         &self,
         graph_name: &str,
@@ -357,14 +330,13 @@ impl GraphManager {
         properties: &std::collections::HashMap<String, crate::graph::PropertyValue>,
     ) -> Result<u64, String> {
         let handle = self.get(graph_name).ok_or_else(|| format!("graph '{}' not found", graph_name))?;
-        let mut g = handle.graph.lock().map_err(|e| e.to_string())?;
-        let id = g.create_edge(label.to_string(), source, target).map_err(|e| e.to_string())?;
-        if let Some(e) = g.get_edge_mut(id) {
-            let mut clean_props = properties.clone();
-            clean_props.remove("label");
-            e.properties = clean_props;
-        }
-        drop(g);
+        let mut clean_props = properties.clone();
+        clean_props.remove("label");
+        let id = {
+            let mut dg = handle.disk_graph.lock().map_err(|e| e.to_string())?;
+            dg.add_edge_with_props(label.to_string(), source, target, clean_props)
+                .map_err(|e| format!("Failed to create edge: {:?}", e))?
+        };
         let neuron: crate::neuron::Neuron;
         if let Ok(mut nn) = handle.neural_network.lock() {
             let nid = nn.neuron_count() as u64 + 1;
@@ -375,7 +347,7 @@ impl GraphManager {
             nn.auto_synapse(source, target);
             neuron = n;
         } else {
-            if let Ok(mut g) = handle.graph.lock() { let _ = g.remove_edge(id); }
+            if let Ok(mut dg) = handle.disk_graph.lock() { let _ = dg.remove_vertex(source); }
             return Err("Failed to lock neural network".to_string());
         }
         let edge_payload = bincode::serialize(
@@ -392,7 +364,7 @@ impl GraphManager {
         if let Ok(mut wal) = handle.redolog_wal.lock() {
             if let Err(e) = wal.write_batch(&entries) {
                 if let Ok(mut nn) = handle.neural_network.lock() { nn.remove_neuron(neuron.id); }
-                if let Ok(mut g) = handle.graph.lock() { let _ = g.remove_edge(id); }
+                if let Ok(mut dg) = handle.disk_graph.lock() { let _ = dg.remove_vertex(source); }
                 return Err(format!("WAL write failed: {}", e));
             }
         }

@@ -189,7 +189,7 @@ async fn list_graphs_handler(
     let mut time_travel = std::collections::HashMap::new();
     for name in gm.list() {
         if let Some(h) = gm.get(&name) {
-            if let Ok(g) = h.graph.lock() {
+            if let Ok(g) = h.disk_graph.lock() {
                 time_travel.insert(name, g.time_travel_enabled);
             }
         }
@@ -239,7 +239,7 @@ async fn health_handler(State(state): State<AppState>) -> Json<HealthResponse> {
     let mut total_n = 0;
     for name in gm.list() {
         if let Some(h) = gm.get(&name) {
-            if let Ok(g) = h.graph.lock() {
+            if let Ok(g) = h.disk_graph.lock() {
                 total_v += g.vertex_count();
                 total_e += g.edge_count();
             }
@@ -251,7 +251,7 @@ async fn health_handler(State(state): State<AppState>) -> Json<HealthResponse> {
     let mut time_travel = std::collections::HashMap::new();
     for name in gm.list() {
         if let Some(h) = gm.get(&name) {
-            if let Ok(g) = h.graph.lock() {
+            if let Ok(g) = h.disk_graph.lock() {
                 time_travel.insert(name, g.time_travel_enabled);
             }
         }
@@ -278,7 +278,7 @@ async fn gremlin_handler(
     let (g, n) = {
         let gm = state.graph_manager.lock().unwrap();
         match gm.get(&graph_name) {
-            Some(handle) => (handle.graph.clone(), handle.neural_network.clone()),
+            Some(handle) => (handle.disk_graph.clone(), handle.neural_network.clone()),
             None => return Json(QueryResponse {
                 success: false, data: vec![], error: Some(format!("Graph '{}' not found", graph_name)),
                 ticks_used: None, neurons_fired: None,
@@ -412,7 +412,7 @@ async fn search_handler(
     let (g, n) = {
         let gm = state.graph_manager.lock().unwrap();
         match gm.get(&graph_name) {
-            Some(handle) => (handle.graph.clone(), handle.neural_network.clone()),
+            Some(handle) => (handle.disk_graph.clone(), handle.neural_network.clone()),
             None => return Json(QueryResponse {
                 success: false, data: vec![], error: Some(format!("Graph '{}' not found", graph_name)),
                 ticks_used: None, neurons_fired: None,
@@ -463,7 +463,7 @@ async fn compact_handler(
         (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "graph not found"})))
     })?;
 
-    let mut g = handle.graph.lock().unwrap();
+    let mut g = handle.disk_graph.lock().unwrap();
     let stats = crate::storage::compaction::compact_graph(
         &mut g,
         handle.data_dir(),
@@ -500,13 +500,13 @@ async fn delete_vertex_handler(
         (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "graph not found"})))
     })?;
     // ── Step 1: Collect incident edges & snapshots ──────────
-    let g = handle.graph.lock().unwrap();
+    let mut g = handle.disk_graph.lock().unwrap();
     let force = params.get("force").map(|v| v == "true").unwrap_or(!g.time_travel_enabled);
     let now = crate::graph::vertex::now_micros();
-    let edge_ids: Vec<u64> = g.all_edges().filter(|e| e.source == id || e.target == id).map(|e| e.id).collect();
+    let edge_ids: Vec<u64> = g.all_edges().into_iter().filter(|e| e.source == id || e.target == id).map(|e| e.id).collect();
     // Save edge clones for rollback (only needed for hard-delete)
     let saved_edges: Vec<crate::graph::Edge> = if force {
-        edge_ids.iter().filter_map(|eid| g.get_edge(*eid).cloned()).collect()
+        edge_ids.iter().filter_map(|eid| g.get_edge(*eid)).collect()
     } else { vec![] };
     drop(g);
     // ── Step 2: Collect neuron snapshots + do in-memory ─────
@@ -558,12 +558,12 @@ async fn delete_vertex_handler(
         nn.mark_dirty();
     }
     // ── Step 3: In-memory graph mutations ───────────────────
-    let mut g = handle.graph.lock().unwrap();
+    let mut g = handle.disk_graph.lock().unwrap();
     for &eid in &edge_ids {
         if force { let _ = g.remove_edge(eid); }
         else { let _ = g.soft_delete_edge(eid, true); }
     }
-    let _ = g.remove_vertex(id, force);
+    let _ = g.remove_vertex(id);
     drop(g);
     // ── Step 4: Build atomic batch WAL ──────────────────────
     let mut entries: Vec<(u8, Vec<u8>)> = Vec::new();
@@ -586,17 +586,13 @@ async fn delete_vertex_handler(
     if let Ok(mut wal) = handle.redolog_wal.lock() {
         if let Err(e) = wal.write_batch(&entries) {
             // Rollback: restore graph (best-effort)
-            let mut g = handle.graph.lock().unwrap();
+            let mut g = handle.disk_graph.lock().unwrap();
             // Remove the vertex if it was added back... actually remove_vertex hard-deletes
             // For simplicity, just log the error and return
             // Rollback: if hard-delete, try to re-add edges
             if force {
                 for edge in &saved_edges {
-                    if let Ok(eid) = g.create_edge(edge.label.clone(), edge.source, edge.target) {
-                        if let Some(e) = g.get_edge_mut(eid) {
-                            e.properties = edge.properties.clone();
-                        }
-                    }
+                    let _ = g.add_edge_with_props(edge.label.clone(), edge.source, edge.target, edge.properties.clone());
                 }
             }
             drop(g);
@@ -895,7 +891,7 @@ async fn delete_document_handler(
         let graph_name = if doc.graph_name.is_empty() { "default" } else { &doc.graph_name };
         let gm = state.graph_manager.lock().unwrap();
         if let Some(handle) = gm.get(graph_name) {
-            let mut g = handle.graph.lock().unwrap();
+            let mut g = handle.disk_graph.lock().unwrap();
             let to_delete: Vec<u64> = g.vertex_ids()
                 .filter_map(|vid| {
                     let v = g.get_vertex(*vid)?;
@@ -905,7 +901,7 @@ async fn delete_document_handler(
             let total = to_delete.len();
             for vid in to_delete {
                 let edge_ids: Vec<u64> = g.all_edges()
-                    .filter(|e| e.source == vid || e.target == vid)
+                    .into_iter().filter(|e| e.source == vid || e.target == vid)
                     .map(|e| e.id).collect();
                 let edge_force = !g.time_travel_enabled;
                 let edge_now = crate::graph::vertex::now_micros();
@@ -1087,11 +1083,11 @@ async fn update_vertex_handler(
     let handle = gm.get_mut(&graph_name).ok_or_else(|| {
         (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "graph not found"})))
     })?;
-    let g = handle.graph.lock().unwrap();
+    let mut g = handle.disk_graph.lock().unwrap();
     let record_history = g.time_travel_enabled;
     drop(g);
     // ── Step 1: In-memory vertex update & save old state ──────
-    let mut g = handle.graph.lock().unwrap();
+    let mut g = handle.disk_graph.lock().unwrap();
     let vertex = g.get_vertex_mut(id).ok_or_else(|| {
         (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "vertex not found"})))
     })?;
@@ -1164,7 +1160,7 @@ async fn update_vertex_handler(
     }
     // ── Step 3: Atomic WAL batch ──────────────────────────────
     let entries = {
-        let g = handle.graph.lock().unwrap();
+        let mut g = handle.disk_graph.lock().unwrap();
         let v = g.get_vertex(id).unwrap();
         let vertex_payload = bincode::serialize(
             &crate::storage::redolog_wal::UpdateVertexPayload {
@@ -1185,7 +1181,7 @@ async fn update_vertex_handler(
         if let Ok(mut wal) = handle.redolog_wal.lock() {
             if let Err(e) = wal.write_batch(&entries) {
                 // Rollback: restore vertex + neuron
-                let mut g = handle.graph.lock().unwrap();
+                let mut g = handle.disk_graph.lock().unwrap();
                 if let Some(v) = g.get_vertex_mut(id) {
                     v.name = old_name;
                     v.keywords = old_keywords;
@@ -1249,16 +1245,15 @@ async fn update_edge_handler(
         (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "graph not found"})))
     })?;
     // ── Step 1: In-memory edge update & save old state ──────
-    let mut g = handle.graph.lock().unwrap();
-    let edge = g.get_edge_mut(id).ok_or_else(|| {
+    let mut g = handle.disk_graph.lock().unwrap();
+    let edge = g.get_edge(id).ok_or_else(|| {
         (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "edge not found"})))
     })?;
     let old_label = edge.label.clone();
     let old_properties = edge.properties.clone();
     let props: std::collections::HashMap<String, crate::graph::PropertyValue> = req
         .properties.into_iter().map(|(k, v)| (k, json_to_property(&v))).collect();
-    if let Some(ref label) = req.label { edge.label = label.clone(); }
-    edge.properties = props;
+    g.update_edge(id, req.label.as_deref(), props);
     drop(g);
     // ── Step 2: In-memory neuron update ──────────────────────
     let old_neuron_kw: Option<Vec<String>>;
@@ -1299,7 +1294,7 @@ async fn update_edge_handler(
     }
     // ── Step 3: Atomic WAL batch ─────────────────────────────
     let entries = {
-        let g = handle.graph.lock().unwrap();
+        let mut g = handle.disk_graph.lock().unwrap();
         let e = g.get_edge(id).unwrap();
         let edge_payload = bincode::serialize(
             &crate::storage::redolog_wal::UpdateEdgePayload {
@@ -1318,11 +1313,8 @@ async fn update_edge_handler(
     if let Ok(mut wal) = handle.redolog_wal.lock() {
         if let Err(e) = wal.write_batch(&entries) {
             // Rollback: restore edge + neuron
-            let mut g = handle.graph.lock().unwrap();
-            if let Some(edge) = g.get_edge_mut(id) {
-                edge.label = old_label;
-                edge.properties = old_properties;
-            }
+            let mut g = handle.disk_graph.lock().unwrap();
+            g.update_edge(id, Some(&old_label), old_properties);
             drop(g);
             if neuron_needs_update {
                 if let Ok(mut nn) = handle.neural_network.lock() {
@@ -1368,7 +1360,7 @@ async fn reindex_handler(
     })?;
 
     let count = {
-        let g = handle.graph.lock().unwrap();
+        let mut g = handle.disk_graph.lock().unwrap();
         let mut nn = handle.neural_network.lock().unwrap();
         nn.reindex_edges(&g)
     };
@@ -1393,7 +1385,7 @@ async fn delete_edge_handler(
     let handle = gm.get_mut(&graph_name).ok_or_else(|| {
         (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "graph not found"})))
     })?;
-    let mut g = handle.graph.lock().unwrap();
+    let mut g = handle.disk_graph.lock().unwrap();
     let force = params.get("force").map(|v| v == "true").unwrap_or(!g.time_travel_enabled);
     let now = crate::graph::vertex::now_micros();
     // ── Step 1: Save old state + in-memory delete ───────────
@@ -1444,9 +1436,9 @@ async fn delete_edge_handler(
                 // Rollback
                 if force {
                     if let Some(edge) = &saved_edge {
-                        let mut g = handle.graph.lock().unwrap();
+                        let mut g = handle.disk_graph.lock().unwrap();
                         if let Ok(eid) = g.create_edge(edge.label.clone(), edge.source, edge.target) {
-                            if let Some(e) = g.get_edge_mut(eid) {
+                            if let Some(e) = g.update_edge(eid) {
                                 e.properties = edge.properties.clone();
                             }
                         }

@@ -208,12 +208,12 @@ impl MemorySystem {
             },
         ]);
 
-        execute_query(&self.graph, &self.neural_network, &gremlin_query)
+        execute_query_graph(execute_query(&self.graphself.graph, &self.neural_network, &gremlin_query)
     }
 
     /// Execute a full Gremlin pipeline query.
     pub fn query_gremlin(&self, query: &GremlinQuery) -> QueryResponse {
-        execute_query(&self.graph, &self.neural_network, query)
+        execute_query_graph(execute_query(&self.graphself.graph, &self.neural_network, query)
     }
 
     /// Get neural network statistics.
@@ -274,7 +274,6 @@ impl MemorySystem {
         });
         gm.insert("graph0".to_string(), GraphHandle {
             name: "graph0".to_string(),
-            graph,
             disk_graph: Arc::new(Mutex::new(disk_graph)),
             neural_network,
             redolog_wal: Arc::new(Mutex::new(

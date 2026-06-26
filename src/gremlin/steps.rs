@@ -6,6 +6,7 @@ use serde_json::Value;
 use crate::extract::ExtractionConfig;
 use crate::graph::{Graph, VertexId, PropertyValue};
 use crate::neuron::NeuralNetwork;
+use crate::storage::DiskGraph;
 
 use super::query::{
     EdgeResult, GremlinQuery, QueryResponse, TraversalResult, TraversalStep, VertexResult,
@@ -15,16 +16,42 @@ use super::query::{
 ///
 /// Steps are processed in sequence, with the output of each step becoming
 /// the input of the next step (pipeline semantics, same as Gremlin).
+/// Execute a Gremlin query (DiskGraph variant — snapshots to Graph internally).
 pub fn execute_query(
-    graph: &Arc<Mutex<Graph>>,
+    graph: &Arc<Mutex<DiskGraph>>,
     neural_network: &Arc<Mutex<NeuralNetwork>>,
     query: &GremlinQuery,
 ) -> QueryResponse {
     execute_query_with_llm(graph, neural_network, query, None)
 }
 
+/// Execute a Gremlin query on an in-memory Graph directly (legacy path).
+pub fn execute_query_graph(
+    graph: &Arc<Mutex<Graph>>,
+    neural_network: &Arc<Mutex<NeuralNetwork>>,
+    query: &GremlinQuery,
+) -> QueryResponse {
+    execute_query_with_llm_inner(graph, neural_network, query, None)
+}
+
 /// Execute a Gremlin query with optional LLM config for semantic search.
+/// Takes `Arc<Mutex<DiskGraph>>` — snapshots to in-memory `Graph` for step execution.
 pub fn execute_query_with_llm(
+    graph: &Arc<Mutex<DiskGraph>>,
+    neural_network: &Arc<Mutex<NeuralNetwork>>,
+    query: &GremlinQuery,
+    _llm_config: Option<&ExtractionConfig>,
+) -> QueryResponse {
+    // Snapshot DiskGraph into in-memory Graph for the step engine
+    let snapshot = {
+        let mut dg = graph.lock().unwrap();
+        dg.snapshot()
+    };
+    execute_query_with_llm_inner(&Arc::new(Mutex::new(snapshot)), neural_network, query, _llm_config)
+}
+
+/// Inner implementation — operates on an in-memory `Graph`.
+fn execute_query_with_llm_inner(
     graph: &Arc<Mutex<Graph>>,
     neural_network: &Arc<Mutex<NeuralNetwork>>,
     query: &GremlinQuery,

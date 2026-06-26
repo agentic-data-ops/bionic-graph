@@ -677,6 +677,35 @@ impl DiskGraph {
             .collect()
     }
 
+    /// Take a full snapshot of the graph as an in-memory `Graph`.
+    /// Used by Gremlin step execution which operates on `&Graph`.
+    pub fn snapshot(&mut self) -> super::super::graph::Graph {
+        use super::super::graph::Graph as GraphImpl;
+        let mut g = GraphImpl::new();
+        for vid in self.vertex_ids() {
+            if let Some(v) = self.get_vertex(vid) {
+                let _ = g.restore_vertex(v.id, v.labels.clone());
+                if let Some(gv) = g.get_vertex_mut(v.id) {
+                    gv.name = v.name.clone();
+                    gv.keywords = v.keywords.clone();
+                    gv.properties = v.properties.clone();
+                    gv.document = v.document.clone();
+                    gv._history = v._history.clone();
+                    gv._version = v._version;
+                    gv._updated_at = v._updated_at;
+                    gv._is_deleted = v._is_deleted;
+                }
+            }
+        }
+        for e in self.all_edges() {
+            let _ = g.restore_edge(e.id, e.label.clone(), e.source, e.target);
+            if let Some(ge) = g.get_edge_mut(e.id) {
+                ge.properties = e.properties.clone();
+            }
+        }
+        g
+    }
+
     /// Build edge index from current subgraph data.
     pub fn rebuild_edge_index(&mut self) {
         self.edge_index.clear();
