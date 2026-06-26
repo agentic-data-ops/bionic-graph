@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use crate::config::Settings;
 use crate::extract::ExtractionTaskManager;
 use crate::graph_manager::GraphHandle;
-use crate::storage::RedologWal;
+use crate::storage::{DiskGraph, RedologWal};
 use std::path::PathBuf;
 
 use crate::graph::{Graph, VertexId};
@@ -268,9 +268,14 @@ impl MemorySystem {
         let graph_dir = data_root.join("graphs").join("graph0");
         let redolog_path = graph_dir.join("redolog.wal");
         let mut gm = GraphManager::empty(data_root.clone());
+        let disk_graph = DiskGraph::open(&graph_dir).unwrap_or_else(|e| {
+            log::warn!("Failed to open DiskGraph for memory_system: {}", e);
+            DiskGraph::open(std::env::temp_dir().join("bgraph_dg_tmp")).unwrap()
+        });
         gm.insert("graph0".to_string(), GraphHandle {
             name: "graph0".to_string(),
             graph,
+            disk_graph: Arc::new(Mutex::new(disk_graph)),
             neural_network,
             redolog_wal: Arc::new(Mutex::new(
                 RedologWal::open(&redolog_path).unwrap_or_else(|_| RedologWal::open_in_memory()),

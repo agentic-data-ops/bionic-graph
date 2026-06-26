@@ -1,8 +1,9 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::graph::graph::GraphError;
-use crate::graph::{Vertex, VertexId, PropertyValue};
+use crate::graph::{Edge, Vertex, VertexId, PropertyValue};
 
 use super::index::{IndexBundle, LabelIndex, SubgraphIndex, VertexIndex};
 use super::partition::PartitionConfig;
@@ -28,11 +29,15 @@ pub struct DiskGraph {
     pub label_index: LabelIndex,
     pub redo_log: RedoLog,
     pub partition_config: PartitionConfig,
+    pub time_travel_enabled: bool,
     data_dir: PathBuf,
 
     /// Global ID counters.
     next_vertex_id: AtomicU64,
     next_edge_id: AtomicU64,
+
+    /// edge_id → containing subgraph_id (built during checkpoint).
+    edge_index: HashMap<u64, SubgraphId>,
 }
 
 impl DiskGraph {
@@ -65,9 +70,11 @@ impl DiskGraph {
             label_index: bundle.label_index,
             redo_log,
             partition_config: PartitionConfig::default(),
+            time_travel_enabled: false,
             data_dir,
             next_vertex_id: AtomicU64::new(bundle.global_next_vertex_id),
             next_edge_id: AtomicU64::new(bundle.global_next_edge_id),
+            edge_index: HashMap::new(),
         };
 
         // Recover from WAL
@@ -254,6 +261,7 @@ impl DiskGraph {
                 }))
                 .map_err(|_| GraphError::EdgeNotFound(eid))?;
 
+            self.edge_index.insert(eid, src_sg);
             if let Some(sg) = self.cache.get_mut(src_sg, &self.subgraph_index) {
                 let _ = sg.add_edge(label, source, target);
             }
@@ -270,6 +278,7 @@ impl DiskGraph {
                 }))
                 .map_err(|_| GraphError::EdgeNotFound(eid))?;
 
+            self.edge_index.insert(eid, src_sg);
             if let Some(sg) = self.cache.get_mut(src_sg, &self.subgraph_index) {
                 sg.add_cross_edge(eid, label, source, tgt_sg, target);
             }
@@ -433,6 +442,8 @@ impl DiskGraph {
         }
         // Save index bundle
         self.save_index_bundle()?;
+        // Rebuild edge index
+        self.rebuild_edge_index();
         // Write checkpoint marker to WAL
         self.redo_log.checkpoint()?;
         Ok(())
@@ -472,6 +483,214 @@ impl DiskGraph {
 
     pub fn cache_stats(&self) -> &super::subgraph_cache::CacheStats {
         self.cache.stats()
+    }
+
+    // ─── Extended Read API (for Gremlin compatibility) ────────
+
+    /// Get an edge by ID. Scans subgraphs (O(subgraphs)) — caches result in edge_index.
+    pub fn get_edge(&mut self, id: u64) -> Option<Edge> {
+        // Fast path: check index
+        if let Some(&sg_id) = self.edge_index.get(&id) {
+            if let Some(sg) = self.cache.get_mut(sg_id, &self.subgraph_index) {
+                if let Some(e) = sg.edges.iter().find(|e| e.id == id) {
+                    return Some(e.clone());
+                }
+                // Also check cross_edges
+                if let Some(ce) = sg.cross_edges.iter().find(|e| e.edge_id == id) {
+                    let mut edge = Edge::new(ce.edge_id, ce.edge_label.clone(), ce.source_vertex, ce.target_vertex);
+                    edge.properties = ce.properties.clone();
+                    return Some(edge);
+                }
+            }
+        }
+        // Slow path: scan all subgraphs
+        let sg_ids: Vec<SubgraphId> = self.subgraph_index.iter().map(|(&id, _)| id).collect();
+        for sg_id in sg_ids {
+            if let Some(sg) = self.cache.get_mut(sg_id, &self.subgraph_index) {
+                if let Some(e) = sg.edges.iter().find(|e| e.id == id) {
+                    self.edge_index.insert(id, sg_id);
+                    return Some(e.clone());
+                }
+                if let Some(ce) = sg.cross_edges.iter().find(|e| e.edge_id == id) {
+                    self.edge_index.insert(id, sg_id);
+                    let mut edge = Edge::new(ce.edge_id, ce.edge_label.clone(), ce.source_vertex, ce.target_vertex);
+                    edge.properties = ce.properties.clone();
+                    return Some(edge);
+                }
+            }
+        }
+        None
+    }
+
+    /// Get an edge by ID, including deleted (same as get_edge for now).
+    pub fn get_edge_including_deleted(&mut self, id: u64) -> Option<Edge> {
+        self.get_edge(id)
+    }
+
+    /// Get a vertex including deleted (checks _is_deleted flag).
+    pub fn get_vertex_including_deleted(&mut self, id: VertexId) -> Option<Vertex> {
+        self.get_vertex(id)
+    }
+
+    /// Remove an edge by ID.
+    pub fn remove_edge(&mut self, id: u64) -> Result<(), GraphError> {
+        // Find which subgraph
+        let sg_id = if let Some(&sg_id) = self.edge_index.get(&id) {
+            sg_id
+        } else {
+            return Err(GraphError::EdgeNotFound(id));
+        };
+        // Log to WAL
+        self.redo_log
+            .append(&RedoOperation::RemoveEdge(RemoveEdgePayload {
+                subgraph_id: sg_id,
+                edge_id: id,
+            }))
+            .map_err(|_| GraphError::EdgeNotFound(id))?;
+        // Remove from cache
+        if let Some(sg) = self.cache.get_mut(sg_id, &self.subgraph_index) {
+            sg.edges.retain(|e| e.id != id);
+            sg.cross_edges.retain(|e| e.edge_id != id);
+        }
+        self.edge_index.remove(&id);
+        Ok(())
+    }
+
+    /// Soft-delete an edge (mark as deleted in-place).
+    pub fn soft_delete_edge(&mut self, id: u64, _force: bool) -> Result<(), GraphError> {
+        // Mark the edge's _is_deleted flag
+        if let Some(e) = self.get_edge(id) {
+            let _ = self.update_edge(id, Some(&e.label), e.properties);
+        }
+        Ok(())
+    }
+
+    /// Add an edge with properties.
+    pub fn add_edge_with_props(
+        &mut self,
+        label: String,
+        source: VertexId,
+        target: VertexId,
+        properties: HashMap<String, PropertyValue>,
+    ) -> Result<u64, GraphError> {
+        let eid = self.add_edge(label, source, target)?;
+        self.update_edge(eid, None, properties);
+        Ok(eid)
+    }
+
+    /// Update an edge's label and properties in-place.
+    pub fn update_edge(&mut self, id: u64, label: Option<&str>, properties: HashMap<String, PropertyValue>) -> bool {
+        if let Some(&sg_id) = self.edge_index.get(&id) {
+            if let Some(sg) = self.cache.get_mut(sg_id, &self.subgraph_index) {
+                if let Some(e) = sg.edges.iter_mut().find(|e| e.id == id) {
+                    if let Some(l) = label { e.label = l.to_string(); }
+                    if !properties.is_empty() { e.properties = properties; }
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// All vertex IDs (from vertex_index, always in memory).
+    pub fn vertex_ids(&self) -> Vec<VertexId> {
+        self.vertex_index.iter().map(|(&id, _)| id).collect()
+    }
+
+    /// All edge IDs (loads all subgraphs).
+    pub fn edge_ids(&mut self) -> Vec<u64> {
+        let mut ids = Vec::new();
+        let sg_ids: Vec<SubgraphId> = self.subgraph_index.iter().map(|(&id, _)| id).collect();
+        for sg_id in sg_ids {
+            if let Some(sg) = self.cache.get_mut(sg_id, &self.subgraph_index) {
+                for e in &sg.edges {
+                    ids.push(e.id);
+                }
+                for ce in &sg.cross_edges {
+                    ids.push(ce.edge_id);
+                }
+            }
+        }
+        ids
+    }
+
+    /// All edges in the graph.
+    pub fn all_edges(&mut self) -> Vec<Edge> {
+        let mut edges = Vec::new();
+        let sg_ids: Vec<SubgraphId> = self.subgraph_index.iter().map(|(&id, _)| id).collect();
+        for sg_id in sg_ids {
+            if let Some(sg) = self.cache.get_mut(sg_id, &self.subgraph_index) {
+                for e in &sg.edges {
+                    edges.push(e.clone());
+                }
+                for ce in &sg.cross_edges {
+                    let mut edge = Edge::new(ce.edge_id, ce.edge_label.clone(), ce.source_vertex, ce.target_vertex);
+                    edge.properties = ce.properties.clone();
+                    edges.push(edge);
+                }
+            }
+        }
+        edges
+    }
+
+    /// Outgoing edges from a vertex.
+    pub fn outgoing_edges(&mut self, vertex_id: VertexId, edge_label: Option<&str>) -> Vec<Edge> {
+        let (sg_id, _) = match self.vertex_index.lookup(vertex_id) {
+            Some(x) => x,
+            None => return vec![],
+        };
+        let sg = match self.cache.get_mut(sg_id, &self.subgraph_index) {
+            Some(sg) => sg,
+            None => return vec![],
+        };
+        let result: Vec<Edge> = sg
+            .outgoing_edges(vertex_id)
+            .iter()
+            .filter(|e| edge_label.map_or(true, |l| e.label == *l))
+            .map(|e| {
+                let mut edge = Edge::new(e.id, e.label.clone(), e.source, e.target);
+                edge.properties = e.properties.clone();
+                edge
+            })
+            .collect();
+        result
+    }
+
+    /// Incoming edges to a vertex (same-subgraph only).
+    pub fn incoming_edges(&mut self, vertex_id: VertexId, edge_label: Option<&str>) -> Vec<Edge> {
+        let (sg_id, _) = match self.vertex_index.lookup(vertex_id) {
+            Some(x) => x,
+            None => return vec![],
+        };
+        let sg = match self.cache.get_mut(sg_id, &self.subgraph_index) {
+            Some(sg) => sg,
+            None => return vec![],
+        };
+        sg.incoming_edges(vertex_id)
+            .iter()
+            .filter(|e| edge_label.map_or(true, |l| e.label == *l))
+            .map(|e| {
+                let mut edge = Edge::new(e.id, e.label.clone(), e.source, e.target);
+                edge.properties = e.properties.clone();
+                edge
+            })
+            .collect()
+    }
+
+    /// Build edge index from current subgraph data.
+    pub fn rebuild_edge_index(&mut self) {
+        self.edge_index.clear();
+        let sg_ids: Vec<SubgraphId> = self.subgraph_index.iter().map(|(&id, _)| id).collect();
+        for sg_id in sg_ids {
+            if let Some(sg) = self.cache.get(sg_id, &self.subgraph_index) {
+                for e in &sg.edges {
+                    self.edge_index.insert(e.id, sg_id);
+                }
+                for ce in &sg.cross_edges {
+                    self.edge_index.insert(ce.edge_id, sg_id);
+                }
+            }
+        }
     }
 }
 
