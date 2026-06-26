@@ -13,7 +13,7 @@
 ## Layout
 - `src/graph/` — Vertex/Edge/Graph types, MVCC versioning, BFS/DFS traversal
 - `src/neuron/` — Spreading activation network, Hebbian learning, `EntityType` (Vertex/Edge per neuron)
-- `src/storage/` — Disk-backed storage: subgraph partitioning, LRU cache, WAL (redo_log / redolog_wal / RedologWal), version log (vlog), compaction
+- `src/storage/` — Disk-backed storage: subgraph partitioning, LRU cache (`SubgraphCache`), WAL (`RedologWal` + `RedoLog`), `DiskGraph` (incremental persistence with on-demand subgraph loading via `SubgraphCache`), version log (vlog), compaction
 - `src/gremlin/` — REST API routes + Gremlin JSON pipeline step engine (15 steps)
 - `src/maas/` — MaaS (Model as a Service) OpenAI-compatible proxy: model listing + chat completions
 - `src/extract/` — Backend document extraction
@@ -69,7 +69,7 @@ App.jsx
 - Documents → Backend `data/documents/YYMMDD/<id>.md` + `index.json`
 - Graph data → Backend `data/graphs/<name>/` (graph.bin + neural.bin + redolog.wal)
 
-## Gremlin Steps (16 total)
+## Gremlin Steps (17 total)
 | Step | Description |
 |------|-------------|
 | `search` | Neural index search — returns vertices from matched/activated neurons. Supports `mode: "greedy"` (match ANY keyword) or `"exact"` (match ALL keywords). Optional `at` (Unix μs) for time-travel aware search. Default greedy. Capped at 100 results. |
@@ -156,8 +156,16 @@ App.jsx
 - **`DELETE /edges/{id}`** — standalone edge deletion with `?force=true` support. Soft-deletes edge + marks neuron.
 - **Document extraction auto-splits** — by chapter headings when content exceeds LLM context window. Entities deduped by name (merge keywords, merge property keys). Uses `GraphManager` API.
 - **Default graph `graph0`** — time-travel enabled by default. Cannot be deleted. Old name `"default"` is deprecated.
+- **`DiskGraph` replaces `Graph` for persistence** — `GraphHandle` has `disk_graph: Arc<Mutex<DiskGraph>>`. Gremlin queries snapshot DiskGraph to in-memory Graph via `snapshot()`.
+- **`RedologWal` is neuron-only now** — graph ops are handled by DiskGraph's own `RedoLog`. The RedologWal replays only neuron ops (0x11-0x1F) on startup.
+- **Edge ID override** — `DiskGraph::add_edge()` registers global edge ID in `edge_index`, but `Subgraph::add_edge()` returns a local ID. After calling `sg.add_edge()`, the edge's ID in the subgraph is overridden with the global ID.
+- **WAL rotation** — `save_graph_snapshot()` calls `wal.rotate()` instead of `wal.truncate_after_checkpoint()`. Old WAL files are archived as `redolog.wal.{seq:04}`.
+- **Subgraph checkpoint** — `graph.bin` is no longer written. Checkpoint writes `subgraphs/{id:08x}.bin` files with CRC32-based change detection.
+- **Neural search 3-layer filtering** — (1) keyword match → (2) spread activation with mode-aware collection → (3) vertex-level name/keywords/labels filter against query tokens. Prevents cross-domain contamination.
+- **`VertexSearchSelect`** — UI component for searching vertices in Edge creation dialog. Filters visible nodes by name substring match. No backend call.
 
 ## Implemented Plans
+- `011-diskgraph-integration-incremental-persistence.md` — DiskGraph integration, subgraph checkpoint, WAL rotation, on-demand loading, 3-layer neural search filtering, edge ID fix, light theme macaron colors
 - `2024-06-23-search-mode-theme-doc-fields.md` — Search modes (greedy/exact), CSS theme system, `document` built-in field, Vis-network light/dark options, Playwright e2e test, Playwright install
 - `007-settings-neural-config-search-ui.md` — NeuralConfig → activate/search/learn groups, configurable search scores + fuzzy matching, /settings/neural API, settings "搜索" tab, message action icons, chat UX fixes
 - `008-chat-input-toolbar-layout.md` — ChatInput toolbar reorg, message action SVG icons, semantic default, auto-focus fix, time travel datetime picker

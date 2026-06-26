@@ -29,7 +29,9 @@ Bionic-Graph is a **low-cost AI memory system** that combines a knowledge graph 
 │  Hebbian learning  |  auto-persist to disk                    │
 ├──────────────────────────────────────────────────────────────┤
 │              Storage Engine (disk-backed)                      │
-│  Subgraph partitioning  |  LRU cache  |  WAL + redo           │
+│  DiskGraph + SubgraphCache (LRU, on-demand loading)           │
+│  Subgraph partitioning  |  WAL (RedologWal + RedoLog)         │
+│  Incremental checkpoint (CRC32 change detection)              │
 │  Version log (.vlog) with sparse index for time travel        │
 │  Compaction: archive old history, max_history pruning         │
 └──────────────────────────────────────────────────────────────┘
@@ -55,17 +57,19 @@ Bionic-Graph is a **low-cost AI memory system** that combines a knowledge graph 
 User query: "AI engineer"
        │
        ▼
-  Neural Index (keyword matching)
-       │  "AI" → Neuron("Artificial Intelligence")  activation = 1.0
-       │  "engineer" → Neuron("Engineering")        activation = 1.0
+  Layer 1 — Keyword matching (neuron level)
+       │  "AI" → Neuron("Artificial Intelligence")  score = 1.0
+       │  "engineer" → Neuron("Engineering")        score = 1.0
        ▼
-  Spreading activation (ticks)
+  Layer 2 — Spreading activation & collection
+       │  Exact mode: only directly-matched neurons contribute
+       │  Greedy mode: + spread-activated neurons with activation ≥ 0.3
        │  tick 1: Neuron("AI") fires → spreads to Neuron("ML") via synapse
-       │  tick 2: fires → spreads / decay / refractory
        │  tick N: no more firing → stabilize
        ▼
-  Collect vertex_refs from fired neurons
-       │  Neuron("AI") → vertex #42, #88
+  Layer 3 — Vertex-level relevance filter
+       │  Vertex name/keywords/labels must contain query token
+       │  Filters out cross-domain noise from contaminated neuron keywords
        ▼
   Gremlin traversal from starting vertices
        │  timeTravel("2024-06-10") → out("works_at", depth=3)
@@ -247,8 +251,15 @@ src/
 ├── config/                    # File-based configuration
 ├── graph/                     # Knowledge graph core
 ├── neuron/                    # Bio-inspired neural index
-├── storage/                   # Disk-backed storage engine
-├── persistence/               # Persistence helpers
+├── storage/                   # Disk-backed storage engine (DiskGraph + SubgraphCache)
+│   ├── disk_graph.rs          # Disk-backed graph with LRU subgraph cache
+│   ├── subgraph_cache.rs      # LRU write-back cache
+│   ├── subgraph.rs            # Subgraph data unit
+│   ├── partition.rs           # BFS graph partitioning
+│   ├── index.rs               # VertexIndex, SubgraphIndex, LabelIndex
+│   ├── redolog_wal.rs         # Unified WAL (graph + neuron)
+│   └── redo_log.rs            # Subgraph-level WAL
+├── persistence/               # Persistence helpers (neuron_store, graph_store)
 ├── gremlin/                   # REST API (axum)
 │   ├── query.rs               # Gremlin query types
 │   ├── steps.rs               # Step execution engine
