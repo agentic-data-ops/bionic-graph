@@ -177,8 +177,9 @@ pub fn search(
         }
     }
 
-    // Step 3: Collect results — ONLY from directly-activated neurons
-    // to prevent cross-domain contamination via spreading activation.
+    // Step 3: Collect results
+    // Exact mode: only directly-activated neurons (no spreading contamination)
+    // Greedy mode: directly-activated + spread-activated above hot_threshold
     let direct_set: HashSet<NeuronId> = directly_activated.into_iter().collect();
     let mut vertex_score: HashMap<VertexId, u32> = HashMap::new();
     let mut edge_score: HashMap<EdgeId, u32> = HashMap::new();
@@ -186,10 +187,19 @@ pub fn search(
     let mut hot_ids = Vec::new();
 
     for neuron in neurons.values() {
-        if !direct_set.contains(&neuron.id) {
-            continue; // Only collect from neurons that matched the query directly
-        }
-        if neuron.activation >= config.hot_threshold {
+        // Always include directly-matched neurons (even if activation decayed)
+        let in_direct = direct_set.contains(&neuron.id);
+        let is_spread_active = neuron.activation >= config.hot_threshold;
+        let is_active = in_direct || is_spread_active || neuron.is_refractory();
+        if !is_active { continue; }
+
+        let include = match config.search_mode {
+            crate::neuron::SearchMode::Exact => in_direct,
+            crate::neuron::SearchMode::Greedy => in_direct || is_spread_active,
+        };
+        if !include { continue; }
+
+        if neuron.activation >= config.hot_threshold || in_direct {
             hot_ids.push(neuron.id);
         }
         // Collect vertex refs
@@ -205,13 +215,18 @@ pub fn search(
         }
     }
 
-    // Track which neurons fired or were involved (directly matched only)
+    // Track which neurons fired or were involved
     for neuron in neurons.values() {
-        if !direct_set.contains(&neuron.id) { continue; }
-        if !(neuron.activation > 0.0 || neuron.is_refractory()) {
-            continue;
-        }
-        if neuron.is_refractory() || neuron.activation >= config.hot_threshold {
+        let in_direct = direct_set.contains(&neuron.id);
+        let is_spread_active = neuron.activation >= config.hot_threshold;
+        let is_active = in_direct || is_spread_active || neuron.is_refractory();
+        if !is_active { continue; }
+        let include = match config.search_mode {
+            crate::neuron::SearchMode::Exact => in_direct,
+            crate::neuron::SearchMode::Greedy => in_direct || is_spread_active,
+        };
+        if !include { continue; }
+        if neuron.is_refractory() || neuron.activation >= config.hot_threshold || in_direct {
             fired_ids.push(neuron.id);
         }
     }

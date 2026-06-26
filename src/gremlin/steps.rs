@@ -99,6 +99,13 @@ fn execute_query_with_llm_inner(
                 neurons_fired = Some(fired);
 
                 let g = graph.lock().unwrap();
+                // Build query token set for vertex-level relevance filtering
+                let query_tokens_lower: Vec<String> = keywords.iter()
+                    .flat_map(|k| k.split(|c: char| !c.is_alphanumeric() && c != '\''))
+                    .filter(|t| !t.is_empty())
+                    .map(|t| t.to_lowercase())
+                    .collect();
+
                 let mut results: Vec<TraversalResult> = ranked_vertices
                     .into_iter()
                     .take(100)
@@ -110,13 +117,24 @@ fn execute_query_with_llm_inner(
                         } else {
                             g.get_vertex(vid)
                         };
-                        vertex.map(|vertex| {
+                        vertex.and_then(|vertex| {
+                            // Vertex-level relevance filter: vertex name or keywords must
+                            // contain at least one query token. Prevents cross-domain noise
+                            // from contaminated neuron keywords.
+                            let vertex_relevant = query_tokens_lower.is_empty() || query_tokens_lower.iter().any(|token| {
+                                vertex.name.to_lowercase().contains(token.as_str())
+                                    || vertex.keywords.iter().any(|kw| kw.to_lowercase().contains(token.as_str()))
+                                    || vertex.labels.iter().any(|lbl| lbl.to_lowercase().contains(token.as_str()))
+                            });
+                            if !vertex_relevant {
+                                return None;
+                            }
                             let props: std::collections::HashMap<String, Value> = vertex
                                 .properties
                                 .iter()
                                 .map(|(k, pv)| (k.clone(), property_to_json(pv)))
                                 .collect();
-                            TraversalResult::VertexResult(VertexResult {
+                            Some(TraversalResult::VertexResult(VertexResult {
                                 element_type: "vertex".to_string(),
                                 id: vertex.id,
                                 name: vertex.name.clone(),
@@ -124,7 +142,7 @@ fn execute_query_with_llm_inner(
                                 document: vertex.document.clone(),
                                 labels: vertex.labels.clone(),
                                 properties: props,
-                            })
+                            }))
                         })
                     })
                     .collect();
