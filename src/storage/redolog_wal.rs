@@ -185,11 +185,91 @@ impl RedologWal {
         self.append(OP_LINK_VERTEX, &d)
     }
 
-    // ─── Checkpoint & Truncation ───────────────────────────────
+    // ─── Checkpoint & WAL Rotation ──────────────────────────
 
     /// Write a CHECKPOINT marker.
     pub fn checkpoint(&mut self) -> std::io::Result<()> {
         self.append(OP_CHECKPOINT, b"ckpt")
+    }
+
+    /// Rotate the WAL: checkpoint → close → rename to `redolog.wal.{seq}` → open fresh.
+    /// Archived files are used during startup replay (all no-ops since they end
+    /// with a checkpoint).
+    pub fn rotate(&mut self) -> std::io::Result<()> {
+        self.checkpoint()?;
+        self.close()?;
+        // Find next seq number
+        let wal_dir = self.path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::new());
+        let dir = &wal_dir;
+        let stem = self.path.file_stem().unwrap_or_default().to_str().unwrap_or("redolog");
+        let ext = self.path.extension()
+            .map(|e| format!(".{}", e.to_str().unwrap_or("wal")))
+            .unwrap_or_else(|| ".wal".to_string());
+        let seq = (1usize..).find(|i| {
+            !dir.join(format!("{}.{:04}{}", stem, i, ext)).exists()
+        }).unwrap_or(9999);
+        let archived = dir.join(format!("{}.{:04}{}", stem, seq, ext));
+        std::fs::rename(&self.path, &archived)?;
+        // Open new log
+        let file = std::fs::OpenOptions::new()
+            .create(true).append(true).read(true).open(&self.path)?;
+        self.file = Some(file);
+        log::info!("Redolog WAL rotated: {} → {}", self.path.display(), archived.display());
+        Ok(())
+    }
+
+    /// Delete old archived WAL files, keeping the most recent `max_keep`.
+    pub fn clean_archived(&self, max_keep: usize) -> std::io::Result<()> {
+        let wal_dir = self.path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::new());
+        let dir = &wal_dir;
+        let fname = self.path.file_name().unwrap_or_default().to_str().unwrap_or("redolog.wal");
+        let prefix = format!("{}.", fname);
+        let mut archived: Vec<_> = std::fs::read_dir(dir)
+            .map(|e| e.filter_map(|e| e.ok())
+                .filter(|e| {
+                    let n = e.file_name();
+                    let n = n.to_str().unwrap_or("");
+                    n.starts_with(&prefix) && n.len() > prefix.len()
+                })
+                .collect::<Vec<_>>())
+            .unwrap_or_default();
+        archived.sort_by_key(|e| e.file_name());
+        let remove_count = archived.len().saturating_sub(max_keep);
+        for entry in archived.iter().take(remove_count) {
+            let path = entry.path();
+            let _ = std::fs::remove_file(&path);
+            log::info!("Redolog WAL cleaned: {}", path.display());
+        }
+        Ok(())
+    }
+
+    /// Replay all archived WALs (`redolog.wal.*`) in sequence, then the current file.
+    /// Call this BEFORE opening the current RedologWal (or use `RedologWal::open`
+    /// on the current path after calling this).
+    pub fn replay_archived(
+        dir: &PathBuf,
+        graph: &mut Graph,
+        nn: &mut NeuralNetwork,
+    ) -> std::io::Result<usize> {
+        let fname = "redolog.wal";
+        let prefix = format!("{}.", fname);
+        let mut archived: Vec<_> = std::fs::read_dir(dir)
+            .map(|e| e.filter_map(|e| e.ok())
+                .filter(|e| {
+                    let n = e.file_name();
+                    let n = n.to_str().unwrap_or("");
+                    n.starts_with(&prefix) && n.len() > prefix.len()
+                })
+                .collect::<Vec<_>>())
+            .unwrap_or_default();
+        archived.sort_by_key(|e| e.file_name());
+        let mut total = 0;
+        for entry in &archived {
+            if let Ok(mut wal) = RedologWal::open(entry.path()) {
+                total += wal.replay(graph, nn)?;
+            }
+        }
+        Ok(total)
     }
 
     /// Truncate log to entries after the last CHECKPOINT.

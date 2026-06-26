@@ -216,8 +216,11 @@ impl GraphManager {
         let (mut graph, mut neural_network) = persistence::load_or_create(&config, act_cfg, learn_cfg)
             .map_err(|e| format!("Failed to load graph '{}': {}", name, e))?;
 
-        // Open Redolog WAL and replay un-persisted mutations atomically
+        // Replay all archived WALs (redolog.wal.*) in sequence, then current
         let redolog_path = data_dir.join("redolog.wal");
+        if let Err(e) = RedologWal::replay_archived(&data_dir.to_path_buf(), &mut graph, &mut neural_network) {
+            log::warn!("Redolog archived WAL recovery error for '{}': {}", name, e);
+        }
         let mut redolog_wal = RedologWal::open(&redolog_path)
             .map_err(|e| format!("Failed to open Redolog WAL for '{}': {}", name, e))?;
         if let Err(e) = redolog_wal.replay(&mut graph, &mut neural_network) {
@@ -427,10 +430,10 @@ impl GraphManager {
                 nn.mark_clean();
             }
         }
-        // Redolog WAL checkpoint after saving both snapshots
+        // Rotate WAL: checkpoint + rename + open fresh
         if let Ok(mut wal) = handle.redolog_wal.lock() {
-            let _ = wal.checkpoint();
-            let _ = wal.truncate_after_checkpoint();
+            let _ = wal.rotate();
+            let _ = wal.clean_archived(2); // keep at most 2 archived WALs
         }
     }
 }
