@@ -49,6 +49,7 @@ export default function SettingsDialog({
   const [neuralConfig, setNeuralConfig] = useState(null);
   const [neuralSaving, setNeuralSaving] = useState(false);
   const [neuralMessage, setNeuralMessage] = useState('');
+  const f3 = (v) => v !== undefined && v !== null ? Number(v).toFixed(3) : '';
   useEffect(() => {
     if (open) {
       fetchNeuralConfig().then((d) => {
@@ -117,7 +118,7 @@ export default function SettingsDialog({
       {/* Tabs */}
       <div className="flex gap-1.5 mb-5">
         <button className={tabCls(tab === 'providers')} onClick={() => setTab('providers')}>{t('settings.model')}</button>
-        <button className={tabCls(tab === 'search')} onClick={() => setTab('search')}>搜索</button>
+        <button className={tabCls(tab === 'search')} onClick={() => setTab('search')}>神经元</button>
       </div>
 
       {/* ─── Providers ─── */}
@@ -260,25 +261,25 @@ export default function SettingsDialog({
                   <div>
                     <label className="text-[11px] text-[var(--text-muted)]">Hot Threshold</label>
                     <input className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
-                      type="number" step="0.05" min="0" max="1" value={neuralConfig.hot_threshold}
+                      type="number" step="0.001" min="0" max="1" value={f3(neuralConfig.hot_threshold)}
                       onChange={(e) => setNeuralConfig({ ...neuralConfig, hot_threshold: parseFloat(e.target.value) || 0 })} />
                   </div>
                   <div>
                     <label className="text-[11px] text-[var(--text-muted)]">Min Synapse</label>
                     <input className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
-                      type="number" step="0.01" min="0" max="1" value={neuralConfig.min_synapse_strength}
+                      type="number" step="0.001" min="0" max="1" value={f3(neuralConfig.min_synapse_strength)}
                       onChange={(e) => setNeuralConfig({ ...neuralConfig, min_synapse_strength: parseFloat(e.target.value) || 0 })} />
                   </div>
                   <div>
                     <label className="text-[11px] text-[var(--text-muted)]">默认阈值</label>
                     <input className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
-                      type="number" step="0.05" min="0" max="1" value={neuralConfig.default_threshold}
+                      type="number" step="0.001" min="0" max="1" value={f3(neuralConfig.default_threshold)}
                       onChange={(e) => setNeuralConfig({ ...neuralConfig, default_threshold: parseFloat(e.target.value) || 0 })} />
                   </div>
                   <div>
                     <label className="text-[11px] text-[var(--text-muted)]">衰减率</label>
                     <input className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
-                      type="number" step="0.05" min="0" max="1" value={neuralConfig.default_decay_rate}
+                      type="number" step="0.001" min="0" max="1" value={f3(neuralConfig.default_decay_rate)}
                       onChange={(e) => setNeuralConfig({ ...neuralConfig, default_decay_rate: parseFloat(e.target.value) || 0 })} />
                   </div>
                   <div>
@@ -314,20 +315,39 @@ export default function SettingsDialog({
                   <div>
                     <label className="text-[11px] text-[var(--text-muted)]">贪婪精确匹配分数</label>
                     <input className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
-                      type="number" step="0.05" min="0" max="1" value={neuralConfig.greedy_exact_score}
+                      type="number" step="0.001" min="0" max="1" value={f3(neuralConfig.greedy_exact_score)}
                       onChange={(e) => setNeuralConfig({ ...neuralConfig, greedy_exact_score: parseFloat(e.target.value) || 0 })} />
                   </div>
                   <div>
                     <label className="text-[11px] text-[var(--text-muted)]">贪婪部分匹配分数</label>
                     <input className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
-                      type="number" step="0.05" min="0" max="1" value={neuralConfig.greedy_partial_score}
+                      type="number" step="0.001" min="0" max="1" value={f3(neuralConfig.greedy_partial_score)}
                       onChange={(e) => setNeuralConfig({ ...neuralConfig, greedy_partial_score: parseFloat(e.target.value) || 0 })} />
                   </div>
                   <div>
                     <label className="text-[11px] text-[var(--text-muted)]">精确模式最低分数</label>
                     <input className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
-                      type="number" step="0.05" min="0" max="1" value={neuralConfig.exact_min_score}
+                      type="number" step="0.001" min="0" max="1" value={f3(neuralConfig.exact_min_score)}
                       onChange={(e) => setNeuralConfig({ ...neuralConfig, exact_min_score: parseFloat(e.target.value) || 0 })} />
+                  </div>
+                </div>
+              </div>
+
+              {/* ── Mode Thresholds ── */}
+              <div>
+                <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">搜索模式激活阈值</label>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[11px] text-[var(--text-muted)]">贪婪模式 (Greedy)</label>
+                    <input className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
+                      type="number" step="0.001" min="0" max="1" value={f3(neuralConfig.greedy_threshold)}
+                      onChange={(e) => setNeuralConfig({ ...neuralConfig, greedy_threshold: parseFloat(e.target.value) || 0 })} />
+                  </div>
+                  <div>
+                    <label className="text-[11px] text-[var(--text-muted)]">精确模式 (Exact)</label>
+                    <input className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
+                      type="number" step="0.001" min="0" max="1" value={f3(neuralConfig.exact_threshold)}
+                      onChange={(e) => setNeuralConfig({ ...neuralConfig, exact_threshold: parseFloat(e.target.value) || 0 })} />
                   </div>
                 </div>
               </div>
@@ -346,7 +366,7 @@ export default function SettingsDialog({
                   <div>
                     <label className="text-[11px] text-[var(--text-muted)]">模糊匹配阈值 (0=严格, 1=宽松)</label>
                     <input className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
-                      type="number" step="0.05" min="0" max="1" value={neuralConfig.fuzzy_match_threshold}
+                      type="number" step="0.001" min="0" max="1" value={f3(neuralConfig.fuzzy_match_threshold)}
                       onChange={(e) => setNeuralConfig({ ...neuralConfig, fuzzy_match_threshold: parseFloat(e.target.value) || 0 })} />
                   </div>
                 </div>
@@ -372,13 +392,13 @@ export default function SettingsDialog({
                   <div>
                     <label className="text-[11px] text-[var(--text-muted)]">最小可塑性</label>
                     <input className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
-                      type="number" step="0.001" min="0" max="1" value={neuralConfig.min_plasticity}
+                      type="number" step="0.001" min="0" max="1" value={f3(neuralConfig.min_plasticity)}
                       onChange={(e) => setNeuralConfig({ ...neuralConfig, min_plasticity: parseFloat(e.target.value) || 0 })} />
                   </div>
                   <div>
                     <label className="text-[11px] text-[var(--text-muted)]">突触衰减率</label>
                     <input className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
-                      type="number" step="0.01" min="0" max="1" value={neuralConfig.synaptic_decay}
+                      type="number" step="0.001" min="0" max="1" value={f3(neuralConfig.synaptic_decay)}
                       onChange={(e) => setNeuralConfig({ ...neuralConfig, synaptic_decay: parseFloat(e.target.value) || 0 })} />
                   </div>
                 </div>

@@ -147,6 +147,8 @@ pub fn build_router(state: AppState) -> Router {
         // Settings
         .route("/settings", get(get_settings_handler))
         .route("/settings", put(update_settings_handler))
+        .route("/settings/llm", get(get_settings_handler))
+        .route("/settings/llm", put(update_settings_handler))
         .route("/settings/neural", get(get_neural_settings_handler))
         .route("/settings/neural", put(update_neural_settings_handler))
 
@@ -710,6 +712,8 @@ async fn get_neural_settings_handler(
                 "exact_min_score": s.neural.search.exact_min_score,
                 "fuzzy_match_enabled": s.neural.search.fuzzy_match_enabled,
                 "fuzzy_match_threshold": s.neural.search.fuzzy_match_threshold,
+                "greedy_threshold": s.neural.search.greedy_threshold,
+                "exact_threshold": s.neural.search.exact_threshold,
             },
             "learn": {
                 "enabled": s.neural.learn.enabled,
@@ -775,6 +779,12 @@ async fn update_neural_settings_handler(
     }
     if let Some(v) = val("fuzzy_match_threshold", "fuzzy_match_threshold").and_then(|v| v.as_f64()) {
         s.neural.search.fuzzy_match_threshold = v as f32;
+    }
+    if let Some(v) = val("greedy_threshold", "greedy_threshold").and_then(|v| v.as_f64()) {
+        s.neural.search.greedy_threshold = v as f32;
+    }
+    if let Some(v) = val("exact_threshold", "exact_threshold").and_then(|v| v.as_f64()) {
+        s.neural.search.exact_threshold = v as f32;
     }
 
     // ── learn group ──

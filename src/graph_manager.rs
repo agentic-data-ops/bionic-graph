@@ -194,6 +194,8 @@ impl GraphManager {
             exact_min_score: nc.search.exact_min_score,
             fuzzy_match_enabled: nc.search.fuzzy_match_enabled,
             fuzzy_match_threshold: nc.search.fuzzy_match_threshold,
+            greedy_threshold: nc.search.greedy_threshold,
+            exact_threshold: nc.search.exact_threshold,
         };
         let learn = LearningConfig {
             enabled: nc.learn.enabled,

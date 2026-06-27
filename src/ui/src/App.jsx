@@ -5,7 +5,7 @@ import ChatArea from './components/ChatArea';
 import SettingsDialog from './components/SettingsDialog';
 import GraphManagerDialog from './components/GraphManagerDialog';
 import KnowledgeBase from './components/KnowledgeBase';
-import { listGraphs, fetchSettings, updateSettings } from './api';
+import { listGraphs, fetchLlmSettings, updateLlmSettings } from './api';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -126,7 +126,7 @@ export default function App() {
       .catch(() => {});
 
     // Load backend LLM providers to sync frontend defaults
-    fetchSettings()
+    fetchLlmSettings()
       .then((backend) => {
         const llm = backend?.llm;
         if (llm?.providers?.length > 0) {
@@ -189,7 +189,7 @@ export default function App() {
     // Also sync the default_model when it changes
     const defaultModel = settings.defaultModelKey || undefined;
     if (providers.length > 0) {
-      updateSettings(providers, defaultModel)
+      updateLlmSettings(providers, defaultModel)
         .catch(() => {});
     }
   }, [settings.providers, settings.defaultModelKey]);

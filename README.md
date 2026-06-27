@@ -62,14 +62,15 @@ User query: "AI engineer"
        │  "engineer" → Neuron("Engineering")        score = 1.0
        ▼
   Layer 2 — Spreading activation & collection
-       │  Exact mode: only directly-matched neurons contribute
-       │  Greedy mode: + spread-activated neurons with activation ≥ 0.3
-       │  tick 1: Neuron("AI") fires → spreads to Neuron("ML") via synapse
+       │  Both modes: directly-matched + spread-activated neurons contribute
+       │  Greedy mode threshold: settings.search.greedy_threshold (default 0.6)
+       │  Exact mode threshold: settings.search.exact_threshold (default 0.8)
+       │  Synapse strength: 0.8 (auto_synapse), enables multi-hop propagation
+       │  tick 1: Neuron("AI") fires → spreads via synapse(0.8) → Neuron("ML") fires
        │  tick N: no more firing → stabilize
        ▼
-  Layer 3 — Vertex-level relevance filter
-       │  Vertex name/keywords/labels must contain query token
-       │  Filters out cross-domain noise from contaminated neuron keywords
+  Layer 3 — Vertex-level relevance filter (disabled)
+       │  Filter removed — both modes rely on neural activation spreading
        ▼
   Gremlin traversal from starting vertices
        │  timeTravel("2024-06-10") → out("works_at", depth=3)
@@ -208,7 +209,8 @@ curl localhost:8080/documents/{id}/content
 | `POST` | `/reindex` | Re-index edges into neural network |
 | `POST` | `/compact` | History compaction |
 | `GET/PUT` | `/settings` | LLM providers config |
-| `GET/PUT` | `/settings/neural` | Neural activation/search/learn config |
+| `GET/PUT` | `/settings/llm` | LLM providers config (preferred) |
+| `GET/PUT` | `/settings/neural` | Neural activation/search/learn config (thresholds, scores, learning params) |
 | `GET` | `/maas/openai/v1/models` | List models (`provider/model` format, `x-default-model` header) |
 | `POST` | `/maas/openai/v1/chat/completions` | OpenAI-compatible chat completion proxy (SSE streaming) |
 

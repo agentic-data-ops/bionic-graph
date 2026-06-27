@@ -43,6 +43,14 @@ pub struct ActivationConfig {
     pub fuzzy_match_enabled: bool,
     /// Normalized Levenshtein threshold (0.0 = exact, 1.0 = any).
     pub fuzzy_match_threshold: f32,
+
+    // ── Mode-specific activation thresholds ────────────────
+    /// Neuron firing threshold override for Greedy mode.
+    #[serde(default = "default_greedy_threshold")]
+    pub greedy_threshold: f32,
+    /// Neuron firing threshold override for Exact mode.
+    #[serde(default = "default_exact_threshold")]
+    pub exact_threshold: f32,
 }
 
 impl Default for ActivationConfig {
@@ -58,9 +66,14 @@ impl Default for ActivationConfig {
             exact_min_score: 0.5,
             fuzzy_match_enabled: false,
             fuzzy_match_threshold: 0.6,
+            greedy_threshold: 0.6,
+            exact_threshold: 0.8,
         }
     }
 }
+
+fn default_greedy_threshold() -> f32 { 0.6 }
+fn default_exact_threshold() -> f32 { 0.8 }
 
 /// Execute one tick of the spreading activation algorithm.
 ///
@@ -72,6 +85,8 @@ pub fn tick(
     neurons: &mut HashMap<NeuronId, Neuron>,
     synapses: &HashMap<NeuronId, Vec<Synapse>>,
     search_at: Option<i64>,
+    spread_recipients: &mut HashSet<NeuronId>,
+    spread_peak: &mut HashMap<NeuronId, f32>,
 ) -> TickResult {
     // Phase 1: collect all neurons that fired on the previous tick
     // (they have activation >= threshold and haven't yet spread this tick)
@@ -112,6 +127,9 @@ pub fn tick(
                     if post_neuron.is_deleted_at(search_at) { continue; }
                     if !post_neuron.is_refractory() {
                         post_neuron.receive_activation(post_activation);
+                        spread_recipients.insert(synapse.post_neuron_id);
+                        let peak = spread_peak.entry(synapse.post_neuron_id).or_insert(0.0);
+                        *peak = (*peak).max(post_neuron.activation);
                     }
                 }
             }
@@ -167,19 +185,40 @@ pub fn search(
         }
     }
 
-    // Step 2: Run tick cycles (spreading activation)
+    // Step 2: Set mode-specific activation threshold for tick cycles
+    // Greedy: lower threshold → more spreading
+    // Exact: higher threshold → stricter firing
+    let original_thresholds: std::collections::HashMap<NeuronId, f32> = neurons.iter()
+        .map(|(&id, n)| (id, n.threshold))
+        .collect();
+    let mode_threshold = match config.search_mode {
+        crate::neuron::SearchMode::Greedy => config.greedy_threshold,
+        crate::neuron::SearchMode::Exact => config.exact_threshold,
+    };
+    for neuron in neurons.values_mut() {
+        neuron.threshold = mode_threshold;
+    }
+
+    // Step 3: Run tick cycles (spreading activation)
+    let mut spread_recipients: HashSet<NeuronId> = HashSet::new();
+    let mut spread_peak: HashMap<NeuronId, f32> = HashMap::new();
     let mut ticks_run = 0;
     for _ in 0..config.max_ticks {
-        let result = tick(neurons, synapses, search_at);
+        let result = tick(neurons, synapses, search_at, &mut spread_recipients, &mut spread_peak);
         ticks_run += 1;
         if config.auto_stabilize && !result.has_activity {
             break;
         }
     }
 
-    // Step 3: Collect results
-    // Exact mode: only directly-activated neurons (no spreading contamination)
-    // Greedy mode: directly-activated + spread-activated above hot_threshold
+    // Restore original thresholds (no persistent side effects)
+    for (id, th) in original_thresholds {
+        if let Some(neuron) = neurons.get_mut(&id) {
+            neuron.threshold = th;
+        }
+    }
+
+    // Step 4: Collect results
     let direct_set: HashSet<NeuronId> = directly_activated.into_iter().collect();
     let mut vertex_score: HashMap<VertexId, u32> = HashMap::new();
     let mut edge_score: HashMap<EdgeId, u32> = HashMap::new();
@@ -187,14 +226,16 @@ pub fn search(
     let mut hot_ids = Vec::new();
 
     for neuron in neurons.values() {
-        // Always include directly-matched neurons (even if activation decayed)
+        // Always include directly-matched neurons
         let in_direct = direct_set.contains(&neuron.id);
-        let is_spread_active = neuron.activation >= config.hot_threshold;
+        // Only collect from directly-matched neurons. Spreading activation
+        // results are available via Gremlin expand step after search.
+        let is_spread_active = spread_recipients.contains(&neuron.id);
         let is_active = in_direct || is_spread_active || neuron.is_refractory();
         if !is_active { continue; }
 
         let include = match config.search_mode {
-            crate::neuron::SearchMode::Exact => in_direct,
+            crate::neuron::SearchMode::Exact => in_direct || is_spread_active,
             crate::neuron::SearchMode::Greedy => in_direct || is_spread_active,
         };
         if !include { continue; }
@@ -218,11 +259,11 @@ pub fn search(
     // Track which neurons fired or were involved
     for neuron in neurons.values() {
         let in_direct = direct_set.contains(&neuron.id);
-        let is_spread_active = neuron.activation >= config.hot_threshold;
+        let is_spread_active = spread_recipients.contains(&neuron.id);
         let is_active = in_direct || is_spread_active || neuron.is_refractory();
         if !is_active { continue; }
         let include = match config.search_mode {
-            crate::neuron::SearchMode::Exact => in_direct,
+            crate::neuron::SearchMode::Exact => in_direct || is_spread_active,
             crate::neuron::SearchMode::Greedy => in_direct || is_spread_active,
         };
         if !include { continue; }
@@ -337,6 +378,8 @@ mod tests {
             exact_min_score: 0.5,
             fuzzy_match_enabled: false,
             fuzzy_match_threshold: 0.6,
+            greedy_threshold: 0.6,
+            exact_threshold: 0.8,
         };
 
         let (vertices, _edges, fired, hot, ticks) = search(&mut neurons, &synapses, &config, &["ai"]);

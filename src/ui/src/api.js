@@ -265,7 +265,7 @@ export function chatCompletionProxy(messages, model, stream = true) {
 
 /** Get a single provider config (apiKey, apiBase) from backend by provider name. */
 export async function fetchProviderConfig(providerName) {
-  const res = await fetch('/settings');
+  const res = await fetch('/settings/llm');
   if (!res.ok) throw new Error(await res.text());
   const data = await res.json();
   const provider = data?.llm?.providers?.find(p => p.name === providerName);
@@ -274,8 +274,8 @@ export async function fetchProviderConfig(providerName) {
 }
 
 /** Fetch full LLM settings from backend (providers, models, api_keys). */
-export async function fetchSettings() {
-  const res = await fetch('/settings');
+export async function fetchLlmSettings() {
+  const res = await fetch('/settings/llm');
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -285,10 +285,10 @@ export async function fetchSettings() {
  * @param {Array} providers - [{ name, api_base_url, api_key, models: ["model1", "model2"] }]
  * @param {string} defaultModel - "ProviderName/ModelName"
  */
-export async function updateSettings(providers, defaultModel) {
+export async function updateLlmSettings(providers, defaultModel) {
   const body = { providers };
   if (defaultModel) body.default_model = defaultModel;
-  const res = await fetch('/settings', {
+  const res = await fetch('/settings/llm', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),

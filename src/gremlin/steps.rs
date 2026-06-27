@@ -99,12 +99,9 @@ fn execute_query_with_llm_inner(
                 neurons_fired = Some(fired);
 
                 let g = graph.lock().unwrap();
-                // Build query token set for vertex-level relevance filtering
-                let query_tokens_lower: Vec<String> = keywords.iter()
-                    .flat_map(|k| k.split(|c: char| !c.is_alphanumeric() && c != '\''))
-                    .filter(|t| !t.is_empty())
-                    .map(|t| t.to_lowercase())
-                    .collect();
+                // Vertex-level post-filter disabled — both modes now rely on
+                // neural activation spreading for relevance.
+                let query_tokens_lower: Vec<String> = vec![];
 
                 let mut results: Vec<TraversalResult> = ranked_vertices
                     .into_iter()
@@ -147,7 +144,7 @@ fn execute_query_with_llm_inner(
                     })
                     .collect();
 
-                // Add edge results from search
+                // Add edge results from search, along with their source/target vertices
                 for (eid, _score) in ranked_edges {
                     let edge = if search_at.is_some() {
                         g.get_edge_including_deleted(eid)
@@ -168,6 +165,38 @@ fn execute_query_with_llm_inner(
                             target: e.target,
                             document: e.document.clone(),
                             properties: eprops,
+                        }));
+                    }
+                }
+                // Deduplicate and add source/target vertices for matched edges
+                let existing_vids: HashSet<u64> = results.iter()
+                    .filter_map(|r| {
+                        if let TraversalResult::VertexResult(v) = r { Some(v.id) } else { None }
+                    })
+                    .collect();
+                let edge_vids: Vec<u64> = results.iter()
+                    .filter_map(|r| {
+                        if let TraversalResult::EdgeResult(e) = r {
+                            Some(vec![e.source, e.target])
+                        } else { None }
+                    })
+                    .flatten()
+                    .collect();
+                for vid in edge_vids {
+                    if existing_vids.contains(&vid) { continue; }
+                    if let Some(vertex) = g.get_vertex(vid) {
+                        let vprops: std::collections::HashMap<String, Value> = vertex
+                            .properties.iter()
+                            .map(|(k, pv)| (k.clone(), property_to_json(pv)))
+                            .collect();
+                        results.push(TraversalResult::VertexResult(VertexResult {
+                            element_type: "vertex".to_string(),
+                            id: vertex.id,
+                            name: vertex.name.clone(),
+                            keywords: vertex.keywords.clone(),
+                            document: vertex.document.clone(),
+                            labels: vertex.labels.clone(),
+                            properties: vprops,
                         }));
                     }
                 }

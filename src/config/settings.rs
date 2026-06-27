@@ -174,6 +174,10 @@ pub struct SearchConfig {
     pub fuzzy_match_enabled: bool,
     /// Normalized Levenshtein threshold (0.0 = exact, 1.0 = any).
     pub fuzzy_match_threshold: f32,
+    /// Activation threshold override for Greedy search mode.
+    pub greedy_threshold: f32,
+    /// Activation threshold override for Exact search mode.
+    pub exact_threshold: f32,
 }
 
 impl Default for SearchConfig {
@@ -185,6 +189,8 @@ impl Default for SearchConfig {
             exact_min_score: 0.5,
             fuzzy_match_enabled: true,
             fuzzy_match_threshold: 0.6,
+            greedy_threshold: 0.6,
+            exact_threshold: 0.8,
         }
     }
 }

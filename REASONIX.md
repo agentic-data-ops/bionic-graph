@@ -72,7 +72,7 @@ App.jsx
 ## Gremlin Steps (17 total)
 | Step | Description |
 |------|-------------|
-| `search` | Neural index search — returns vertices from matched/activated neurons. Supports `mode: "greedy"` (match ANY keyword) or `"exact"` (match ALL keywords). Optional `at` (Unix μs) for time-travel aware search. Default greedy. Capped at 100 results. |
+| `search` | Neural index search — returns vertices + edges from directly-matched AND spread-activated neurons. Both modes now include spread activation results. Supports `mode: "greedy"` (match ANY keyword, activation threshold 0.6) or `"exact"` (match ALL keywords, activation threshold 0.8). Optional `at` (Unix μs) for time-travel aware search. Default greedy. Capped at 100 results. When edges are matched, their source and target vertices are also included in results. |
 | `V` / `E` | All or specific vertices / edges |
 | `has` / `hasNot` / `hasKey` / `hasValue` / `hasLabel` / `hasText` | Property filters |
 | `out` / `in` / `both` | Vertex traversal (supports depth) |
@@ -101,7 +101,8 @@ App.jsx
 | GET | `/extract/tasks` | List extraction tasks |
 | POST | `/compact` | History compaction |
 | POST | `/reindex` | Re-index edges into neural network |
-| GET/PUT | `/settings` | LLM providers config |
+| GET/PUT | `/settings` | LLM providers config (legacy, use `/settings/llm`) |
+| GET/PUT | `/settings/llm` | LLM providers config |
 | GET/PUT | `/settings/neural` | Neural activation/search/learn config |
 | GET/POST/PUT/DELETE | `/documents` | Document CRUD |
 | GET | `/documents/:id/content` | Document content |
@@ -162,6 +163,11 @@ App.jsx
 - **WAL rotation** — `save_graph_snapshot()` calls `wal.rotate()` instead of `wal.truncate_after_checkpoint()`. Old WAL files are archived as `redolog.wal.{seq:04}`.
 - **Subgraph checkpoint** — `graph.bin` is no longer written. Checkpoint writes `subgraphs/{id:08x}.bin` files with CRC32-based change detection.
 - **Neural search 3-layer filtering** — (1) keyword match → (2) spread activation with mode-aware collection → (3) vertex-level name/keywords/labels filter against query tokens. Prevents cross-domain contamination.
+- **`is_spread_active` is now `spread_recipients.contains(&neuron.id)`** — spread-activated neurons appear in search results for both Greedy and Exact modes. Previously hardcoded `false`.
+- **Synapse default strength 0.8** — `auto_synapse()` uses 0.8 (was 0.5), enabling single-hop propagation past neuron threshold 0.7.
+- **Mode-specific activation thresholds** — Greedy mode uses threshold calculated from `settings.search.greedy_threshold` (default 0.6), Exact mode uses `settings.search.exact_threshold` (default 0.8). Configurable via PUT /settings/neural.
+- **Edge search expands to source/target vertices** — when an edge neuron is matched by search, its source and target vertices are automatically added to results (deduplicated).
+- **Vertex-level post-filter removed for Exact mode** — both modes now rely on neural activation spreading for relevance filtering.
 - **`VertexSearchSelect`** — UI component for searching vertices in Edge creation dialog. Filters visible nodes by name substring match. No backend call.
 
 ## Implemented Plans
@@ -176,3 +182,4 @@ App.jsx
 - `2024-06-23-vertex-redolog-overhaul.md` — Vertex built-in name/keywords, RedologWal atomic WAL, directory restructure, graceful shutdown, frontend improvements
 - `009-maas-proxy-neural-fix-frontend-polish.md` — MaaS OpenAI proxy, `with_keywords()` CJK fix, edge neuron cleanup on doc delete, semantic search prompt optimization, Light mode UI polish
 - `010-session-comprehensive-refactor.md` — Soft-delete with time-travel, unified vertex/edge+neuron creation, extraction pipeline refactoring (split+dedup+GraphManager API), frontend graph viewer features (search, add V/E, edge edit/delete, expand step), default graph renamed to graph0
+- `012-neural-activation-spread-enhancements.md` — Enable spread activation in search results, increase synapse strength to 0.8, add configurable mode-specific thresholds (greedy=0.6, exact=0.8), remove vertex-level post-filter, expand edge results to source/target vertices, frontend "神经元" tab, 3-decimal float display, `/settings/llm` endpoint

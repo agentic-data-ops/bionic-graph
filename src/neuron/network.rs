@@ -139,6 +139,9 @@ impl NeuralNetwork {
     /// Used after WAL replay to recover auto_synapse connections that
     /// were never written to the WAL.
     pub fn rebuild_synapses(&mut self) {
+        // Clear existing synapses to ensure a complete rebuild
+        // (old synapses from before the auto_synapse fix may be incomplete)
+        self.synapses = self.neurons.keys().map(|&id| (id, Vec::new())).collect();
         let pairs: Vec<(VertexId, VertexId)> = self.neurons.values()
             .filter_map(|n| {
                 if let Some(crate::neuron::neuron::EntityType::Edge(_)) = &n.entity_type {
@@ -173,7 +176,7 @@ impl NeuralNetwork {
                 let exists = self.synapses.get(&pre)
                     .map_or(false, |s| s.iter().any(|syn| syn.post_neuron_id == post));
                 if !exists {
-                    let _ = self.add_synapse(pre, post, 0.5, 0.1);
+                    let _ = self.add_synapse(pre, post, 0.8, 0.1);
                 }
             }
         }
@@ -282,7 +285,7 @@ impl NeuralNetwork {
 
     /// Run a single tick and return results.
     pub fn tick(&mut self) -> TickResult {
-        let result = activation::tick(&mut self.neurons, &self.synapses, None);
+        let result = activation::tick(&mut self.neurons, &self.synapses, None, &mut std::collections::HashSet::new(), &mut std::collections::HashMap::new());
         self.total_ticks += 1;
         self.dirty = true;
         result
