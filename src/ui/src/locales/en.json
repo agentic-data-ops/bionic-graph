@@ -94,6 +94,7 @@
   "chat.exact": "Exact",
   "chat.greedySearch": "Greedy Search",
   "chat.exactSearch": "Exact Search",
+"chat.semanticFilter": "Semantic Filter",
   "chat.kwModeHint": "Switch between greedy (ANY keyword) and exact (ALL keywords) matching",
   "search.placeholder": "Search keywords or paste text for semantic search...",
   "search.keyword": "Keyword",

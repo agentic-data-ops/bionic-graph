@@ -297,20 +297,46 @@ export async function updateLlmSettings(providers, defaultModel) {
   return res.json();
 }
 
-// ─── Neural Search Config ───────────────────────────────────────
+// ─── Search Config (new) ───────────────────────────────────────
 
-/** Fetch current neural/search configuration from backend. */
-export async function fetchNeuralConfig() {
-  const res = await fetch('/settings/neural');
+/**
+ * Fetch search/traverse configuration from backend.
+ * Returns: { greedy: {traverse,activate,decay,depth,score}, exact: {...} }
+ */
+export async function fetchSearchConfig() {
+  const res = await fetch('/settings/search');
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
 /**
- * Update neural/search configuration on the backend.
- * @param {Object} config - Partial neural config fields to update.
+ * Update search/traverse configuration on the backend.
+ * @param {Object} config - { greedy: {...}, exact: {...} }
  */
+export async function updateSearchConfig(config) {
+  const res = await fetch('/settings/search', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+// ─── Neural Search Config (deprecated) ─────────────────────────
+
+/** @deprecated Use fetchSearchConfig instead. */
+export async function fetchNeuralConfig() {
+  console.warn('fetchNeuralConfig is deprecated, use fetchSearchConfig');
+  // Fallback to neural compat endpoint — wraps response in old shape.
+  const res = await fetch('/settings/neural');
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+/** @deprecated Use updateSearchConfig instead. */
 export async function updateNeuralConfig(config) {
+  console.warn('updateNeuralConfig is deprecated, use updateSearchConfig');
   const res = await fetch('/settings/neural', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },

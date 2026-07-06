@@ -5,15 +5,9 @@ use chrono::Utc;
 use serde::Serialize;
 use uuid::Uuid;
 
-use super::config::ExtractionConfig;
-use crate::documents::DocumentManager;
-use super::document_extractor::extract_document_full;
-use super::pipeline::ExtractionStats;
-use super::extract_content_raw_with_nn_and_progress;
 
-use crate::graph::Graph;
-use crate::graph_manager::GraphManager;
-use crate::neuron::NeuralNetwork;
+
+
 
 // ─── Task Status ─────────────────────────────────────────────────
 
@@ -149,7 +143,7 @@ pub struct ExtractionTask {
 /// Manages async extraction tasks.
 #[derive(Clone)]
 pub struct ExtractionTaskManager {
-    tasks: Arc<Mutex<HashMap<String, ExtractionTask>>>,
+    pub tasks: Arc<Mutex<HashMap<String, ExtractionTask>>>,
 }
 
 impl ExtractionTaskManager {
@@ -264,213 +258,23 @@ impl ExtractionTaskManager {
         tasks
     }
 
-    /// Submit an extraction to run in the background (legacy section-based pipeline).
-    ///
-    /// Returns the task_id immediately.
-    pub fn submit_extraction(
-        &self,
-        config: ExtractionConfig,
-        content: String,
-        source_name: String,
-        graph: Arc<Mutex<Graph>>,
-        neural: Arc<Mutex<NeuralNetwork>>,
-        graph_name: String,
-    ) -> String {
-        let task_id = self.create_task(&graph_name, &source_name);
-        let task_id_clone = task_id.clone();
-        let manager = self.clone();
-
-        tokio::spawn(async move {
-            manager.update_task(&task_id_clone, TaskStatus::Running, None, None, None);
-
-            let sections = match crate::extract::document::split_sections(&content) {
-                Ok(s) => s,
-                Err(e) => {
-                    manager.update_task(
-                        &task_id_clone,
-                        TaskStatus::Failed,
-                        None,
-                        None,
-                        Some(format!("Failed to parse document: {}", e)),
-                    );
-                    return;
-                }
-            };
-            let total_sections = sections.len();
-
-            manager.update_task(
-                &task_id_clone,
-                TaskStatus::Running,
-                Some(TaskProgress {
-                    processed_sections: 0,
-                    total_sections,
-                    current_heading: "Parsing document...".to_string(),
-                }),
-                None,
-                None,
-            );
-
-            let mgr = manager.clone();
-            let tid = task_id_clone.clone();
-            let cb: super::pipeline::ProgressCallback = Some(Arc::new(move |processed, total, heading| {
-                mgr.update_task(
-                    &tid,
-                    TaskStatus::Running,
-                    Some(TaskProgress {
-                        processed_sections: processed,
-                        total_sections: total,
-                        current_heading: heading.to_string(),
-                    }),
-                    None,
-                    None,
-                );
-            }));
-
-            let result = extract_content_raw_with_nn_and_progress(
-                &config,
-                &content,
-                &source_name,
-                &graph,
-                &neural,
-                cb,
-            )
-            .await;
-
-            match result {
-                Ok(stats) => {
-                    manager.update_task(
-                        &task_id_clone,
-                        TaskStatus::Completed,
-                        Some(TaskProgress {
-                            processed_sections: stats.processed_sections,
-                            total_sections: stats.total_sections,
-                            current_heading: "Done".to_string(),
-                        }),
-                        Some(stats),
-                        None,
-                    );
-                }
-                Err(e) => {
-                    manager.update_task(
-                        &task_id_clone,
-                        TaskStatus::Failed,
-                        Some(TaskProgress {
-                            processed_sections: 0,
-                            total_sections,
-                            current_heading: "Error".to_string(),
-                        }),
-                        None,
-                        Some(e),
-                    );
-                }
-            }
-        });
-
-        task_id
-    }
-
-    /// Submit a full-document extraction to run in the background.
-    ///
-    /// Uses the new one-shot LLM extraction with step-level progress.
-    /// Returns the task_id immediately.
-    pub fn submit_document_extraction(
-        &self,
-        config: ExtractionConfig,
-        doc_id: String,
-        doc_content: String,
-        doc_title: String,
-        graph_name: String,
-        graph_manager: Arc<Mutex<GraphManager>>,
-        doc_manager: Arc<DocumentManager>,
-    ) -> String {
-        let task_id = self.create_task("default", &doc_title);
-        let task_id_clone = task_id.clone();
-        let manager_clone = self.clone();
-
-        // Set document_id and initial steps
-        {
-            let mut tasks = self.tasks.lock().unwrap();
-            if let Some(task) = tasks.get_mut(&task_id_clone) {
-                task.document_id = Some(doc_id.clone());
-                task.status = TaskStatus::Running;
-                task.started_at = Some(Utc::now().to_rfc3339());
-                task.steps = default_extraction_steps();
-            }
-        }
-
-        tokio::spawn(async move {
-            let tid = task_id_clone.clone();
-
-            // Step 1: Reading document (mark complete immediately)
-            manager_clone.complete_step(&tid, "Reading document content");
-
-            // Wrap progress callback: updates task steps from the extractor
-            let mgr_for_cb = manager_clone.clone();
-            let tid_for_cb = tid.clone();
-            let on_step: super::document_extractor::StepCallback = Box::new(move |label: &str, pct: f64, detail: Option<&str>| {
-                let mut tasks = mgr_for_cb.tasks.lock().unwrap();
-                if let Some(task) = tasks.get_mut(&tid_for_cb) {
-                    update_step(&mut task.steps, label, "running", pct, detail);
-                    task.overall_pct = compute_overall_pct(&task.steps);
-                }
-            });
-
-            let result = extract_document_full(
-                &config,
-                &doc_content,
-                &doc_title,
-                &doc_id,
-                &graph_manager,
-                &graph_name,
-                on_step,
-            )
-            .await;
-
-            let doc_mgr = doc_manager.clone();
-            let doc_id_c = doc_id.clone();
-            let doc_title_c = doc_title.clone();
-            let graph_name_c = graph_name.clone();
-            match result {
-                Ok(stats) => {
-                    // Update document tags from extraction (preserve title & graph)
-                    doc_mgr.update(&doc_id_c, &doc_title_c, &stats.tags, Some(&graph_name_c));
-                    // Mark remaining steps as completed
-                    let mut tasks = manager_clone.tasks.lock().unwrap();
-                    if let Some(task) = tasks.get_mut(&tid) {
-                        for step in &mut task.steps {
-                            if step.status == "running" {
-                                step.status = "completed".to_string();
-                                step.progress_pct = 100.0;
-                            }
-                        }
-                        task.status = TaskStatus::Completed;
-                        task.stats = Some(ExtractionStats {
-                            total_sections: 1,
-                            processed_sections: 1,
-                            total_entities: stats.total_entities,
-                            total_relations: stats.total_relations,
-                            new_vertices: stats.new_vertices,
-                            new_edges: stats.new_edges,
-                            ..Default::default()
-                        });
-                        task.completed_at = Some(Utc::now().to_rfc3339());
-                        task.overall_pct = 100.0;
-                    }
-                }
-                Err(e) => {
-                    manager_clone.fail_task(&tid, e);
-                }
-            }
-        });
-
-        task_id
-    }
 }
 
 impl Default for ExtractionTaskManager {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Statistics from a document extraction run.
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct ExtractionStats {
+    pub total_sections: usize,
+    pub processed_sections: usize,
+    pub total_entities: usize,
+    pub total_relations: usize,
+    pub new_vertices: usize,
+    pub new_edges: usize,
 }
 
 // ─── Helper to get step-based task response for frontend ──────────

@@ -124,7 +124,13 @@ mod tests {
         assert_eq!(parsed.server.port, 8080);
         assert_eq!(parsed.llm.default_model, "DeepSeek/deepseek-v4-flash");
         assert_eq!(parsed.storage.data_dir, "data");
-        assert_eq!(parsed.neural.activate.default_threshold, 0.7);
+        assert!(parsed.search.greedy.traverse);
+        assert_eq!(parsed.search.greedy.match_mode, "prefix");
+        assert!((parsed.search.greedy.activate - 0.2).abs() < 0.001);
+        assert!((parsed.search.greedy.decay - 0.95).abs() < 0.001);
+        assert_eq!(parsed.search.greedy.depth, 16);
+        assert!((parsed.search.greedy.score - 0.1).abs() < 0.001);
+        assert_eq!(parsed.search.exact.match_mode, "word");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { fetchNeuralConfig, updateNeuralConfig } from '../api';
+import { fetchSearchConfig, updateSearchConfig } from '../api';
 
 function Modal({ title, children, onClose }) {
   return (
@@ -46,17 +46,23 @@ export default function SettingsDialog({
   const { t, i18n } = useTranslation();
   const [tab, setTab] = useState('providers');
   const [editingProvider, setEditingProvider] = useState(null);
-  const [neuralConfig, setNeuralConfig] = useState(null);
-  const [neuralSaving, setNeuralSaving] = useState(false);
-  const [neuralMessage, setNeuralMessage] = useState('');
+  const [searchConfig, setSearchConfig] = useState(null);
+  const [searchSaving, setSearchSaving] = useState(false);
+  const [searchMessage, setSearchMessage] = useState('');
   const f3 = (v) => v !== undefined && v !== null ? Number(v).toFixed(3) : '';
   useEffect(() => {
     if (open) {
-      fetchNeuralConfig().then((d) => {
-        const nc = d.neural || {};
-        setNeuralConfig({ ...nc.activate, ...nc.search, ...nc.learn });
+      fetchSearchConfig().then((d) => {
+        setSearchConfig(d);
+        // Also sync to localStorage so ChatArea can read it
+        try {
+          const stored = JSON.parse(localStorage.getItem('bgraph-settings') || '{}');
+          stored.greedy = d.greedy;
+          stored.exact = d.exact;
+          localStorage.setItem('bgraph-settings', JSON.stringify(stored));
+        } catch (e) {}
       }).catch(() => {});
-      setNeuralMessage('');
+      setSearchMessage('');
     }
   }, [open]);
 
@@ -118,7 +124,7 @@ export default function SettingsDialog({
       {/* Tabs */}
       <div className="flex gap-1.5 mb-5">
         <button className={tabCls(tab === 'providers')} onClick={() => setTab('providers')}>{t('settings.model')}</button>
-        <button className={tabCls(tab === 'search')} onClick={() => setTab('search')}>神经元</button>
+        <button className={tabCls(tab === 'search')} onClick={() => setTab('search')}>搜索</button>
       </div>
 
       {/* ─── Providers ─── */}
@@ -246,160 +252,101 @@ export default function SettingsDialog({
       {/* ─── Search Config ─── */}
       {tab === 'search' && (
         <div>
-          {neuralConfig ? (
+          {searchConfig ? (
             <div className="space-y-4">
-              {/* ── Activation ── */}
-              <div>
-                <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">激活参数</label>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="text-[11px] text-[var(--text-muted)]">Max Ticks</label>
-                    <input className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
-                      type="number" min="1" max="100" value={neuralConfig.max_ticks}
-                      onChange={(e) => setNeuralConfig({ ...neuralConfig, max_ticks: parseInt(e.target.value) || 20 })} />
-                  </div>
-                  <div>
-                    <label className="text-[11px] text-[var(--text-muted)]">Hot Threshold</label>
-                    <input className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
-                      type="number" step="0.001" min="0" max="1" value={f3(neuralConfig.hot_threshold)}
-                      onChange={(e) => setNeuralConfig({ ...neuralConfig, hot_threshold: parseFloat(e.target.value) || 0 })} />
-                  </div>
-                  <div>
-                    <label className="text-[11px] text-[var(--text-muted)]">Min Synapse</label>
-                    <input className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
-                      type="number" step="0.001" min="0" max="1" value={f3(neuralConfig.min_synapse_strength)}
-                      onChange={(e) => setNeuralConfig({ ...neuralConfig, min_synapse_strength: parseFloat(e.target.value) || 0 })} />
-                  </div>
-                  <div>
-                    <label className="text-[11px] text-[var(--text-muted)]">默认阈值</label>
-                    <input className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
-                      type="number" step="0.001" min="0" max="1" value={f3(neuralConfig.default_threshold)}
-                      onChange={(e) => setNeuralConfig({ ...neuralConfig, default_threshold: parseFloat(e.target.value) || 0 })} />
-                  </div>
-                  <div>
-                    <label className="text-[11px] text-[var(--text-muted)]">衰减率</label>
-                    <input className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
-                      type="number" step="0.001" min="0" max="1" value={f3(neuralConfig.default_decay_rate)}
-                      onChange={(e) => setNeuralConfig({ ...neuralConfig, default_decay_rate: parseFloat(e.target.value) || 0 })} />
-                  </div>
-                  <div>
-                    <label className="text-[11px] text-[var(--text-muted)]">不应期(ticks)</label>
-                    <input className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
-                      type="number" min="0" max="20" value={neuralConfig.default_refractory_ticks}
-                      onChange={(e) => setNeuralConfig({ ...neuralConfig, default_refractory_ticks: parseInt(e.target.value) || 0 })} />
-                  </div>
-                </div>
-              </div>
 
-              <div className="flex items-center gap-2 mb-2">
-                <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)] cursor-pointer select-none">
-                  <input type="checkbox" checked={neuralConfig.auto_stabilize} onChange={(e) => setNeuralConfig({ ...neuralConfig, auto_stabilize: e.target.checked })}
+              { /* ── Greedy ── */ }
+              <div className="p-3 rounded-xl bg-[var(--bg-tertiary)]/50">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-medium text-[var(--text-secondary)]">Greedy (贪婪模式)</span>
+                </div>
+                <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)] cursor-pointer select-none mb-2">
+                  <input type="checkbox" checked={searchConfig.greedy.traverse}
+                    onChange={(e) => setSearchConfig({ ...searchConfig, greedy: { ...searchConfig.greedy, explore: e.target.checked } })}
                     className="w-3.5 h-3.5 rounded border-[#3a3a3e] bg-[var(--bg-secondary)] checked:bg-[var(--accent)] checked:border-[#0a84ff] focus:ring-0 cursor-pointer" />
-                  自动稳定 (Auto Stabilize)
+                  启用数据遍历
                 </label>
-              </div>
-
-              {/* ── Search Mode ── */}
-              <div>
-                <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">搜索模式 &amp; 分数</label>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="text-[11px] text-[var(--text-muted)]">默认搜索模式</label>
-                    <select className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm appearance-none cursor-pointer"
-                      value={neuralConfig.default_search_mode}
-                      onChange={(e) => setNeuralConfig({ ...neuralConfig, default_search_mode: e.target.value })}>
-                      <option value="greedy">Greedy (贪婪)</option>
-                      <option value="exact">Exact (精确)</option>
-                    </select>
+                    <label className="text-[11px] text-[var(--text-muted)]">激活传播阈值</label>
+                    <div className="flex items-center gap-2">
+                      <input className="flex-1 accent-[var(--accent)]" type="range" min="0" max="1" step="0.05"
+                        value={searchConfig.greedy.activate}
+                        onChange={(e) => setSearchConfig({ ...searchConfig, greedy: { ...searchConfig.greedy, activate: parseFloat(e.target.value) } })} />
+                      <span className="text-xs text-[var(--text-secondary)] w-8 text-right">{searchConfig.greedy.activate.toFixed(2)}</span>
+                    </div>
                   </div>
                   <div>
-                    <label className="text-[11px] text-[var(--text-muted)]">贪婪精确匹配分数</label>
-                    <input className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
-                      type="number" step="0.001" min="0" max="1" value={f3(neuralConfig.greedy_exact_score)}
-                      onChange={(e) => setNeuralConfig({ ...neuralConfig, greedy_exact_score: parseFloat(e.target.value) || 0 })} />
+                    <label className="text-[11px] text-[var(--text-muted)]">激活衰减值</label>
+                    <div className="flex items-center gap-2">
+                      <input className="flex-1 accent-[var(--accent)]" type="range" min="0" max="1" step="0.05"
+                        value={searchConfig.greedy.decay}
+                        onChange={(e) => setSearchConfig({ ...searchConfig, greedy: { ...searchConfig.greedy, decay: parseFloat(e.target.value) } })} />
+                      <span className="text-xs text-[var(--text-secondary)] w-8 text-right">{searchConfig.greedy.decay.toFixed(2)}</span>
+                    </div>
                   </div>
                   <div>
-                    <label className="text-[11px] text-[var(--text-muted)]">贪婪部分匹配分数</label>
+                    <label className="text-[11px] text-[var(--text-muted)]">探索深度</label>
                     <input className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
-                      type="number" step="0.001" min="0" max="1" value={f3(neuralConfig.greedy_partial_score)}
-                      onChange={(e) => setNeuralConfig({ ...neuralConfig, greedy_partial_score: parseFloat(e.target.value) || 0 })} />
+                      type="number" min="1" max="255" value={searchConfig.greedy.depth}
+                      onChange={(e) => setSearchConfig({ ...searchConfig, greedy: { ...searchConfig.greedy, depth: parseInt(e.target.value) || 1 } })} />
                   </div>
                   <div>
-                    <label className="text-[11px] text-[var(--text-muted)]">精确模式最低分数</label>
-                    <input className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
-                      type="number" step="0.001" min="0" max="1" value={f3(neuralConfig.exact_min_score)}
-                      onChange={(e) => setNeuralConfig({ ...neuralConfig, exact_min_score: parseFloat(e.target.value) || 0 })} />
+                    <label className="text-[11px] text-[var(--text-muted)]">探索结果分值</label>
+                    <div className="flex items-center gap-2">
+                      <input className="flex-1 accent-[var(--accent)]" type="range" min="0" max="1" step="0.05"
+                        value={searchConfig.greedy.score}
+                        onChange={(e) => setSearchConfig({ ...searchConfig, greedy: { ...searchConfig.greedy, score: parseFloat(e.target.value) } })} />
+                      <span className="text-xs text-[var(--text-secondary)] w-8 text-right">{searchConfig.greedy.score.toFixed(2)}</span>
+                    </div>
                   </div>
                 </div>
               </div>
 
-              {/* ── Mode Thresholds ── */}
-              <div>
-                <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">搜索模式激活阈值</label>
+              { /* ── Exact ── */ }
+              <div className="p-3 rounded-xl bg-[var(--bg-tertiary)]/50">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-medium text-[var(--text-secondary)]">Exact (精确模式)</span>
+                </div>
+                <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)] cursor-pointer select-none mb-2">
+                  <input type="checkbox" checked={searchConfig.exact.traverse}
+                    onChange={(e) => setSearchConfig({ ...searchConfig, exact: { ...searchConfig.exact, explore: e.target.checked } })}
+                    className="w-3.5 h-3.5 rounded border-[#3a3a3e] bg-[var(--bg-secondary)] checked:bg-[var(--accent)] checked:border-[#0a84ff] focus:ring-0 cursor-pointer" />
+                  启用数据遍历
+                </label>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="text-[11px] text-[var(--text-muted)]">贪婪模式 (Greedy)</label>
-                    <input className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
-                      type="number" step="0.001" min="0" max="1" value={f3(neuralConfig.greedy_threshold)}
-                      onChange={(e) => setNeuralConfig({ ...neuralConfig, greedy_threshold: parseFloat(e.target.value) || 0 })} />
+                    <label className="text-[11px] text-[var(--text-muted)]">激活传播阈值</label>
+                    <div className="flex items-center gap-2">
+                      <input className="flex-1 accent-[var(--accent)]" type="range" min="0" max="1" step="0.05"
+                        value={searchConfig.exact.activate}
+                        onChange={(e) => setSearchConfig({ ...searchConfig, exact: { ...searchConfig.exact, activate: parseFloat(e.target.value) } })} />
+                      <span className="text-xs text-[var(--text-secondary)] w-8 text-right">{searchConfig.exact.activate.toFixed(2)}</span>
+                    </div>
                   </div>
                   <div>
-                    <label className="text-[11px] text-[var(--text-muted)]">精确模式 (Exact)</label>
-                    <input className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
-                      type="number" step="0.001" min="0" max="1" value={f3(neuralConfig.exact_threshold)}
-                      onChange={(e) => setNeuralConfig({ ...neuralConfig, exact_threshold: parseFloat(e.target.value) || 0 })} />
-                  </div>
-                </div>
-              </div>
-
-              {/* ── Fuzzy Matching ── */}
-              <div>
-                <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">模糊匹配</label>
-                <div className="flex items-center gap-2 mb-2">
-                  <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)] cursor-pointer select-none">
-                    <input type="checkbox" checked={neuralConfig.fuzzy_match_enabled} onChange={(e) => setNeuralConfig({ ...neuralConfig, fuzzy_match_enabled: e.target.checked })}
-                      className="w-3.5 h-3.5 rounded border-[#3a3a3e] bg-[var(--bg-secondary)] checked:bg-[var(--accent)] checked:border-[#0a84ff] focus:ring-0 cursor-pointer" />
-                    启用模糊匹配 (Levenshtein)
-                  </label>
-                </div>
-                <div className="grid grid-cols-1 gap-3">
-                  <div>
-                    <label className="text-[11px] text-[var(--text-muted)]">模糊匹配阈值 (0=严格, 1=宽松)</label>
-                    <input className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
-                      type="number" step="0.001" min="0" max="1" value={f3(neuralConfig.fuzzy_match_threshold)}
-                      onChange={(e) => setNeuralConfig({ ...neuralConfig, fuzzy_match_threshold: parseFloat(e.target.value) || 0 })} />
-                  </div>
-                </div>
-              </div>
-
-              {/* ── Learning ── */}
-              <div>
-                <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">Hebbian 学习</label>
-                <div className="flex items-center gap-2 mb-2">
-                  <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)] cursor-pointer select-none">
-                    <input type="checkbox" checked={neuralConfig.learning_enabled} onChange={(e) => setNeuralConfig({ ...neuralConfig, learning_enabled: e.target.checked })}
-                      className="w-3.5 h-3.5 rounded border-[#3a3a3e] bg-[var(--bg-secondary)] checked:bg-[var(--accent)] checked:border-[#0a84ff] focus:ring-0 cursor-pointer" />
-                    启用学习
-                  </label>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="text-[11px] text-[var(--text-muted)]">共火窗口 (ticks)</label>
-                    <input className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
-                      type="number" min="1" max="50" value={neuralConfig.co_fire_window}
-                      onChange={(e) => setNeuralConfig({ ...neuralConfig, co_fire_window: parseInt(e.target.value) || 5 })} />
+                    <label className="text-[11px] text-[var(--text-muted)]">激活衰减值</label>
+                    <div className="flex items-center gap-2">
+                      <input className="flex-1 accent-[var(--accent)]" type="range" min="0" max="1" step="0.05"
+                        value={searchConfig.exact.decay}
+                        onChange={(e) => setSearchConfig({ ...searchConfig, exact: { ...searchConfig.exact, decay: parseFloat(e.target.value) } })} />
+                      <span className="text-xs text-[var(--text-secondary)] w-8 text-right">{searchConfig.exact.decay.toFixed(2)}</span>
+                    </div>
                   </div>
                   <div>
-                    <label className="text-[11px] text-[var(--text-muted)]">最小可塑性</label>
+                    <label className="text-[11px] text-[var(--text-muted)]">探索深度</label>
                     <input className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
-                      type="number" step="0.001" min="0" max="1" value={f3(neuralConfig.min_plasticity)}
-                      onChange={(e) => setNeuralConfig({ ...neuralConfig, min_plasticity: parseFloat(e.target.value) || 0 })} />
+                      type="number" min="1" max="255" value={searchConfig.exact.depth}
+                      onChange={(e) => setSearchConfig({ ...searchConfig, exact: { ...searchConfig.exact, depth: parseInt(e.target.value) || 1 } })} />
                   </div>
                   <div>
-                    <label className="text-[11px] text-[var(--text-muted)]">突触衰减率</label>
-                    <input className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
-                      type="number" step="0.001" min="0" max="1" value={f3(neuralConfig.synaptic_decay)}
-                      onChange={(e) => setNeuralConfig({ ...neuralConfig, synaptic_decay: parseFloat(e.target.value) || 0 })} />
+                    <label className="text-[11px] text-[var(--text-muted)]">探索结果分值</label>
+                    <div className="flex items-center gap-2">
+                      <input className="flex-1 accent-[var(--accent)]" type="range" min="0" max="1" step="0.05"
+                        value={searchConfig.exact.score}
+                        onChange={(e) => setSearchConfig({ ...searchConfig, exact: { ...searchConfig.exact, score: parseFloat(e.target.value) } })} />
+                      <span className="text-xs text-[var(--text-secondary)] w-8 text-right">{searchConfig.exact.score.toFixed(2)}</span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -407,23 +354,30 @@ export default function SettingsDialog({
               {/* Save button */}
               <div className="flex items-center gap-3 pt-1">
                 <button className="px-4 py-2 rounded-xl bg-[var(--accent)] text-white text-sm font-medium hover:bg-[color-mix(in srgb, var(--accent), black 10%)] transition-all shadow-sm disabled:opacity-40"
-                  disabled={neuralSaving}
+                  disabled={searchSaving}
                   onClick={async () => {
-                    setNeuralSaving(true);
-                    setNeuralMessage('');
+                    setSearchSaving(true);
+                    setSearchMessage('');
                     try {
-                      await updateNeuralConfig(neuralConfig);
-                      setNeuralMessage('✅ 保存成功 — 重启服务后生效');
+                      await updateSearchConfig(searchConfig);
+                      // Sync to localStorage
+                      try {
+                        const stored = JSON.parse(localStorage.getItem('bgraph-settings') || '{}');
+                        stored.greedy = searchConfig.greedy;
+                        stored.exact = searchConfig.exact;
+                        localStorage.setItem('bgraph-settings', JSON.stringify(stored));
+                      } catch (e) {}
+                      setSearchMessage('✅ 保存成功');
                     } catch (e) {
-                      setNeuralMessage('❌ 保存失败: ' + e.message);
+                      setSearchMessage('❌ 保存失败: ' + e.message);
                     } finally {
-                      setNeuralSaving(false);
+                      setSearchSaving(false);
                     }
                   }}>
-                  {neuralSaving ? '保存中...' : '保存配置'}
+                  {searchSaving ? '保存中...' : '保存配置'}
                 </button>
-                {neuralMessage && (
-                  <span className="text-xs text-[var(--text-secondary)]">{neuralMessage}</span>
+                {searchMessage && (
+                  <span className="text-xs text-[var(--text-secondary)]">{searchMessage}</span>
                 )}
               </div>
             </div>

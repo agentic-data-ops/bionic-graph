@@ -8,10 +8,10 @@ const ChatInput = forwardRef(function ChatInput({
   onProviderChange,
   useGraph,
   onGraphToggle,
-  searchMode,
-  onSearchModeChange,
   kwSearchMode,
   onkwSearchModeChange,
+  enableSemanticFilter,
+  onSemanticFilterChange,
   timeTravel,
   onTimeTravelToggle,
   timeTravelPoint,
@@ -157,45 +157,34 @@ const ChatInput = forwardRef(function ChatInput({
               {graphs.map((g) => <option key={g} value={g}>{g}</option>)}
             </select>
 
-            {/* Search mode */}
-            <div className="flex rounded-lg overflow-hidden ring-1 ring-[var(--bg-hover)]">
+            {/* Match mode dropdown */}
+            <div className="relative">
               <button
-                className={`px-2.5 py-1 text-[11px] font-medium transition-all ${searchMode === 'semantic' ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}
-                onClick={() => onSearchModeChange('semantic')}
-              >{t('chat.semantic')}</button>
-              <button
-                className={`px-2.5 py-1 text-[11px] font-medium transition-all ${searchMode === 'keyword' ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}
-                onClick={() => onSearchModeChange('keyword')}
-              >{t('chat.keyword')}</button>
+                className="px-2 py-1 text-[10px] rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-all font-medium flex items-center gap-1"
+                onClick={(e) => { e.stopPropagation(); setKwModeOpen(!kwModeOpen); }}
+              >
+                {kwSearchMode === 'exact' ? t('chat.exactSearch') : t('chat.greedySearch')}
+                <svg className={`w-2.5 h-2.5 transition-transform ${kwModeOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
+              </button>
+              {kwModeOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setKwModeOpen(false)} />
+                  <div className="absolute right-0 top-full mt-1 z-50 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-lg overflow-hidden min-w-[150px]">
+                    <button className={`w-full text-left px-3 py-2 text-xs font-medium transition-all ${kwSearchMode === 'greedy' ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
+                      onClick={() => { onkwSearchModeChange('greedy'); setKwModeOpen(false); }}>{t('chat.greedySearch')}</button>
+                    <button className={`w-full text-left px-3 py-2 text-xs font-medium transition-all ${kwSearchMode === 'exact' ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
+                      onClick={() => { onkwSearchModeChange('exact'); setKwModeOpen(false); }}>{t('chat.exactSearch')}</button>
+                  </div>
+                </>
+              )}
             </div>
 
-            {/* Keyword match mode dropdown */}
-            {searchMode === 'keyword' && (
-              <div className="relative">
-                <button
-                  className="px-2 py-1 text-[10px] rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-all font-medium flex items-center gap-1"
-                  onClick={(e) => { e.stopPropagation(); setKwModeOpen(!kwModeOpen); }}
-                >
-                  {kwSearchMode === 'exact' ? t('chat.exactSearch') : t('chat.greedySearch')}
-                  <svg className={`w-2.5 h-2.5 transition-transform ${kwModeOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
-                </button>
-                {kwModeOpen && (
-                  <>
-                    <div className="fixed inset-0 z-40" onClick={() => setKwModeOpen(false)} />
-                    <div className="absolute right-0 top-full mt-1 z-50 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-lg overflow-hidden min-w-[150px]">
-                      <button
-                        className={`w-full text-left px-3 py-2 text-xs font-medium transition-all ${kwSearchMode === 'greedy' ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
-                        onClick={() => { onkwSearchModeChange('greedy'); setKwModeOpen(false); }}
-                      >{t('chat.greedySearch')}</button>
-                      <button
-                        className={`w-full text-left px-3 py-2 text-xs font-medium transition-all ${kwSearchMode === 'exact' ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
-                        onClick={() => { onkwSearchModeChange('exact'); setKwModeOpen(false); }}
-                      >{t('chat.exactSearch')}</button>
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
+            {/* Semantic filter toggle */}
+            <label className="flex items-center gap-1.5 cursor-pointer select-none text-xs text-[var(--text-secondary)] font-medium whitespace-nowrap">
+              <input type="checkbox" checked={enableSemanticFilter} onChange={(e) => onSemanticFilterChange(e.target.checked)}
+                className="w-3.5 h-3.5 rounded border-[var(--border)] bg-[var(--bg-tertiary)] checked:bg-[var(--accent)] checked:border-[var(--accent)] focus:ring-0 cursor-pointer" />
+              {t('chat.semanticFilter')}
+            </label>
 
             {/* Time travel — only if graph supports it */}
             {timeTravelGraphs[graphName] && (<>

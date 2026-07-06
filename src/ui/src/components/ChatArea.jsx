@@ -29,8 +29,6 @@ export default function ChatArea({
   onProviderChange,
   useGraph,
   onGraphToggle,
-  searchMode,
-  onSearchModeChange,
   timeTravel,
   onTimeTravelToggle,
   timeTravelPoint,
@@ -53,6 +51,7 @@ export default function ChatArea({
 
   const chatInputRef = useRef(null);
   const [kwSearchMode, setKwSearchMode] = useState("greedy");
+  const [enableSemanticFilter, setEnableSemanticFilter] = useState(false);
   const [searchStream, setSearchStream] = useState(null);
   const abortRef = useRef(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -73,136 +72,70 @@ export default function ChatArea({
       onUpdateConv({ ...conv, messages: updatedMsgs });
 
       if (useGraph) {
-        // ── Graph mode: keyword or semantic search ──
-        const isSemantic = searchMode === 'semantic';
-        const modelKey = `${activeProvider}/${chatModel || 'default'}`;
-
-        const steps = isSemantic
-          ? [
-              { icon: '🔑', name: 'Extracting search keywords', status: 'pending', llmOutput: '' },
-              { icon: '🔍', name: 'Searching knowledge graph', status: 'pending', llmOutput: '' },
-              { icon: '🎯', name: 'Filtering semantically relevant results', status: 'pending', llmOutput: '' },
-            ]
-          : [
-              { icon: '🔍', name: 'Searching knowledge graph', status: 'running', llmOutput: '' },
-            ];
+        const searchStep = { icon: '🔍', name: 'Searching knowledge graph', status: 'running', llmOutput: '' };
+        const steps = enableSemanticFilter
+          ? [searchStep, { icon: '🎯', name: 'Filtering semantically', status: 'pending', llmOutput: '' }]
+          : [searchStep];
 
         const ttMicros = timeTravel && timeTravelPoint ? localDatetimeToUTC(timeTravelPoint) : null;
         const progressMsgId = uid();
         const progressMsg = { id: progressMsgId, type: 'search_progress', title: text, steps, timeTravelEnabled: timeTravelGraphs[defaultGraph] || false, timeTravelAt: ttMicros };
-        setSearchStream(progressMsg); // only in stream, not saved to conversation
+        setSearchStream(progressMsg);
         setIsGenerating(true);
 
         try {
-          let keywordsArr;
-          let step1done;
-          if (isSemantic) {
-            // Step 1: Extract keywords via LLM (streaming)
-            const step1 = { icon: '🔑', name: 'Extracting search keywords', status: 'running', llmOutput: '' };
-            setSearchStream({ ...progressMsg, steps: [step1, progressMsg.steps[1], progressMsg.steps[2]] });
+          const gremlinSteps = [{ step: 'search', text, mode: kwSearchMode, at: ttMicros }];
+          if (ttMicros) gremlinSteps.push({ step: 'timeTravel', at: ttMicros });
 
-            const systemPrompt = 'Select 3-5 key search keywords from the user\'s query below. ONLY pick words/phrases that actually appear in the query — do NOT generate, infer, or translate any new words. Return ONLY a JSON array of strings, no other text.';
-            const { response, abort } = chatCompletionProxy(
-              [{ role: 'system', content: systemPrompt }, { role: 'user', content: `Query: ${text}` }],
+          const res = await gremlin(gremlinSteps, defaultGraph);
+
+          let finalData = res;
+          if (enableSemanticFilter && (res?.data || []).length > 0) {
+            const step2run = { icon: '🎯', name: 'Filtering semantically', status: 'running', llmOutput: '' };
+            setSearchStream({ ...progressMsg, steps: [searchStep, step2run] });
+
+            const modelKey = `${activeProvider}/${chatModel || 'default'}`;
+            const items = (res?.data || []).slice(0, 50);
+            const filterPrompt = `You are a semantic relevance filter. Given a user query and a list of search results from a knowledge graph, identify which results are semantically relevant. Return ONLY a JSON array of indices (0-based) of the relevant items. If none are relevant, return [].
+
+Search results are graph items with fields: type, id, name, label, labels, properties.
+
+User query: ${text}
+
+Search results:
+${JSON.stringify(items, null, 2)}`;
+
+            const { response: filterResponse, abort } = chatCompletionProxy(
+              [{ role: 'system', content: 'You are a precise semantic relevance filter. Respond only with a JSON array of 0-based indices.' }, { role: 'user', content: filterPrompt }],
               modelKey,
             );
             abortRef.current = abort;
-            let llmBuf = '';
-            await parseSSEStream(await response, (t) => {
-              llmBuf += t;
-              setSearchStream({
-                ...progressMsg,
-                steps: [
-                  { icon: '🔑', name: 'Extracting search keywords', status: 'running', llmOutput: llmBuf },
-                  progressMsg.steps[1],
-                  progressMsg.steps[2],
-                ],
-              });
-            });
+            let filterBuf = '';
+            await parseSSEStream(await filterResponse, (t => { filterBuf += t; }));
             abortRef.current = null;
-            try { keywordsArr = JSON.parse(llmBuf.trim()); }
-            catch { keywordsArr = text.split(/\s+/).filter(Boolean); }
 
-            step1done = { icon: '✅', name: `Extracted keywords: ${keywordsArr.join(', ')}`, status: 'done', llmOutput: llmBuf };
-            const step2run = { icon: '🔍', name: 'Searching knowledge graph', status: 'running', llmOutput: '' };
-            setSearchStream({ ...progressMsg, steps: [step1done, step2run, progressMsg.steps[2]] });
-          } else {
-            keywordsArr = text.split(/\s+/).filter(Boolean);
+            try {
+              const indices = JSON.parse(filterBuf.trim());
+              if (Array.isArray(indices) && indices.length > 0) {
+                const valid = indices.filter(i => i >= 0 && i < items.length);
+                finalData = { ...res, data: valid.map(i => items[i]) };
+              } else {
+                finalData = { ...res, data: [] };
+              }
+            } catch (e) {
+              // LLM output not valid JSON — keep original results
+            }
           }
 
-          // Step 2 (or only step for keyword): Search graph
-          // When semantic mode, always use greedy for the API call
-          const effectiveKwMode = isSemantic ? 'greedy' : kwSearchMode;
-          const gremlinSteps = [{ step: 'search', keywords: keywordsArr, mode: effectiveKwMode, at: ttMicros }];
-          if (ttMicros) {
-            gremlinSteps.push({ step: 'timeTravel', at: ttMicros });
-          }
-          const res = await gremlin(gremlinSteps, defaultGraph);
-
-          if (!isSemantic) {
-            const doneSteps = [{ icon: '✅', name: 'Graph search completed', status: 'done', llmOutput: '' }];
-            setSearchStream(null);
-            requestAnimationFrame(() => chatInputRef.current?.focus());
-            abortRef.current = null;
-            setIsGenerating(false);
-            onUpdateConv({ ...conv, messages: [...updatedMsgs, { ...progressMsg, steps: doneSteps, graphData: res, graphName: defaultGraph, timeTravelEnabled: timeTravelGraphs[defaultGraph] || false, timeTravelAt: ttMicros }] });
-            return;
-          }
-
-          const step2done = { icon: '✅', name: 'Graph search completed', status: 'done', llmOutput: '' };
-          const step3run = { icon: '🎯', name: 'Filtering semantically relevant results', status: 'running', llmOutput: '' };
-          setSearchStream({ ...progressMsg, steps: [step1done, step2done, step3run] });
-
-          // Step 3: Filter results via LLM (streaming)
-          const items = (res?.data || []).slice(0, 30);
-          const filterPrompt = `You are a semantic relevance filter. Given a user query and a list of search results, identify which results are semantically relevant to the query.
-
-The search results are graph data with two types of items:
-- vertex: represents an entity, with fields: name, type, labels, properties
-- edge: represents a relationship, with fields: label, source (vertex id), target (vertex id)
-
-Selection rules:
-1. Select vertices that match the entities mentioned in the query
-2. Select edges whose label matches the relationship described in the query
-3. If you select an edge, ALSO select its source and target vertices (even if they weren't explicitly mentioned)
-
-Return ONLY a comma-separated list of 1-based array indices of the selected items. If none are relevant, return "NONE". No other text.`;
-          const { response: filterResponse, abort: filterAbort } = chatCompletionProxy(
-            [{ role: 'system', content: filterPrompt }, { role: 'user', content: `Query: ${text}\n\nSearch Results:\n${JSON.stringify(items, null, 2)}` }],
-            modelKey,
-          );
-          abortRef.current = filterAbort;
-          let filterBuf = '';
-          await parseSSEStream(await filterResponse, (t) => {
-            filterBuf += t;
-            setSearchStream({
-              ...progressMsg,
-              steps: [step1done, step2done, { icon: '🎯', name: 'Filtering semantically relevant results', status: 'running', llmOutput: filterBuf }],
-            });
-          });
-          abortRef.current = null;
-
-          const text2 = filterBuf.trim();
-          let filteredData;
-          if (text2 === 'NONE') {
-            filteredData = { ...res, data: [] };
-          } else {
-            const indices = text2.split(',').map((s) => parseInt(s.trim(), 10) - 1).filter((i) => !isNaN(i) && i >= 0 && i < items.length);
-            const selected = indices.length > 0 ? indices.map((i) => items[i]) : items;
-            // Collect vertex IDs from filtered results, then include edges that connect them
-            const keptVertexIds = new Set(selected.filter((i) => i.type === 'vertex').map((i) => i.id));
-            const allData = (res?.data || []);
-            const extraEdges = allData.filter((i) => i.type === 'edge' && keptVertexIds.has(i.source) && keptVertexIds.has(i.target));
-            // Merge: selected items (minus edges duplicated by extra) + extra edges
-            const selectedIds = new Set(selected.map((i) => i.type === 'edge' ? `e:${i.id}` : `v:${i.id}`));
-            const merged = [...selected.filter((i) => i.type !== 'edge' || !extraEdges.some((e) => e.id === i.id)), ...extraEdges];
-            filteredData = { ...res, data: merged };
-          }
-
+          const doneSteps = enableSemanticFilter
+            ? [{ icon: '✅', name: 'Graph search completed', status: 'done', llmOutput: '' }, { icon: '✅', name: 'Semantic filtering done', status: 'done', llmOutput: '' }]
+            : [{ icon: '✅', name: 'Graph search completed', status: 'done', llmOutput: '' }];
           setSearchStream(null);
-          const finalSteps = [step1done, step2done, { icon: '✅', name: 'Filtering completed', status: 'done', llmOutput: filterBuf }];
-          onUpdateConv({ ...conv, messages: [...updatedMsgs, { ...progressMsg, steps: finalSteps, graphData: filteredData, graphName: defaultGraph, timeTravelEnabled: timeTravelGraphs[defaultGraph] || false, timeTravelAt: ttMicros }] });
           requestAnimationFrame(() => chatInputRef.current?.focus());
+          abortRef.current = null;
+          setIsGenerating(false);
+          onUpdateConv({ ...conv, messages: [...updatedMsgs, { ...progressMsg, steps: doneSteps, graphData: finalData, graphName: defaultGraph, timeTravelEnabled: timeTravelGraphs[defaultGraph] || false, timeTravelAt: ttMicros }] });
+
         } catch (e) {
           const failedSteps = (steps || []).map((s) => ({ ...s, status: 'failed' }));
           setSearchStream(null);
@@ -255,7 +188,7 @@ Return ONLY a comma-separated list of 1-based array indices of the selected item
         }
       }
     },
-    [activeConv, useGraph, searchMode, defaultGraph, providers, activeProvider, onUpdateConv, chatModel, kwSearchMode, timeTravel, timeTravelPoint, timeTravelGraphs]
+    [activeConv, useGraph, defaultGraph, providers, activeProvider, onUpdateConv, chatModel, kwSearchMode, enableSemanticFilter, timeTravel, timeTravelPoint, timeTravelGraphs]
   );
 
   const messages = activeConv?.messages || [];
@@ -308,13 +241,13 @@ Return ONLY a comma-separated list of 1-based array indices of the selected item
         onStop={() => { abortRef.current?.(); abortRef.current = null; setIsGenerating(false); }}
         kwSearchMode={kwSearchMode}
         onkwSearchModeChange={setKwSearchMode}
+        enableSemanticFilter={enableSemanticFilter}
+        onSemanticFilterChange={setEnableSemanticFilter}
         providers={providers}
         activeProvider={activeProvider}
         onProviderChange={onProviderChange}
         useGraph={useGraph}
         onGraphToggle={onGraphToggle}
-        searchMode={searchMode}
-        onSearchModeChange={onSearchModeChange}
         timeTravel={timeTravel}
         onTimeTravelToggle={onTimeTravelToggle}
         timeTravelPoint={timeTravelPoint}

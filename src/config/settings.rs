@@ -15,25 +15,20 @@ impl Default for ServerConfig {
     }
 }
 
-// ─── LLM Provider (multi-vendor, each with string-list of models) ─
+// ─── LLM Provider ────────────────────────────────────────────────
 
-/// A single LLM provider (vendor) with its API endpoint and model list.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmProvider {
     pub name: String,
     pub api_base_url: String,
     pub api_key: String,
-    /// Model names as plain strings, e.g. ["deepseek-v4-flash", "deepseek-v4-pro"]
     pub models: Vec<String>,
 }
 
-/// Full LLM configuration.
-/// `default_model` uses format `"<provider_name>/<model_name>"`, e.g. `"DeepSeek/deepseek-v4-flash"`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LlmConfig {
     pub providers: Vec<LlmProvider>,
-    /// e.g. "DeepSeek/deepseek-v4-flash"
     pub default_model: String,
     pub context_window: usize,
     pub max_output_tokens: usize,
@@ -41,7 +36,6 @@ pub struct LlmConfig {
 }
 
 impl LlmConfig {
-    /// Parse `default_model` ("Provider/Model") into (provider_name, model_name).
     pub fn parse_default_model(&self) -> (&str, &str) {
         if let Some(slash) = self.default_model.find('/') {
             let provider = &self.default_model[..slash];
@@ -52,7 +46,6 @@ impl LlmConfig {
         }
     }
 
-    /// Find the provider by name and return its api_key + api_base_url + resolved model name.
     pub fn resolve_default(&self) -> (String, String, String) {
         let (prov_name, model_name) = self.parse_default_model();
         if let Some(prov) = self.providers.iter().find(|p| p.name == prov_name) {
@@ -87,153 +80,106 @@ impl Default for LlmConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StorageConfig {
+    /// 图数据根目录
     pub data_dir: String,
-    pub cache_capacity: usize,
-    pub checkpoint_interval_entries: u64,
-    pub auto_save_interval_secs: u64,
 }
 
 impl Default for StorageConfig {
     fn default() -> Self {
-        Self {
-            data_dir: "data".to_string(),
-            cache_capacity: 1000,
-            checkpoint_interval_entries: 1000,
-            auto_save_interval_secs: 5,
-        }
+        Self { data_dir: "data".to_string() }
     }
 }
 
-// ─── Graph ───────────────────────────────────────────────────────
+// ─── Cluster ─────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct GraphConfig {
-    pub default_vertex_labels: Vec<String>,
-    pub max_edges_per_vertex: u32,
-}
-
-impl Default for GraphConfig {
-    fn default() -> Self {
-        Self {
-            default_vertex_labels: vec!["entity".to_string()],
-            max_edges_per_vertex: 10000,
-        }
-    }
-}
-
-// ─── Neural ──────────────────────────────────────────────────────
-
-/// Activation spreading parameters.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ActivateConfig {
-    /// Default activation threshold for new neurons.
-    pub default_threshold: f32,
-    /// Default per-tick decay rate for new neurons.
-    pub default_decay_rate: f32,
-    /// Default refractory ticks for new neurons.
-    pub default_refractory_ticks: usize,
-    /// Max ticks per search query.
-    pub max_ticks: usize,
-    /// Minimum activation for a neuron to be considered "hot".
-    pub hot_threshold: f32,
-    /// Minimum synapse strength to pass activation.
-    pub min_synapse_strength: f32,
-    /// Auto-stabilize when no more neurons fire.
-    pub auto_stabilize: bool,
-}
-
-impl Default for ActivateConfig {
-    fn default() -> Self {
-        Self {
-            default_threshold: 0.7,
-            default_decay_rate: 0.1,
-            default_refractory_ticks: 3,
-            max_ticks: 20,
-            hot_threshold: 0.3,
-            min_synapse_strength: 0.01,
-            auto_stabilize: true,
-        }
-    }
-}
-
-/// Search mode, score thresholds, and fuzzy matching.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct SearchConfig {
-    /// Default search mode: "greedy" or "exact".
-    pub default_search_mode: String,
-    /// Score for exact keyword match in greedy mode.
-    pub greedy_exact_score: f32,
-    /// Score for partial (substring) keyword match in greedy mode.
-    pub greedy_partial_score: f32,
-    /// Minimum score threshold for exact mode match.
-    pub exact_min_score: f32,
-    /// Enable Levenshtein-distance fuzzy matching fallback.
-    pub fuzzy_match_enabled: bool,
-    /// Normalized Levenshtein threshold (0.0 = exact, 1.0 = any).
-    pub fuzzy_match_threshold: f32,
-    /// Activation threshold override for Greedy search mode.
-    pub greedy_threshold: f32,
-    /// Activation threshold override for Exact search mode.
-    pub exact_threshold: f32,
-}
-
-impl Default for SearchConfig {
-    fn default() -> Self {
-        Self {
-            default_search_mode: "greedy".to_string(),
-            greedy_exact_score: 1.0,
-            greedy_partial_score: 0.8,
-            exact_min_score: 0.5,
-            fuzzy_match_enabled: true,
-            fuzzy_match_threshold: 0.6,
-            greedy_threshold: 0.6,
-            exact_threshold: 0.8,
-        }
-    }
-}
-
-/// Hebbian learning parameters.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct LearnConfig {
-    /// Enable Hebbian learning entirely.
+pub struct ClusterConfig {
+    /// 是否启用集群模式
     pub enabled: bool,
-    /// How many ticks of co-firing history to track.
-    pub co_fire_window: usize,
-    /// Minimum synapse plasticity to allow learning.
-    pub min_plasticity: f32,
-    /// Decay factor for synapse when pre fires without post.
-    pub synaptic_decay: f32,
+    /// 节点间通信监听地址
+    pub bind_addr: String,
+    /// Worker 专属：Master 的地址
+    pub master_addr: Option<String>,
+    /// 心跳检测间隔（秒）
+    pub heartbeat_interval_secs: u64,
+    /// Worker 超时阈值（秒）
+    pub worker_timeout_secs: u64,
+    /// Worker 是否将写操作转发到 Master
+    pub forward_writes: bool,
 }
 
-impl Default for LearnConfig {
+impl Default for ClusterConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
-            co_fire_window: 5,
-            min_plasticity: 0.001,
-            synaptic_decay: 0.01,
+            enabled: false,
+            bind_addr: "0.0.0.0:9090".to_string(),
+            master_addr: None,
+            heartbeat_interval_secs: 5,
+            worker_timeout_secs: 30,
+            forward_writes: true,
+        }
+    }
+}
+
+// ─── Search ──────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExploreConfig {
+    /// 是否从搜索结果自动遍历
+    pub traverse: bool,
+    /// 关键词匹配模式: "prefix" | "word"
+    pub match_mode: String,
+    /// 激活传播阈值 (0.0-1.0)
+    pub activate: f32,
+    /// 每跳衰减值 (0.0-1.0)
+    pub decay: f32,
+    /// 最大 BFS 遍历深度
+    pub depth: u8,
+    /// 遍历结果最低分值 (0.0-1.0)
+    pub score: f32,
+}
+
+impl Default for ExploreConfig {
+    fn default() -> Self {
+        Self {
+            traverse: true,
+            match_mode: "prefix".to_string(),
+            activate: 0.2,
+            decay: 0.95,
+            depth: 16,
+            score: 0.1,
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct NeuralConfig {
-    pub activate: ActivateConfig,
-    pub search: SearchConfig,
-    pub learn: LearnConfig,
+pub struct SearchSettings {
+    pub greedy: ExploreConfig,
+    pub exact: ExploreConfig,
 }
 
-impl Default for NeuralConfig {
+impl Default for SearchSettings {
     fn default() -> Self {
         Self {
-            activate: ActivateConfig::default(),
-            search: SearchConfig::default(),
-            learn: LearnConfig::default(),
+            greedy: ExploreConfig {
+                traverse: true,
+                match_mode: "prefix".to_string(),
+                activate: 0.2,
+                decay: 0.95,
+                depth: 16,
+                score: 0.1,
+            },
+            exact: ExploreConfig {
+                traverse: true,
+                match_mode: "word".to_string(),
+                activate: 0.6,
+                decay: 0.8,
+                depth: 4,
+                score: 0.2,
+            },
         }
     }
 }
@@ -246,8 +192,8 @@ pub struct Settings {
     pub server: ServerConfig,
     pub llm: LlmConfig,
     pub storage: StorageConfig,
-    pub graph: GraphConfig,
-    pub neural: NeuralConfig,
+    pub cluster: ClusterConfig,
+    pub search: SearchSettings,
 }
 
 impl Default for Settings {
@@ -256,8 +202,8 @@ impl Default for Settings {
             server: ServerConfig::default(),
             llm: LlmConfig::default(),
             storage: StorageConfig::default(),
-            graph: GraphConfig::default(),
-            neural: NeuralConfig::default(),
+            cluster: ClusterConfig::default(),
+            search: SearchSettings::default(),
         }
     }
 }
