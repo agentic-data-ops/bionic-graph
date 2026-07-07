@@ -4,7 +4,7 @@ use std::sync::Arc;
 use clap::Parser;
 use bionic_graph::config::load_or_create_settings;
 use bionic_graph::gremlin::build_router as build_new_router;
-use bionic_graph::graph_manager2::GraphManager2;
+use bionic_graph::graph_manager::GraphManager;
 
 /// Bionic-Graph: Block-based knowledge graph with token-indexed search.
 ///
@@ -62,7 +62,7 @@ async fn main() {
 
     // Initialize the new block-based graph manager.
     let data_dir = std::path::PathBuf::from(&settings.storage.data_dir);
-    let gm = GraphManager2::new(data_dir);
+    let gm = GraphManager::new(data_dir);
 
     // Build the new router.
     let app = build_new_router(gm);

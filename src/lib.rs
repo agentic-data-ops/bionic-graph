@@ -3,7 +3,7 @@ pub mod config;
 pub mod documents;
 pub mod extract;
 pub mod graph;
-pub mod graph_manager2;
+pub mod graph_manager;
 pub mod gremlin;
 pub mod lock;
 pub mod maas;

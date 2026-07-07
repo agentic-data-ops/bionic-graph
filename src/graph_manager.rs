@@ -11,12 +11,12 @@ use crate::graph::graph::{Graph, GraphConfig};
 use crate::storage::types::StorageResult;
 
 /// Manages lifecycle of multiple named graphs.
-pub struct GraphManager2 {
+pub struct GraphManager {
     graphs: RwLock<HashMap<String, Arc<Graph>>>,
     data_dir: PathBuf,
 }
 
-impl GraphManager2 {
+impl GraphManager {
     /// Create a new graph manager.
     pub fn new(data_dir: PathBuf) -> Self {
         Self {
@@ -39,7 +39,9 @@ impl GraphManager2 {
             }
         }
 
-        let graph = Graph::open(&self.data_dir, name, GraphConfig::default())?;
+        let graph_dir = self.data_dir.join("graphs");
+        std::fs::create_dir_all(&graph_dir)?;
+        let graph = Graph::open(&graph_dir, name, GraphConfig::default())?;
 
         let mut graphs = self.graphs.write().unwrap();
         if let Some(g) = graphs.get(name) {
@@ -51,13 +53,13 @@ impl GraphManager2 {
 
     /// Get the per-graph config (loads from disk, returns defaults if missing).
     pub fn get_graph_config(&self, name: &str) -> GraphConfig {
-        let path = self.data_dir.join(name);
+        let path = self.data_dir.join("graphs").join(name);
         GraphConfig::load(&path)
     }
 
     /// Update the per-graph config and persist to disk.
     pub fn set_graph_config(&self, name: &str, config: &GraphConfig) -> StorageResult<()> {
-        let path = self.data_dir.join(name);
+        let path = self.data_dir.join("graphs").join(name);
         config.save(&path)?;
         // If the graph is loaded in memory, update its settings
         // (currently Graph fields are immutable after open — close/reopen needed)
@@ -67,7 +69,11 @@ impl GraphManager2 {
     /// List all known graph names.
     pub fn list(&self) -> StorageResult<Vec<String>> {
         let mut names = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(&self.data_dir) {
+        let graphs_dir = self.data_dir.join("graphs");
+        if !graphs_dir.exists() {
+            return Ok(names);
+        }
+        if let Ok(entries) = std::fs::read_dir(&graphs_dir) {
             for entry in entries.flatten() {
                 if entry.file_type().map_or(false, |t| t.is_dir()) {
                     let name = entry.file_name().to_string_lossy().to_string();
@@ -91,7 +97,7 @@ impl GraphManager2 {
                 }
             }
         }
-        let path = self.data_dir.join(name);
+        let path = self.data_dir.join("graphs").join(name);
         if path.exists() {
             std::fs::remove_dir_all(&path)?;
         }

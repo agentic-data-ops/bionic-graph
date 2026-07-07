@@ -1,7 +1,7 @@
 //! REST API handlers for the new block-based graph engine.
 //!
 //! These handlers replace the old `src/gremlin/` routes and operate on
-//! `Arc<Graph>` through `GraphManager2`.
+//! `Arc<Graph>` through `GraphManager`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -20,7 +20,7 @@ use crate::documents::DocumentManager;
 use crate::extract::task_manager::{ExtractionTaskManager, TaskResponse, TaskStatus, default_extraction_steps, update_step, compute_overall_pct};
 use crate::graph::graph::Graph;
 use crate::graph::gremlin::{execute_gremlin, GremlinQuery, GremlinResponse};
-use crate::graph_manager2::GraphManager2;
+use crate::graph_manager::GraphManager;
 
 pub mod settings;
 use crate::storage::types::{PropertyValue, StorageResult};
@@ -28,14 +28,14 @@ use crate::storage::types::{PropertyValue, StorageResult};
 /// Shared application state for all graph routes.
 #[derive(Clone)]
 pub struct AppState {
-    pub gm: Arc<GraphManager2>,
+    pub gm: Arc<GraphManager>,
     pub settings: Arc<Mutex<Settings>>,
     pub doc_mgr: DocumentManager,
     pub task_mgr: ExtractionTaskManager,
 }
 
 /// Build the axum router for all block-engine graph routes.
-pub fn build_router(gm: GraphManager2) -> axum::Router {
+pub fn build_router(gm: GraphManager) -> axum::Router {
     let settings = crate::config::load_or_create_settings();
     let doc_mgr = DocumentManager::new(&settings.storage.data_dir);
     let state = AppState {
