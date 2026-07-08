@@ -112,4 +112,24 @@ impl GraphManager {
         }
         Ok(names)
     }
+
+    /// Close all open graphs — flushes dirty blocks and checkpoints WALs.
+    /// Called during server shutdown to ensure data durability.
+    pub fn close_all(&self) {
+        let names: Vec<String> = {
+            let graphs = self.graphs.read().unwrap();
+            graphs.keys().cloned().collect()
+        };
+        for name in &names {
+            if let Some(graph) = self.graphs.read().unwrap().get(name).cloned() {
+                if let Err(e) = graph.close() {
+                    log::warn!("Error closing graph '{}': {}", name, e);
+                }
+            }
+        }
+        // Clear the map after closing.
+        if let Ok(mut graphs) = self.graphs.write() {
+            graphs.clear();
+        }
+    }
 }

@@ -1,39 +1,42 @@
 # Bionic-Graph
 
-> **Ultral fast graph indexed with bionic neural net**
+> **Block-based knowledge graph with token-indexed search**
 >
-> Pure Rust | CPU inference | Zero external NN deps | Gremlin-compatible API | React frontend
+> Pure Rust | 16KB block storage | jieba tokenization | Gremlin-compatible API | React frontend
 
 ---
 
 ## What it is
 
-Bionic-Graph is a **low-cost AI memory system** that combines a knowledge graph with a bio-inspired neural index layer, served with a chat-based AI interface. It is designed for scenarios where you need a fast, explainable, always-up-to-date graph index — without GPU costs, without pre-training, and without black-box inference.
+Bionic-Graph is a **high-performance knowledge graph engine** built entirely in Rust. It combines a custom block-based storage engine, token-indexed full-text search, and a Gremlin-compatible query pipeline — served with a chat-based AI interface and a React frontend.
+
+Unlike relational or document databases, Bionic-Graph is optimized for **graph traversal, multi-hop queries, and hybrid search** (keywords + graph topology). It is designed for scenarios where you need a fast, explainable, always-up-to-date graph index — without GPU costs, without pre-training, and without black-box inference.
 
 ### System Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                    React Frontend (vis-network)                │
-│  Chat interface  |  Knowledge Base  |  Graph Visualization    │
-│  LLM Chat (SSE)  |  Semantic Search  |  Document Extraction   │
+│                    React Frontend (vis-network)               │
+│  Chat interface  |  Knowledge Base  |  Graph Visualization   │
+│  LLM Chat (SSE)  |  Semantic Search  |  Document Extraction  │
 ├──────────────────────────────────────────────────────────────┤
-│                    REST API + MaaS Proxy (axum, embedded)       │
-│  /gremlin  |  /vertices  |  /edges  |  /documents  |  /search  │
-│  /maas/openai/v1/models | /maas/openai/v1/chat/completions     │
-│  /settings | /extract  | /neurons                              │
+│                   REST API + MaaS Proxy (axum, embedded)      │
+│  /gremlin  |  /vertices  |  /edges  |  /documents  |  /search │
+│  /maas/openai/v1/models | /maas/openai/v1/chat/completions   │
+│  /settings | /extract  | /graphs                             │
 ├──────────────────────────────────────────────────────────────┤
-│              Neural Index (spreading activation)               │
-│  keyword → neuron activation → spread → entity find           │
-│  EntityType(Vertex|Edge)  |  auto-synapse on edge add         │
-│  Hebbian learning  |  auto-persist to disk                    │
+│              Graph Engine (token-indexed query)                │
+│  Gremlin pipeline (24 steps)  |  BFS+DFS traversal            │
+│  Lock-safe CRUD  |  jieba-rs tokenizer  |  rank tracking      │
 ├──────────────────────────────────────────────────────────────┤
-│              Storage Engine (disk-backed)                      │
-│  DiskGraph + SubgraphCache (LRU, on-demand loading)           │
-│  Subgraph partitioning  |  WAL (RedologWal + RedoLog)         │
-│  Incremental checkpoint (CRC32 change detection)              │
-│  Version log (.vlog) with sparse index for time travel        │
-│  Compaction: archive old history, max_history pruning         │
+│              In-Memory Index (rebuild at startup)              │
+│  BTreeMap (vertex/edge by ID)  |  TokenMap (prefix + word)    │
+│  RankIndex (rank-ordered)  |  AdjacencyIndex (bidirectional)  │
+├──────────────────────────────────────────────────────────────┤
+│              Storage Engine (block-based, 16KB blocks)         │
+│  DataFile + Bitmap  |  IndexFile (64B records)                 │
+│  LRU BlockCache (64MB)  |  WAL (FIFO queue + batch writer, CRC32, rotation, checkpoint)    │
+│  LockManager (striped RwLock pools, deadlock-free ordering)   │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -41,14 +44,16 @@ Bionic-Graph is a **low-cost AI memory system** that combines a knowledge graph 
 
 | Layer | Module | What it does |
 |-------|--------|-------------|
-| **Frontend** | `src/ui/` | React 19 + Vite 8 + Tailwind CSS 4. Chat interface, knowledge base management, graph visualization via vis-network (Canvas 2D, no WebGL). All LLM calls (chat, semantic search, document extraction) are frontend-side. |
-| **Graph** | `src/graph/` | Directed property graph with dual adjacency lists. MVCC versioning (`_version`, `_updated_at`, `_is_deleted`, `_history`). Soft-delete. Time-travel `at_time()`. Optional time-travel per graph. |
-| **Neural Index** | `src/neuron/` | Spreading activation network — each neuron represents a concept or graph entity (`EntityType::Vertex`/`Edge`), fires when activation exceeds a threshold, spreads via synapses. Hebbian learning. Auto-synapse on edge creation. |
-| **Gremlin API** | `src/gremlin/` | JSON pipeline over HTTP. 16 steps: V, E, has, hasNot, hasKey, hasValue, hasLabel, hasText, out(depth), in, both, outE, inE, bothE, values, limit, count, dedup, repeat, timeTravel, compact, search, expand. |
-| **Storage** | `src/storage/` | Subgraph partitioning + LRU cache. WAL (CRC32, checkpoint, crash recovery). Version log (.vlog) with sparse index for archived history. Compaction orchestrator. |
+| **Frontend** | `src/ui/` | React 19 + Vite 8 + Tailwind CSS 4. Chat interface, knowledge base management, graph visualization via vis-network (Canvas 2D, no WebGL). All LLM calls go through backend MaaS proxy. |
+| **Graph Engine** | `src/graph/` | `Graph` struct (facade), CRUD operations, Gremlin pipeline (24 steps), jieba-rs tokenizer, bincode serialize. Lock-safe wrappers in `locked.rs`. |
+| **Gremlin API** | `src/gremlin/` | REST routes (29 endpoints) + `/settings/search` config. Auto-injects `match_mode` and `traverse` step from SearchSettings. |
+| **Storage** | `src/storage/` | Block-based engine: 16KB data blocks, 64B chunks, bitmap free tracking, LRU block cache (default 64MB), WAL (FIFO queue + background batch writer, size + time rotation, checkpoint, CRC32, replay), on-disk index (64B fixed records), in-memory indexes. |
+| **Locking** | `src/lock/` | Striped `RwLock` pools (parking_lot) with deadlock-free ordering: metadata → block → vertex → edge. |
 | **Documents** | `src/documents.rs` | Markdown file management with JSON index. CRUD via REST API. |
-| **Extraction** | `src/extract/` | Async extraction pipeline: Markdown → LLM → entities/relations. Frontend calls `POST /documents/:id/extract` (backend) or LLM directly. |
-| **Graph Manager** | `src/graph_manager.rs` | Multiple named graphs, each persisted to `data/graphs/{name}/`. Manage via REST API. |
+| **Extraction** | `src/extract/` | Async extraction pipeline: Markdown → LLM → entities/relations. Task lifecycle management with progress. |
+| **Graph Manager** | `src/graph_manager.rs` | Multiple named graphs, each persisted to `data/graphs/<name>/`. Lazy open on first access. |
+| **MaaS Proxy** | `src/maas/` | OpenAI-compatible proxy: model listing + chat completions (SSE streaming). Forwards to configured providers. |
+| **Cluster** | `src/cluster/` | Master-worker replication via redo log replay. Write forwarding, heartbeat, config. |
 | **Config** | `src/config/` | `~/.config/bionic-graph/settings.json` with env var overrides. Auto-generates defaults. |
 
 ### How it works — a search flow
@@ -57,26 +62,21 @@ Bionic-Graph is a **low-cost AI memory system** that combines a knowledge graph 
 User query: "AI engineer"
        │
        ▼
-  Layer 1 — Keyword matching (neuron level)
-       │  "AI" → Neuron("Artificial Intelligence")  score = 1.0
-       │  "engineer" → Neuron("Engineering")        score = 1.0
+  Step 1 — Tokenization (jieba-rs)
+       │  "AI" → lookup TokenMap → vertex/edge refs
+       │  "engineer" → lookup TokenMap → vertex/edge refs
        ▼
-  Layer 2 — Spreading activation & collection
-       │  Both modes: directly-matched + spread-activated neurons contribute
-       │  Greedy mode threshold: settings.search.greedy_threshold (default 0.6)
-       │  Exact mode threshold: settings.search.exact_threshold (default 0.8)
-       │  Synapse strength: 0.8 (auto_synapse), enables multi-hop propagation
-       │  tick 1: Neuron("AI") fires → spreads via synapse(0.8) → Neuron("ML") fires
-       │  tick N: no more firing → stabilize
+  Step 2 — Score & rank (greedy or exact)
+       │  Greedy: union of ALL matched entities, scored by frequency
+       │  Exact: intersection of entities matching EVERY token
        ▼
-  Layer 3 — Vertex-level relevance filter (disabled)
-       │  Filter removed — both modes rely on neural activation spreading
+  Step 3 — Optional traverse (configurable via SearchSettings)
+       │  BFS from search results: score = score * decay * edge_strength
+       │  Stop when score < activate. Collect when score >= min_score.
        ▼
-  Gremlin traversal from starting vertices
-       │  timeTravel("2024-06-10") → out("works_at", depth=3)
-       │  hasText("name", "ali") → limit(10)
-       ▼
-  Return ranked results (time-travel filtered if specified)
+  Step 4 — Return ranked results (time-travel filtered if specified)
+       │  Soft-deleted entities before `at` timestamp are excluded
+       │  Entities created after `at` timestamp are excluded
 ```
 
 ---
@@ -108,7 +108,7 @@ After frontend changes, `touch src/ui_serve.rs` is required to force Rust recomp
 | Command | Description |
 |---------|-------------|
 | `cargo run` | Start server (API + frontend) |
-| `cargo test` | Rust unit tests (151+) |
+| `cargo test` | Rust unit tests (88+) |
 | `npm --prefix src/ui run dev` | Frontend dev server (standalone Vite, proxies to port 8080) |
 | `npm --prefix src/ui run build` | Build frontend only |
 | `npm --prefix src/ui run test` | Frontend tests (vitest) |
@@ -120,15 +120,47 @@ After frontend changes, `touch src/ui_serve.rs` is required to force Rust recomp
 | `-d, --data-dir` | from settings | Data directory (overrides config) |
 | `-H, --host` | from settings | HTTP bind address |
 | `-P, --port` | from settings | HTTP port |
-| `-i, --auto-index` | `true` | Auto-create neurons on startup |
-| `--no-auto-save` | off | Disable auto-save thread |
 | `--config` | `~/.config/bionic-graph/settings.json` | Config file path |
 
 ### Settings
 
-Auto-created at `~/.config/bionic-graph/settings.json` if not present. Neural config is nested under `activate`/`search`/`learn` groups. Full reference in `REASONIX.md`.
+Auto-created at `~/.config/bionic-graph/settings.json` if not present. Full reference in `REASONIX.md`.
 
-Required: `BGRAPH_LLM_API_KEY` env var for backend LLM features.
+```json
+{
+  "server": { "host": "127.0.0.1", "port": 8080 },
+  "llm": {
+    "providers": [{
+      "name": "DeepSeek",
+      "api_base_url": "https://api.deepseek.com/v1",
+      "api_key": "",
+      "models": ["deepseek-v4-flash", "deepseek-v4-pro"]
+    }],
+    "default_model": "DeepSeek/deepseek-v4-flash",
+    "context_window": 65536,
+    "max_output_tokens": 16384,
+    "max_retries": 3
+  },
+  "storage": { "data_dir": "data" },
+  "cluster": {
+    "enabled": false,
+    "bind_addr": "0.0.0.0:9090",
+    "heartbeat_interval_secs": 5,
+    "worker_timeout_secs": 30,
+    "forward_writes": true
+  },
+  "search": {
+    "greedy": {
+      "traverse": true, "match_mode": "prefix",
+      "activate": 0.2, "decay": 0.95, "depth": 16, "score": 0.1
+    },
+    "exact": {
+      "traverse": true, "match_mode": "word",
+      "activate": 0.6, "decay": 0.8, "depth": 4, "score": 0.2
+    }
+  }
+}
+```
 
 ### Use the API
 
@@ -141,42 +173,82 @@ curl localhost:8080/graphs
 # Create a graph
 curl -X POST localhost:8080/graphs \
   -H 'Content-Type: application/json' \
-  -d '{"name":"mygraph","time_travel":true}'
+  -d '{"name":"mygraph"}'
 
 # Delete a graph
 curl -X DELETE localhost:8080/graphs/mygraph
 
-# All data endpoints support X-Graph-Name header (default: "default")
+# Per-graph config
+curl localhost:8080/graphs/mygraph/config
+```
+
+#### Vertex & Edge CRUD
+
+```bash
+# Create a vertex
 curl -X POST localhost:8080/vertices \
   -H 'Content-Type: application/json' \
-  -H 'X-Graph-Name: audit' \
   -d '{"name":"Alice","keywords":["engineer","manager"],"labels":["person"],"properties":{"department":"Engineering"}}'
+
+# With explicit graph name
+curl -X POST 'localhost:8080/vertices?graph=mygraph' \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Bob","labels":["person"]}'
 
 # Update vertex
 curl -X PUT localhost:8080/vertices/1 \
   -H 'Content-Type: application/json' \
-  -H 'X-Graph-Name: default' \
-  -d '{"name":"Alice Smith","tags":["engineer","lead"],"labels":["person","employee"]}'
+  -d '{"name":"Alice Smith","keywords":["engineer","lead"],"labels":["person","employee"]}'
 
-# Update edge
-curl -X PUT localhost:8080/edges/1 \
+# Delete vertex (soft delete)
+curl -X DELETE localhost:8080/vertices/1
+
+# Hard delete
+curl -X DELETE 'localhost:8080/vertices/1?force=true'
+
+# Create edge
+curl -X POST localhost:8080/edges \
   -H 'Content-Type: application/json' \
-  -H 'X-Graph-Name: default' \
-  -d '{"label":"manages","properties":{"since":"2024"}}'
+  -d '{"source":1,"target":2,"label":"works_with","strength":0.8,"properties":{"since":"2024"}}'
 ```
 
-#### Neural search + traversal
+#### Token search + traversal
 
 ```bash
-# search: neural index search (returns vertices + edges)
+# Search with auto traverse (based on SearchSettings)
 curl -X POST localhost:8080/gremlin \
   -H 'Content-Type: application/json' \
   -d '{"steps":[
-    {"step":"search","keywords":["AI","engineer"]},
-    {"step":"out","label":"works_at","depth":2},
-    {"step":"hasText","key":"name","pattern":"ali"},
+    {"step":"search","text":"AI engineer"}
+  ]}'
+
+# Advanced pipeline with explicit traverse
+curl -X POST localhost:8080/gremlin \
+  -H 'Content-Type: application/json' \
+  -d '{"steps":[
+    {"step":"search","text":"AI engineer","mode":"greedy"},
+    {"step":"out","labels":["works_at"],"depth":2},
     {"step":"limit","count":10}
   ]}'
+
+# Time travel query
+curl -X POST localhost:8080/gremlin \
+  -H 'Content-Type: application/json' \
+  -d '{"steps":[
+    {"step":"timeTravel","at":1718000000000000},
+    {"step":"search","text":"project"}
+  ]}'
+
+# Expand vertex (neighbors + edges)
+curl -X POST localhost:8080/gremlin \
+  -H 'Content-Type: application/json' \
+  -d '{"steps":[
+    {"step":"V","ids":[1]},
+    {"step":"expand","depth":1}
+  ]}'
+
+# Shorthand search via GET
+curl 'localhost:8080/search?text=AI+engineer&mode=greedy&graph=default'
 ```
 
 #### Document management
@@ -199,48 +271,41 @@ curl localhost:8080/documents/{id}/content
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/health` | System health |
-| `GET` | `/extract/tasks` | List extraction tasks |
-| `POST` | `/documents/:id/extract` | Trigger backend document extraction (async) |
-| `GET` | `/extract/task/:task_id` | Poll extraction task progress |
-| `PUT` | `/vertices/:id` | Update vertex name/keywords/document/labels/properties |
-| `PUT` | `/edges/:id` | Update edge label/properties |
-| `DELETE` | `/vertices/:id` | Delete vertex + connected edges (supports `?force=true`) |
-| `DELETE` | `/edges/:id` | Delete edge (supports `?force=true`) |
-| `POST` | `/reindex` | Re-index edges into neural network |
-| `POST` | `/compact` | History compaction |
-| `GET/PUT` | `/settings` | LLM providers config |
-| `GET/PUT` | `/settings/llm` | LLM providers config (preferred) |
-| `GET/PUT` | `/settings/neural` | Neural activation/search/learn config (thresholds, scores, learning params) |
-| `GET` | `/maas/openai/v1/models` | List models (`provider/model` format, `x-default-model` header) |
-| `POST` | `/maas/openai/v1/chat/completions` | OpenAI-compatible chat completion proxy (SSE streaming) |
+| `GET/PUT` | `/settings/search` | Search settings (greedy/exact config) |
+| `GET/PUT` | `/settings/neural` | Legacy backward-compat |
+| `GET` | `/maas/openai/v1/models` | List models (`provider/model` format) |
+| `POST` | `/maas/openai/v1/chat/completions` | OpenAI-compatible chat proxy (SSE) |
+| `POST` | `/extract` | Submit document extraction (async) |
+| `GET` | `/extract/task/:task_id` | Poll extraction task |
 
 ### Supported Gremlin steps
 
 | Step | Parameters | Description |
 |------|-----------|-------------|
-| `search` | `keywords: [string], mode?: "greedy"\|"exact", at?: int` | 🔥 Neural index search (vertices + edges). `at` enables time-travel filter: neurons deleted before `at` are excluded |
-| `V` | `ids?: [number]` | All or specific vertices |
-| `E` | `ids?: [number]` | All or specific edges |
-| `has` | `key, value` | Exact property filter |
-| `hasNot` | `key, value` | Negated property filter |
+| `search` | `text`, `mode?`, `match_mode?`, `at?`, `limit?`, `min_rank?` | Token-indexed full-text search. Auto-injects match_mode + optional traverse. |
+| `V` | `ids?`, `at?` | All or specific vertices |
+| `E` | `ids?`, `at?` | All or specific edges |
+| `has` | `key`, `value` | Exact property filter |
+| `hasNot` | `key`, `value` | Negated property filter |
 | `hasKey` | `key` | Filter by property existence |
 | `hasValue` | `value` | Filter by any property value |
-| `hasLabel` | `labels: [string]` | Label filter |
-| `hasText` | `key, pattern` | Case-insensitive substring match |
-| `out` | `label?, depth?` | Outgoing edges (depth=N for BFS) |
-| `in` | `label?, depth?` | Incoming edges |
-| `both` | `label?, depth?` | Both directions |
-| `outE` | `label?` | Outgoing edges as EdgeResult |
-| `inE` | `label?` | Incoming edges as EdgeResult |
-| `bothE` | `label?` | Both-direction edges as EdgeResult |
-| `values` | `key` | Extract property values |
+| `hasLabel` | `label` | Label filter |
+| `hasText` | `text` | Case-insensitive substring match |
+| `out` | `depth?`, `labels?` | Outgoing vertex traversal (BFS) |
+| `in` | `depth?`, `labels?` | Incoming vertex traversal (BFS) |
+| `both` | `depth?`, `labels?` | Bidirectional vertex traversal (BFS) |
+| `outE` | `labels?` | Outgoing edges as EdgeResult |
+| `inE` | `labels?` | Incoming edges as EdgeResult |
+| `bothE` | `labels?` | Both-direction edges as EdgeResult |
+| `values` | `keys?` | Extract property values |
 | `limit` | `count` | Cap results |
 | `count` | — | Count results |
 | `dedup` | — | Deduplicate by ID |
-| `repeat` | `times, steps[]` | Repeat sub-pipeline N times |
-| `timeTravel` | `at` (int μs or ISO 8601) | Set query time point |
-| `compact` | `before` (int μs or ISO 8601) | Archive old history to vlog |
-| `expand` | `depth, label` | Expand vertex: returns neighbor vertices + connected edges |
+| `repeat` | `steps`, `times` | Loop sub-pipeline N times |
+| `timeTravel` | `at` (μs) | Set query time point |
+| `compact` | `before` (μs) | Passthrough stub |
+| `expand` | `depth?` | Expand vertex: neighbor vertices + connected edges |
+| `traverse` | `decay?`, `activate?`, `max_depth?`, `min_score?` | BFS activation spread |
 
 ---
 
@@ -251,41 +316,48 @@ src/
 ├── main.rs                    # CLI entry + HTTP server
 ├── lib.rs                     # Library exports
 ├── config/                    # File-based configuration
-├── graph/                     # Knowledge graph core
-├── neuron/                    # Bio-inspired neural index
-├── storage/                   # Disk-backed storage engine (DiskGraph + SubgraphCache)
-│   ├── disk_graph.rs          # Disk-backed graph with LRU subgraph cache
-│   ├── subgraph_cache.rs      # LRU write-back cache
-│   ├── subgraph.rs            # Subgraph data unit
-│   ├── partition.rs           # BFS graph partitioning
-│   ├── index.rs               # VertexIndex, SubgraphIndex, LabelIndex
-│   ├── redolog_wal.rs         # Unified WAL (graph + neuron)
-│   └── redo_log.rs            # Subgraph-level WAL
-├── persistence/               # Persistence helpers (neuron_store, graph_store)
+│   ├── loader.rs              # JSON load/save with env overrides
+│   └── settings.rs            # Settings structs (server, llm, storage, cluster, search)
+├── storage/                   # Block-based storage engine
+│   ├── types.rs               # Constants, enums, binary layouts
+│   ├── data_file.rs           # 16KB block I/O
+│   ├── bitmap_file.rs         # Block-level free space tracking
+│   ├── block_allocator.rs     # Chunk-level allocator
+│   ├── block_cache.rs         # LRU cache with dirty tracking
+│   ├── redo_log.rs            # WAL: FIFO queue + batch writer, rotation, CRC32, replay
+│   ├── index_file.rs          # On-disk 64B record index
+│   ├── memory_index.rs        # In-memory BTreeMap/HashMap indexes
+│   └── memory_index_builder.rs # Index rebuild at startup
+├── lock/                      # Concurrency lock manager
+│   └── lock_manager.rs        # Striped RwLock pools (parking_lot)
+├── graph/                     # Graph engine
+│   ├── graph.rs               # Graph struct (facade), open/close
+│   ├── crud.rs                # Vertex/Edge CRUD + WAL + tokenize
+│   ├── gremlin.rs             # Gremlin pipeline (24 steps)
+│   ├── locked.rs              # Lock-safe CRUD wrappers
+│   ├── serialize.rs           # Bincode + JSON properties
+│   ├── tokenizer.rs           # jieba-rs tokenizer
+│   └── tests.rs               # Integration tests
 ├── gremlin/                   # REST API (axum)
-│   ├── query.rs               # Gremlin query types
-│   ├── steps.rs               # Step execution engine
-│   └── server.rs              # Routes + handlers
-├── extract/                   # (Legacy) Document extraction
+│   ├── mod.rs                 # 29 route handlers
+│   └── settings.rs            # /settings/search + legacy /settings/neural
+├── extract/                   # Document extraction pipeline
+│   ├── config.rs, document.rs, extraction.rs
+│   ├── llm_client.rs, task_manager.rs
 ├── documents.rs               # Document CRUD manager
-├── graph_manager.rs           # Multi-graph management
+├── graph_manager.rs           # Multi-graph lifecycle
+├── maas/                      # MaaS OpenAI-compatible proxy
+├── cluster/                   # Master-worker cluster
 ├── ui_serve.rs                # Embedded frontend serving
-├── memory_system.rs           # Top-level unified API
 └── ui/                        # React frontend
     ├── src/
     │   ├── components/
-    │   │   ├── Sidebar.jsx        # Navigation + conversation list
-    │   │   ├── ChatArea.jsx       # Chat orchestration
-    │   │   ├── MessageList.jsx    # Message rendering
-    │   │   ├── ChatInput.jsx      # Input + controls
-    │   │   ├── GraphViewer.jsx    # vis-network graph visualization
-    │   │   ├── KnowledgeBase.jsx  # Document management dialog
-    │   │   ├── SettingsDialog.jsx # Settings panel
-    │   │   └── PropertyPanel.jsx  # Node/edge property inspector
-    │   ├── api.js              # API client + LLM streaming
-    │   ├── App.jsx             # Root component
-    │   └── locales/            # i18n (en/zh)
-    └── dist/                   # Compiled frontend (embedded in binary)
+    │   │   ├── Sidebar.jsx, ChatArea.jsx, MessageList.jsx
+    │   │   ├── ChatInput.jsx, GraphViewer.jsx
+    │   │   ├── GraphManagerDialog.jsx, KnowledgeBase.jsx
+    │   │   ├── SettingsDialog.jsx, PropertyPanel.jsx
+    │   └── api.js, App.jsx, locales/
+    └── dist/                  # Compiled (embedded in binary)
 ```
 
 ---
@@ -293,14 +365,15 @@ src/
 ## Design principles
 
 1. **Single binary** — frontend embedded via rust-embed, one `cargo run` to start
-2. **All LLM on frontend** — chat, semantic search, document extraction all call LLM directly from browser
-3. **Pure Rust backend** — zero external neural network libraries
+2. **All LLM proxied** — chat, semantic search, document extraction go through MaaS proxy
+3. **Pure Rust backend** — zero external NN libraries, custom block-based storage
 4. **CPU inference** — all computation in memory, no GPU
-5. **Bio-inspired** — spreading activation mimics biological neurons
-6. **Low cost** — lightweight memory index for edge/embedded scenarios
-7. **Gremlin-compatible** — standard graph query interface
-8. **Time travel** — per-vertex MVCC, soft-delete, point-in-time queries
-9. **Multi-graph** — multiple named graphs, isolated data directories
+5. **Token-indexed search** — jieba-rs tokenization replaces old neural network index
+6. **Custom storage engine** — 16KB blocks, 64B chunks, LRU cache, WAL with crash recovery
+7. **Gremlin-compatible** — standard graph query interface with 24 pipeline steps
+8. **Time travel** — per-vertex MVCC via soft-delete, point-in-time queries
+9. **Multi-graph** — multiple named graphs, isolated `data/graphs/<name>/` directories
+10. **Fine-grained concurrency** — striped RwLock pools with deadlock-free ordering
 
 ---
 

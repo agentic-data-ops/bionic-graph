@@ -306,3 +306,21 @@ pub enum StorageError {
 
 /// Convenience result alias.
 pub type StorageResult<T> = Result<T, StorageError>;
+
+impl StorageError {
+    /// Clone a StorageError by remapping variants (needed since `std::io::Error`
+    /// and `bincode::Error` do not implement Clone).
+    pub fn to_error(&self) -> Self {
+        match self {
+            StorageError::Io(e) => StorageError::Io(std::io::Error::new(e.kind(), format!("{e}"))),
+            StorageError::Serialize(e) => StorageError::Other(format!("serialize: {e}")),
+            StorageError::BlockNotCached(idx) => StorageError::BlockNotCached(*idx),
+            StorageError::InsufficientChunks { requested, available } => StorageError::InsufficientChunks { requested: *requested, available: *available },
+            StorageError::InvalidChunkOffset(o) => StorageError::InvalidChunkOffset(*o),
+            StorageError::BlockFull(idx) => StorageError::BlockFull(*idx),
+            StorageError::RedoLogReplay { seq, message } => StorageError::RedoLogReplay { seq: *seq, message: message.clone() },
+            StorageError::GraphNotFound(s) => StorageError::GraphNotFound(s.clone()),
+            StorageError::Other(s) => StorageError::Other(s.clone()),
+        }
+    }
+}

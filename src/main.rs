@@ -62,10 +62,10 @@ async fn main() {
 
     // Initialize the new block-based graph manager.
     let data_dir = std::path::PathBuf::from(&settings.storage.data_dir);
-    let gm = GraphManager::new(data_dir);
+    let gm = Arc::new(GraphManager::new(data_dir));
 
     // Build the new router.
-    let app = build_new_router(gm);
+    let app = build_new_router(gm.clone());
 
     let addr: SocketAddr = format!("{}:{}", settings.server.host, settings.server.port)
         .parse()
@@ -100,6 +100,10 @@ async fn main() {
         .expect("Server error");
 
     log::info!("Server shut down. Goodbye.");
+
+    // Flush and checkpoint all graphs before exiting.
+    gm.close_all();
+    log::info!("All graphs flushed and checkpointed.");
 }
 
 fn log_info_banner(addr: &SocketAddr) {

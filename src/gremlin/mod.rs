@@ -35,11 +35,11 @@ pub struct AppState {
 }
 
 /// Build the axum router for all block-engine graph routes.
-pub fn build_router(gm: GraphManager) -> axum::Router {
+pub fn build_router(gm: Arc<GraphManager>) -> axum::Router {
     let settings = crate::config::load_or_create_settings();
     let doc_mgr = DocumentManager::new(&settings.storage.data_dir);
     let state = AppState {
-        gm: Arc::new(gm),
+        gm,
         settings: Arc::new(Mutex::new(settings)),
         doc_mgr,
         task_mgr: ExtractionTaskManager::new(),

@@ -61,6 +61,8 @@ pub struct GraphStorageConfig {
     pub max_dirty_age_secs: Option<u64>,
     /// WAL 文件旋转大小（MB）
     pub rotation_threshold_mb: u64,
+    /// WAL 文件旋转时间（秒）。超过此时间自动旋转。null 表示不启用时间旋转
+    pub rotation_max_age_secs: Option<u64>,
     /// 位图空闲块列表预填充数量
     pub free_list_target: usize,
 }
@@ -71,6 +73,7 @@ impl Default for GraphStorageConfig {
             cache_capacity: 4096,
             max_dirty_age_secs: Some(60),
             rotation_threshold_mb: 64,
+            rotation_max_age_secs: Some(900),
             free_list_target: 128,
         }
     }
@@ -168,7 +171,11 @@ impl Graph {
         let data_blocks = data_file.block_count()?;
         let bitmap_file = RwLock::new(BitmapFile::open(graph_dir.join("bitmap"), data_blocks)?);
         let block_cache = RwLock::new(BlockCache::new(config.storage.cache_capacity, config.storage.max_dirty_age_secs));
-        let redo_log = RedoLog::open(&graph_dir)?;
+        let redo_log = RedoLog::open_with_config(
+            &graph_dir,
+            config.storage.rotation_threshold_mb * 1024 * 1024,
+            config.storage.rotation_max_age_secs,
+        )?;
         let index_file = IndexFile::open(graph_dir.join("index"))?;
 
         // ── Rebuild in-memory index ──────────────────────────────────────
@@ -209,11 +216,10 @@ impl Graph {
             crate::graph::crud::replay_entry(&graph, &entry)
         })?;
 
-        // After replay, remove consumed redo log files.
-        if graph_dir.join("redo").exists() || graph_dir.read_dir().map_or(false, |mut d| d.any(|e| e.ok().map_or(false, |e| e.file_name().to_string_lossy().starts_with("redo_")))) {
-            // Replay completed — safe to remove old logs.
-            let _ = RedoLog::remove_all(&graph_dir);
-        }
+        // After replay, switch to a fresh WAL file so crash recovery
+        // during this session works (the file stays on disk with a real
+        // directory entry).
+        graph.redo_log.renew()?;
 
         Ok(graph)
     }
@@ -249,7 +255,8 @@ impl Graph {
     /// Close the graph — flush everything and checkpoint the WAL.
     pub fn close(&self) -> StorageResult<()> {
         self.flush()?;
-        self.redo_log.checkpoint(|| self.flush())?;
+        self.redo_log.sync()?;
+        self.redo_log.renew()?;
         Ok(())
     }
 }
