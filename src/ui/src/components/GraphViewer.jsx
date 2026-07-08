@@ -240,7 +240,7 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onS
     if (type === 'vertex') {
       setEditLabel(labels.join(', '));
     } else {
-      setEditLabel(item.label || '');
+      setEditLabel(item.name || '');
     }
     setLocalName(item.name || '');
     setLocalKeywords((item.keywords || []).join(', '));
@@ -267,7 +267,7 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onS
       if (type === 'vertex') {
         await updateVertexProperties(item.id, newLabels, editProps, graphName, name, keywords);
       } else {
-        const newLabel = editLabel.trim() || item.label || '';
+        const newLabel = editLabel.trim() || item.name || '';
         await updateEdgeProperties(item.id, newLabel, editProps, graphName);
       }
       item.labels = newLabels;
@@ -303,7 +303,7 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onS
                   </svg>
                 </button>
               ) : (
-                <button className="w-5 h-5 rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--danger)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)]" onClick={() => onDeleteEdge?.(item.id, item.label || item.id)} title={t('graph.delete')}>
+                <button className="w-5 h-5 rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--danger)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)]" onClick={() => onDeleteEdge?.(item.id, item.name || item.id)} title={t('graph.delete')}>
                   <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                   </svg>
@@ -325,7 +325,7 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onS
             {type === 'edge' ? 'Label' : 'Labels'} {editing && <span className="text-[var(--text-muted)] normal-case font-normal">(comma-separated)</span>}
           </div>
           {type === 'edge' ? (
-            <div className="text-xs text-[var(--text-primary)] font-medium">{item.label || '—'}</div>
+            <div className="text-xs text-[var(--text-primary)] font-medium">{item.name || '—'}</div>
           ) : editing ? (
             <input
               className="w-full px-2.5 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
@@ -505,7 +505,7 @@ function buildFromData(dataItems) {
       nodes.push({ id: item.id, label: item.name || `#${item.id}`, _original: item });
     } else if (item.type === 'edge') {
       const key = `${item.source}-${item.target}`;
-      if (!eSet.has(key)) { eSet.add(key); edges.push({ id: item.id, from: item.source, to: item.target, label: item.label || '', _original: item }); }
+      if (!eSet.has(key)) { eSet.add(key); edges.push({ id: item.id, from: item.source, to: item.target, label: item.name || '', _original: item }); }
     }
   }
   return { nodes, edges };
@@ -704,7 +704,7 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
             nodes.add({ id: item.id, label: item.name || `#${item.id}`, _original: item });
           } else if (item.type === 'edge') {
             const existing = edges.get({ filter: (e) => e.from === item.source && e.to === item.target });
-            if (existing.length === 0) edges.add({ id: item.id, from: item.source, to: item.target, label: item.label || '', _original: item });
+            if (existing.length === 0) edges.add({ id: item.id, from: item.source, to: item.target, label: item.name || '', _original: item });
           }
         }
         net.fit({ animation: { duration: 300, easingFunction: 'easeInOutQuad' } });
@@ -931,7 +931,7 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
                         const es = edgesRef.current;
                         if (es) {
                           const exists = es.get({ filter: (e) => e.from === src && e.to === tgt });
-                          if (exists.length === 0) es.add({ id: res.id, from: src, to: tgt, label: newEdgeLabel.trim(), _original: { type: 'edge', id: res.id, label: newEdgeLabel.trim(), source: src, target: tgt, properties: props } });
+                          if (exists.length === 0) es.add({ id: res.id, from: src, to: tgt, label: newEdgeLabel.trim(), _original: { type: 'edge', id: res.id, name: newEdgeLabel.trim(), source: src, target: tgt, properties: props } });
                         }
                         netRef.current?.fit({ animation: { duration: 300 } });
                       }

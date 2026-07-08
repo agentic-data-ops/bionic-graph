@@ -94,3 +94,43 @@ pub async fn update_neural_settings(
     }
     StatusCode::OK
 }
+
+// ── /settings/llm ───────────────────────────────────────────────────────────
+
+use crate::config::settings::LlmConfig;
+
+/// GET /settings/llm — return the full LLM config wrapped for frontend.
+pub async fn get_llm_settings(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let settings = state.settings.lock().unwrap();
+    Json(serde_json::json!({ "llm": &settings.llm }))
+}
+
+/// PUT /settings/llm — update LLM providers and default model, persist to disk.
+#[derive(Deserialize)]
+pub struct UpdateLlmBody {
+    pub providers: Option<Vec<crate::config::settings::LlmProvider>>,
+    pub default_model: Option<String>,
+}
+
+pub async fn update_llm_settings(
+    State(state): State<AppState>,
+    Json(body): Json<UpdateLlmBody>,
+) -> StatusCode {
+    let save_result = {
+        let mut guard = state.settings.lock().unwrap();
+        if let Some(providers) = body.providers {
+            guard.llm.providers = providers;
+        }
+        if let Some(model) = body.default_model {
+            guard.llm.default_model = model;
+        }
+        crate::config::loader::save_settings(&guard)
+    };
+    if let Err(e) = save_result {
+        log::warn!("Failed to save LLM settings: {}", e);
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    }
+    StatusCode::OK
+}

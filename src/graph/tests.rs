@@ -193,7 +193,7 @@ fn traversal_expand() {
     crud::create_edge(&g, a, b, "e", &[], &[], 0.9, &HashMap::new()).unwrap();
     let r = run_steps(&g, vec![
         GremlinStep::V { ids: Some(vec![a]), at: None },
-        GremlinStep::Expand { depth: None },
+        GremlinStep::Expand { depth: None, label: None },
     ]);
     assert!(vids(&r).contains(&a) && vids(&r).contains(&b));
     assert_eq!(eids(&r).len(), 1);

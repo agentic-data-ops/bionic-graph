@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     Json,
 };
 use serde::{Deserialize, Serialize};
@@ -70,6 +70,8 @@ pub fn build_router(gm: Arc<GraphManager>) -> axum::Router {
         .route("/settings/search", put(settings::update_search_settings))
         .route("/settings/neural", get(settings::get_neural_settings))
         .route("/settings/neural", put(settings::update_neural_settings))
+        .route("/settings/llm", get(settings::get_llm_settings))
+        .route("/settings/llm", put(settings::update_llm_settings))
         // Health
         .route("/health", get(health_check))
         // MaaS — OpenAI-compatible proxy
@@ -84,6 +86,7 @@ pub fn build_router(gm: Arc<GraphManager>) -> axum::Router {
         .route("/documents/:id/content", get(get_document_content))
         // Extraction
         .route("/extract", post(submit_extraction))
+        .route("/documents/:id/extract", post(extract_document_handler))
         .route("/extract/task/:task_id", get(get_extraction_task))
         .route("/extract/tasks", get(list_extraction_tasks))
         // Shared state
@@ -443,9 +446,13 @@ pub struct GraphInfo {
     pub name: String,
 }
 
-pub async fn list_graphs(State(state): State<AppState>) -> Json<Vec<GraphInfo>> {
+pub async fn list_graphs(State(state): State<AppState>) -> Json<serde_json::Value> {
     let names = state.gm.list().unwrap_or_default();
-    Json(names.into_iter().map(|n| GraphInfo { name: n }).collect())
+    let graphs: Vec<GraphInfo> = names.into_iter().map(|n| GraphInfo { name: n }).collect();
+    Json(serde_json::json!({
+        "graphs": graphs,
+        "time_travel": {}
+    }))
 }
 
 // ── POST /graphs2 ───────────────────────────────────────────────────────────
@@ -944,6 +951,35 @@ pub async fn list_extraction_tasks(
 ) -> Json<Vec<TaskResponse>> {
     let tasks = state.task_mgr.list_tasks();
     Json(tasks.into_iter().map(|t| t.into()).collect())
+}
+
+/// POST /documents/:id/extract — extract from a document by ID.
+pub async fn extract_document_handler(
+    State(state): State<AppState>,
+    Path(document_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<SubmitExtractionResponse>, StatusCode> {
+    // Get graph name from X-Graph-Name header
+    let graph_name = headers
+        .get("X-Graph-Name")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("default");
+
+    // Verify document exists
+    let doc = state.doc_mgr.get(&document_id).ok_or(StatusCode::NOT_FOUND)?;
+    let _content = state.doc_mgr.get_content(&document_id).ok_or(StatusCode::NOT_FOUND)?;
+
+    // Resolve the graph
+    let _graph = state.gm.get(graph_name).map_err(|_| StatusCode::NOT_FOUND)?;
+
+    // Forward to submit_extraction logic
+    submit_extraction(
+        State(state),
+        Json(SubmitExtractionBody {
+            document_id,
+            graph: Some(graph_name.to_string()),
+        }),
+    ).await
 }
 
 /// Convert serde_json::Value to PropertyValue.

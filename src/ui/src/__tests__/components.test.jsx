@@ -68,10 +68,10 @@ describe('API client', () => {
 
   it('graphSearch sends proper step', async () => {
     fetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({}) });
-    await api.graphSearch(['AI', 'engineer'], 'g');
+    await api.graphSearch('AI engineer', 'g');
     const body = JSON.parse(fetch.mock.calls[0][1].body);
     expect(body.steps[0].step).toBe('search');
-    expect(body.steps[0].keywords).toEqual(['AI', 'engineer']);
+    expect(body.steps[0].text).toBe('AI engineer');
   });
 
   it('listGraphs calls GET', async () => {

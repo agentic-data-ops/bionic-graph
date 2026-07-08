@@ -107,7 +107,7 @@ pub enum GremlinStep {
     #[serde(rename = "compact")]
     Compact { before: u64 },
     #[serde(rename = "expand")]
-    Expand { depth: Option<u8> },
+    Expand { depth: Option<u8>, label: Option<String> },
     #[serde(rename = "traverse")]
     Traverse {
         decay: Option<f32>,
@@ -267,7 +267,7 @@ fn execute_step(
         GremlinStep::Repeat { steps, times } => step_repeat(graph, input, steps, *times),
         GremlinStep::TimeTravel { at } => Ok(input), // handled by children
         GremlinStep::Compact { before: _ } => Ok(input),
-        GremlinStep::Expand { depth } => step_expand(graph, input, *depth),
+        GremlinStep::Expand { depth, label } => step_expand(graph, input, *depth, label.as_deref()),
         GremlinStep::Traverse {
             decay,
             activate,
@@ -944,17 +944,22 @@ fn step_expand(
     graph: &Arc<Graph>,
     input: Vec<GremlinResult>,
     depth: Option<u8>,
+    label: Option<&str>,
 ) -> StorageResult<Vec<GremlinResult>> {
     let d = depth.unwrap_or(1);
+
+    // Build label filter from the optional label string.
+    let label_vec: Option<Vec<String>> = label.map(|l| vec![l.to_string()]);
+    let label_filter: Option<&[String]> = label_vec.as_deref();
 
     // Include original input vertices.
     let mut results: Vec<GremlinResult> = input.clone();
 
-    // Add out/in neighbors AND the connecting edges.
-    let out_v = step_out(graph, input.clone(), Some(d), None)?;
-    let out_e = step_oute(graph, input.clone(), None)?;
-    let inp_v = step_in(graph, input.clone(), Some(d), None)?;
-    let inp_e = step_ine(graph, input, None)?;
+    // Add out/in neighbors AND the connecting edges, filtered by label if given.
+    let out_v = step_out(graph, input.clone(), Some(d), label_filter)?;
+    let out_e = step_oute(graph, input.clone(), label_filter)?;
+    let inp_v = step_in(graph, input.clone(), Some(d), label_filter)?;
+    let inp_e = step_ine(graph, input, label_filter)?;
 
     for r in out_v.into_iter().chain(inp_v) {
         if matches!(r, GremlinResult::Vertex { .. }) {

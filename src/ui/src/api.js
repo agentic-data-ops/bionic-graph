@@ -39,8 +39,8 @@ export async function gremlin(steps, graph = 'default') {
   });
 }
 
-export async function graphSearch(keywords, graph = 'default', mode) {
-  return gremlin([{ step: 'search', keywords, mode }], graph);
+export async function graphSearch(text, graph = 'default', mode) {
+  return gremlin([{ step: 'search', text, mode }], graph);
 }
 
 export async function compact(beforeTs, graph = 'default') {
@@ -105,10 +105,16 @@ export async function getVertex(vid, graph = 'default') {
 }
 
 export async function updateVertex(vid, props, labels, graph = 'default') {
-  return gremlin([
-    { step: 'V', ids: [vid] },
-    { step: 'property', key: 'name', value: props.name || '' },
-  ], graph);
+  return api(`/vertices/${vid}`, {
+    method: 'PUT',
+    headers: { 'X-Graph-Name': graph },
+    body: JSON.stringify({
+      name: props?.name || '',
+      keywords: props?.keywords || [],
+      labels: labels || [],
+      properties: props || {},
+    }),
+  });
 }
 
 // ─── LLM Chat (OpenAI-compatible streaming) ─────────────────────
@@ -190,10 +196,10 @@ export async function listDocuments() {
   return api('/documents');
 }
 
-export async function addDocument(title, content, keywords = [], graphName = '') {
+export async function addDocument(title, content, tags = [], graphName = '') {
   return api('/documents', {
     method: 'POST',
-    body: JSON.stringify({ title, content, keywords, graph_name: graphName }),
+    body: JSON.stringify({ title, content, tags, graph: graphName }),
   });
 }
 
@@ -207,10 +213,10 @@ export async function getDocumentContent(id) {
   return res.text();
 }
 
-export async function updateDocument(id, title, keywords = [], graphName) {
+export async function updateDocument(id, title, tags = [], graphName) {
   return api(`/documents/${encodeURIComponent(id)}`, {
     method: 'PUT',
-    body: JSON.stringify({ title, keywords, graph_name: graphName || undefined }),
+    body: JSON.stringify({ title, tags, graph: graphName || undefined }),
   });
 }
 
@@ -394,19 +400,19 @@ export async function updateVertexProperties(id, labels, properties, graph = 'de
   });
 }
 
-export async function updateEdgeProperties(id, label, properties, graph = 'default') {
+export async function updateEdgeProperties(id, name, properties, graph = 'default') {
   return api(`/edges/${id}`, {
     method: 'PUT',
     headers: { 'X-Graph-Name': graph },
-    body: JSON.stringify({ label, properties }),
+    body: JSON.stringify({ name, properties }),
   });
 }
 
-export async function addEdge(label, source, target, properties = {}, graph = 'default') {
+export async function addEdge(name, source, target, properties = {}, graph = 'default') {
   return api('/edges', {
     method: 'POST',
     headers: { 'X-Graph-Name': graph },
-    body: JSON.stringify({ label, source, target, properties }),
+    body: JSON.stringify({ name, source, target, properties }),
   });
 }
 
