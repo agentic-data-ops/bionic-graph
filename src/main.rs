@@ -4,6 +4,7 @@ use std::sync::Arc;
 use clap::Parser;
 use bionic_graph::config::load_or_create_settings;
 use bionic_graph::gremlin::build_router as build_new_router;
+use bionic_graph::graph::graph::RedologOverrides;
 use bionic_graph::graph_manager::GraphManager;
 
 /// Bionic-Graph: Block-based knowledge graph with token-indexed search.
@@ -62,7 +63,11 @@ async fn main() {
 
     // Initialize the new block-based graph manager.
     let data_dir = std::path::PathBuf::from(&settings.storage.data_dir);
-    let gm = Arc::new(GraphManager::new(data_dir));
+    let redolog_overrides = RedologOverrides {
+        max_size_mb: settings.storage.redolog_rotation_max_size_mb,
+        max_age_secs: settings.storage.redolog_rotation_max_age_secs,
+    };
+    let gm = Arc::new(GraphManager::new(data_dir, redolog_overrides));
 
     // Build the new router.
     let app = build_new_router(gm.clone());

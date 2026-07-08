@@ -18,6 +18,6 @@ pub mod locked;
 pub mod serialize;
 pub mod tokenizer;
 
-pub use graph::{Graph, GraphConfig};
+pub use graph::{Graph, GraphConfig, RedologOverrides};
 pub use gremlin::{GremlinQuery, GremlinResult, GremlinStep, execute_gremlin};
 pub use serialize::{serialize_vertex, deserialize_vertex, serialize_edge, deserialize_edge};

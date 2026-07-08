@@ -163,7 +163,7 @@ impl BlockCache {
     /// Flush all dirty blocks via the `flusher` callback.
     ///
     /// Returns the number of blocks flushed.
-    pub fn flush_all_dirty<F>(&mut self, flusher: &F) -> StorageResult<usize>
+    pub fn flush_dirty<F>(&mut self, flusher: &F) -> StorageResult<usize>
     where
         F: Fn(BlockIdx, &[u8; BLOCK_SIZE]) -> StorageResult<()>,
     {
@@ -358,7 +358,7 @@ mod tests {
         cache.mark_dirty(5);
         assert!(cache.is_dirty(5));
 
-        let flushed = cache.flush_all_dirty(&noop_flusher).unwrap();
+        let flushed = cache.flush_dirty(&noop_flusher).unwrap();
         assert_eq!(flushed, 1);
         assert!(!cache.is_dirty(5));
     }

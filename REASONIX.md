@@ -49,7 +49,7 @@ src/
 │   ├── locked.rs            # Lock-safe CRUD wrappers
 │   ├── serialize.rs         # Bincode serialization with JSON properties
 │   ├── tokenizer.rs         # jieba-rs tokenizer, stop-words, min length 2
-│   └── tests.rs             # #[cfg(test)] integration tests (88+)
+│   └── tests.rs             # #[cfg(test)] integration tests (90+)
 ├── gremlin/                 # REST API routes + handlers (axum)
 │   ├── mod.rs               # AppState, build_router (29 routes), handlers
 │   └── settings.rs          # GET/PUT /settings/search + legacy /settings/neural
@@ -57,9 +57,10 @@ src/
 ├── documents.rs             # Document CRUD (file storage + JSON index)
 ├── extract/                 # LLM-based document extraction pipeline
 │   ├── mod.rs               # Re-exports
-│   ├── config.rs            # ExtractionConfig, entity/relation types
+│   ├── config.rs            # ExtractionConfig, ExtractedEntity(name,labels,keywords,properties),
+│   │                        #   ExtractedRelation(source,target,name,labels,keywords,strength,properties)
 │   ├── document.rs          # Markdown section parser + token budget
-│   ├── extraction.rs        # LLM prompt templates + response parsers
+│   ├── extraction.rs        # LLM prompt templates (full-field format) + response parsers
 │   ├── llm_client.rs        # OpenAI-compatible HTTP client with retry
 │   └── task_manager.rs      # Async task lifecycle
 ├── maas/                    # MaaS OpenAI-compatible proxy
@@ -223,7 +224,7 @@ Per-graph config in `config.json`:
 - **Data dir**: `<data_dir>/graphs/<name>/` with files: `data`, `bitmap`, `index`, `config.json`, `redo_*`.
 - **Default graph**: `"default"` when `?graph=` omitted.
 - **POST /vertices**: top-level `name` (String), optional `keywords`, `labels`, `properties`. `properties.name` NOT used.
-- **POST /edges**: requires `source`, `target`, `label`. Optional `keywords`, `strength`, `properties`.
+- **POST /edges**: requires `source`, `target`, `name` (String). Optional `labels` (Vec<String>), `keywords` (Vec<String>), `strength` (f32, default 1.0), `properties` (map).
 - **DELETE ?force=true**: hard delete; without force: soft delete (DataStatus::Deleted).
 - **Search step**: takes `text` (raw string), tokenized by jieba-rs. `mode`="greedy"|"exact", `match_mode`="prefix"|"word".
 - **`/gremlin` auto-injects**: `match_mode` from SearchSettings + optionally appends `traverse` step.
@@ -236,6 +237,9 @@ Per-graph config in `config.json`:
 - **compact step**: no-op passthrough.
 - **`touch src/ui_serve.rs`** needed after frontend changes.
 - **`document_extractor.rs`, `pipeline.rs`**: orphaned dead code (not in mod.rs).
+- **EdgePayload fields**: `name` (relationship name), `labels` (relation type categories), `keywords`, `strength`, `properties`, `source`, `target`.
+- **VertexPayload fields**: `name`, `labels` (entity types), `keywords`, `properties`.
+- **Extraction**: SYSTEM_PROMPT tells LLM to output `name`, `labels`, `keywords`, `properties` for entities; and `source`, `target`, `name`, `labels`, `keywords`, `strength`, `properties` for relations. Parsing skips entries without a valid `name`.
 - **WAL batch writer**: `append()` sends via `mpsc::channel` to background thread. Caller blocks on Condvar until durability confirmed. Batch ≤128 entries, 10ms timeout.
 - **Time-based WAL rotation**: `rotation_max_age_secs` in per-graph `config.json`. Default 900s (15 min).
 - **SIGINT/SIGTERM**: server calls `GraphManager::close_all()` → flushes dirty blocks + checkpoints all WALs.
@@ -257,4 +261,4 @@ Per-graph config in `config.json`:
 - `012-neural-activation-spread-enhancements.md`
 - `100-graph-rearch-design.md` — Block-based storage architecture
 - `101-graph-rearch-plan.md` — Re-architecture coding plan (Phase 1-8)
-- `102-graph-rearch-test-plan.md` — Test plan
+- `--- edge-data-structure-update.md` — EdgePayload label→name, +labels; token hit_key uses property keys; extraction prompt updated

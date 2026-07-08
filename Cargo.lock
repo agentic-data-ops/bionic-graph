@@ -189,6 +189,7 @@ dependencies = [
  "http-body",
  "http-body-util",
  "jieba-rs",
+ "libc",
  "log",
  "mime_guess",
  "parking_lot",

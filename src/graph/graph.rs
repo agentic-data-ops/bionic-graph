@@ -31,6 +31,19 @@ use crate::storage::{
 ///
 /// Each graph can independently tune these parameters. Defaults match the
 /// engine's built-in constants and can be overridden via `PUT /graphs/:name/config`.
+
+// ─── Redolog global overrides ──────────────────────────────────────────────
+
+/// Global overrides for redo-log rotation settings (from settings.json).
+/// Applied after loading per-graph config.json, so global values win.
+#[derive(Debug, Clone, Default)]
+pub struct RedologOverrides {
+    /// Override for rotation_threshold_mb (MB). None = use per-graph / code default.
+    pub max_size_mb: Option<u64>,
+    /// Override for rotation_max_age_secs (seconds). None = use per-graph / code default.
+    pub max_age_secs: Option<u64>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GraphConfig {
@@ -75,6 +88,19 @@ impl Default for GraphStorageConfig {
             rotation_threshold_mb: 64,
             rotation_max_age_secs: Some(900),
             free_list_target: 128,
+        }
+    }
+}
+
+impl GraphStorageConfig {
+    /// Apply global redo-log overrides from settings.json.
+    /// These override per-graph config values when set.
+    pub fn apply_redolog_overrides(&mut self, overrides: &RedologOverrides) {
+        if let Some(mb) = overrides.max_size_mb {
+            self.rotation_threshold_mb = mb;
+        }
+        if let Some(secs) = overrides.max_age_secs {
+            self.rotation_max_age_secs = Some(secs);
         }
     }
 }
@@ -159,12 +185,14 @@ impl Graph {
     /// This is the main entry point. On first call for a new graph, the
     /// storage files are created. On subsequent calls, the redo log is
     /// replayed and the in-memory index rebuilt.
-    pub fn open<P: AsRef<Path>>(dir: P, name: &str, _defaults: GraphConfig) -> StorageResult<Arc<Self>> {
+    pub fn open<P: AsRef<Path>>(dir: P, name: &str, overrides: &RedologOverrides) -> StorageResult<Arc<Self>> {
         let graph_dir = dir.as_ref().join(name);
         std::fs::create_dir_all(&graph_dir)?;
 
         // Load per-graph config (falls back to defaults if no config.json)
-        let config = GraphConfig::load(&graph_dir);
+        let mut config = GraphConfig::load(&graph_dir);
+        // Apply global overrides from settings.json (win over per-graph config)
+        config.storage.apply_redolog_overrides(overrides);
 
         // ── Open storage files ───────────────────────────────────────────
         let data_file = DataFile::open(graph_dir.join("data"))?;
@@ -242,12 +270,11 @@ impl Graph {
     /// Flush all dirty blocks to disk and sync.
     pub fn flush(&self) -> StorageResult<()> {
         let mut cache = self.block_cache.write().unwrap();
-        cache.flush_all_dirty(&|idx, data| {
+        cache.flush_dirty(&|idx, data| {
             self.data_file.write_block(idx, data)?;
             Ok(())
         })?;
-        self.data_file.sync_all()?;
-        self.index_file.sync_all()?;
+        self.index_file.flush_dirty()?;
         self.redo_log.sync()?;
         Ok(())
     }

@@ -409,6 +409,11 @@ impl IndexFile {
         Ok(())
     }
 
+    /// Flush dirty index blocks to disk (forward-compat wrapper for checkpoint).
+    pub fn flush_dirty(&self) -> StorageResult<()> {
+        self.sync_all()
+    }
+
     // ── Internal helpers ─────────────────────────────────────────────────────
 
     fn read_chunk(&self, block_idx: BlockIdx, chunk_offset: ChunkOffset) -> StorageResult<[u8; 64]> {

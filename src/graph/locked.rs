@@ -86,13 +86,14 @@ pub fn create_edge_locked(
     graph: &Arc<Graph>,
     source: VertexId,
     target: VertexId,
-    label: &str,
+    name: &str,
+    labels: &[String],
     keywords: &[String],
     strength: f32,
     properties: &HashMap<String, PropertyValue>,
 ) -> StorageResult<EdgeId> {
     let _meta = graph.locks.read_metadata();
-    let result = crud::create_edge(graph, source, target, label, keywords, strength, properties);
+    let result = crud::create_edge(graph, source, target, name, labels, keywords, strength, properties);
     drop(_meta);
     result
 }
@@ -110,7 +111,8 @@ pub fn get_edge_locked(
 pub fn update_edge_locked(
     graph: &Arc<Graph>,
     edge_id: EdgeId,
-    label: Option<&str>,
+    name: Option<&str>,
+    labels: Option<&[String]>,
     keywords: Option<&[String]>,
     strength: Option<f32>,
     properties: Option<&HashMap<String, PropertyValue>>,
@@ -118,7 +120,7 @@ pub fn update_edge_locked(
 ) -> StorageResult<()> {
     let _meta = graph.locks.read_metadata();
     let _elock = graph.locks.write_edge(edge_id);
-    let result = crud::update_edge(graph, edge_id, label, keywords, strength, properties, record_history);
+    let result = crud::update_edge(graph, edge_id, name, labels, keywords, strength, properties, record_history);
     drop(_elock);
     drop(_meta);
     result

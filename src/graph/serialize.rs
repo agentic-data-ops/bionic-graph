@@ -25,7 +25,8 @@ struct StoredVertex {
 #[derive(Serialize, Deserialize)]
 struct StoredEdge {
     pub id: u32,
-    pub label: String,
+    pub name: String,
+    pub labels: Vec<String>,
     pub keywords: Vec<String>,
     pub strength: f32,
     pub properties_json: String,
@@ -81,7 +82,8 @@ fn stored_to_vertex(s: StoredVertex) -> VertexPayload {
 fn edge_to_stored(e: &EdgePayload) -> StoredEdge {
     StoredEdge {
         id: e.id,
-        label: e.label.clone(),
+        name: e.name.clone(),
+        labels: e.labels.clone(),
         keywords: e.keywords.clone(),
         strength: e.strength,
         properties_json: props_to_json(&e.properties),
@@ -97,7 +99,8 @@ fn edge_to_stored(e: &EdgePayload) -> StoredEdge {
 fn stored_to_edge(s: StoredEdge) -> EdgePayload {
     EdgePayload {
         id: s.id,
-        label: s.label,
+        name: s.name,
+        labels: s.labels,
         keywords: s.keywords,
         strength: s.strength,
         properties: props_from_json(&s.properties_json),

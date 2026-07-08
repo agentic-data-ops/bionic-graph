@@ -333,9 +333,10 @@ pub async fn delete_vertex(
 
 #[derive(Deserialize)]
 pub struct CreateEdgeBody {
-    pub label: String,
+    pub name: String,
     pub source: u32,
     pub target: u32,
+    pub labels: Option<Vec<String>>,
     pub keywords: Option<Vec<String>>,
     pub strength: Option<f32>,
     #[serde(default)]
@@ -357,7 +358,8 @@ pub async fn create_edge(
         &graph,
         body.source,
         body.target,
-        &body.label,
+        &body.name,
+        &body.labels.unwrap_or_default(),
         &body.keywords.unwrap_or_default(),
         body.strength.unwrap_or(1.0),
         &body.properties,
@@ -370,7 +372,8 @@ pub async fn create_edge(
 
 #[derive(Deserialize)]
 pub struct UpdateEdgeBody {
-    pub label: Option<String>,
+    pub name: Option<String>,
+    pub labels: Option<Vec<String>>,
     pub keywords: Option<Vec<String>>,
     pub strength: Option<f32>,
     pub properties: Option<std::collections::HashMap<String, crate::storage::types::PropertyValue>>,
@@ -390,7 +393,8 @@ pub async fn update_edge(
     match crate::graph::locked::update_edge_locked(
         &graph,
         id,
-        body.label.as_deref(),
+        body.name.as_deref(),
+        body.labels.as_deref(),
         body.keywords.as_deref(),
         body.strength,
         body.properties.as_ref(),
@@ -667,14 +671,29 @@ pub async fn submit_extraction(
         };
         let sys_prompt = r#"You are a knowledge graph extractor. Extract entities and their relationships from the given markdown document.
 
+## Entity fields
+- `name` (REQUIRED): entity name in original language
+- `labels` (REQUIRED, at least 1): entity type labels, e.g. ["person"], ["technology"]
+- `keywords` (optional): search keywords
+- `properties` (optional): key-value attributes
+
+## Relation fields
+- `source` (REQUIRED): source entity name
+- `target` (REQUIRED): target entity name
+- `name` (REQUIRED): relationship type label
+- `labels` (optional): relation type categories, e.g. ["dependency"]
+- `keywords` (optional): search keywords
+- `strength` (optional, default 1.0): relationship strength 0.0-1.0
+- `properties` (optional): key-value attributes
+
 Return ONLY valid JSON with this structure:
 
 {
   "entities": [
     {
       "name": "EntityName",
-      "type": ["entity type1", "entity type2"],
-      "keywords": ["search keyword1", "search keyword2"],
+      "labels": ["type1", "type2"],
+      "keywords": ["keyword1"],
       "properties": {
         "key1": "value1"
       }
@@ -682,17 +701,23 @@ Return ONLY valid JSON with this structure:
   ],
   "relations": [
     {
-      "source": "EntityName",
-      "target": "EntityName",
-      "relation": "relationship description"
+      "source": "EntityName1",
+      "target": "EntityName2",
+      "name": "relationship_type",
+      "labels": ["category1"],
+      "keywords": ["keyword1"],
+      "strength": 0.8,
+      "properties": {
+        "key1": "value1"
+      }
     }
   ],
   "tags": ["tag1", "tag2"]
 }
 
 - Extract entities and edges as many as possible.
-- Entity type could be person, place, organization, concept, event, object.
-- Entity name, type, keywords should be in the original language.
+- Entity labels could be person, place, organization, concept, event, object.
+- Entity name, labels, keywords should be in the original language.
 - Generate 1~5 most important tags."#;
 
         // Mark step 2 as running
@@ -747,8 +772,7 @@ Return ONLY valid JSON with this structure:
         #[derive(Deserialize)]
         struct EntityItem {
             name: Option<String>,
-            #[serde(rename = "type")]
-            type_: Option<Vec<String>>,
+            labels: Option<Vec<String>>,
             keywords: Option<Vec<String>>,
             properties: Option<HashMap<String, serde_json::Value>>,
         }
@@ -757,8 +781,14 @@ Return ONLY valid JSON with this structure:
         struct RelationItem {
             source: Option<String>,
             target: Option<String>,
-            relation: Option<String>,
+            name: Option<String>,
+            labels: Option<Vec<String>>,
+            keywords: Option<Vec<String>>,
+            #[serde(default = "default_strength")]
+            strength: f32,
         }
+
+        fn default_strength() -> f32 { 1.0 }
 
         let parsed: ExtractionOutput = match serde_json::from_str(&cleaned) {
             Ok(p) => p,
@@ -784,7 +814,7 @@ Return ONLY valid JSON with this structure:
 
         for entity in &parsed.entities {
             let name = entity.name.as_deref().unwrap_or("unknown");
-            let type_labels = entity.type_.clone().unwrap_or_else(|| vec!["entity".to_string()]);
+            let type_labels = entity.labels.clone().unwrap_or_else(|| vec!["entity".to_string()]);
             let entity_kw = entity.keywords.clone().unwrap_or_default();
             let entity_props: HashMap<String, PropertyValue> = entity.properties.as_ref()
                 .map(|p| p.iter().map(|(k, v)| (k.clone(), json_to_property_value(v))).collect())
@@ -834,11 +864,13 @@ Return ONLY valid JSON with this structure:
         for relation in &parsed.relations {
             let src_name = relation.source.as_deref().unwrap_or("");
             let tgt_name = relation.target.as_deref().unwrap_or("");
-            let rel_label = relation.relation.as_deref().unwrap_or("related_to");
+            let rel_name = relation.name.as_deref().unwrap_or("related_to");
+            let rel_labels = relation.labels.clone().unwrap_or_default();
+            let rel_keywords = relation.keywords.clone().unwrap_or_default();
 
             if let (Some(&src_vid), Some(&tgt_vid)) = (name_to_vid.get(src_name), name_to_vid.get(tgt_name)) {
                 match crate::graph::locked::create_edge_locked(
-                    &graph_arc, src_vid, tgt_vid, rel_label, &[], 1.0, &HashMap::new(),
+                    &graph_arc, src_vid, tgt_vid, rel_name, &rel_labels, &rel_keywords, relation.strength, &HashMap::new(),
                 ) {
                     Ok(_) => edge_count += 1,
                     Err(e) => log::warn!("Failed to create edge '{}->{}': {}", src_name, tgt_name, e),

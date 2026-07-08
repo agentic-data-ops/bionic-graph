@@ -82,11 +82,19 @@ impl Default for LlmConfig {
 pub struct StorageConfig {
     /// 图数据根目录
     pub data_dir: String,
+    /// WAL 文件旋转大小阈值（MB），覆盖 per-graph config.json。null 表示使用代码默认值（64MB）
+    pub redolog_rotation_max_size_mb: Option<u64>,
+    /// WAL 文件旋转时间阈值（秒），覆盖 per-graph config.json。null 表示使用代码默认值（900s）
+    pub redolog_rotation_max_age_secs: Option<u64>,
 }
 
 impl Default for StorageConfig {
     fn default() -> Self {
-        Self { data_dir: "data".to_string() }
+        Self {
+            data_dir: "data".to_string(),
+            redolog_rotation_max_size_mb: None,
+            redolog_rotation_max_age_secs: None,
+        }
     }
 }
 

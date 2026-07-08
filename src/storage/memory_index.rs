@@ -343,10 +343,36 @@ pub struct MemoryIndex {
     pub tokens: TokenMap,
     pub ranks: RankIndex,
     pub adjacency: AdjacencyIndex,
+    /// Reverse index: (ref_type, ref_id) → list of token strings referencing that entity.
+    /// ref_type: 0=vertex, 1=edge. Built at startup from token scan and maintained
+    /// incrementally by add_token() / remove_entity_token_refs().
+    pub entity_tokens: HashMap<(u8, u32), Vec<String>>,
 }
 
 impl MemoryIndex {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Record that a token references an entity.
+    pub fn add_entity_token(&mut self, ref_type: u8, ref_id: u32, token_str: &str) {
+        self.entity_tokens
+            .entry((ref_type, ref_id))
+            .or_default()
+            .push(token_str.to_string());
+    }
+
+    /// Get all token strings referencing an entity.
+    pub fn get_entity_tokens(&self, ref_type: u8, ref_id: u32) -> Vec<String> {
+        self.entity_tokens
+            .get(&(ref_type, ref_id))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Remove all references from an entity (used during hard delete).
+    /// Returns the list of token strings that were referencing it.
+    pub fn remove_entity_token_refs(&mut self, ref_type: u8, ref_id: u32) -> Vec<String> {
+        self.entity_tokens.remove(&(ref_type, ref_id)).unwrap_or_default()
     }
 }

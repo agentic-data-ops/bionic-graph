@@ -228,7 +228,10 @@ pub struct VertexPayload {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EdgePayload {
     pub id: u32,
-    pub label: String,
+    /// Relationship name between source and target (e.g. "knows", "works_at").
+    pub name: String,
+    /// Relation type labels (e.g. "social", "professional").
+    pub labels: Vec<String>,
     pub keywords: Vec<String>,
     pub strength: f32,
     pub properties: HashMap<String, PropertyValue>,
@@ -324,3 +327,17 @@ impl StorageError {
         }
     }
 }
+
+/// A 16 KB block with 512-byte alignment for O_DIRECT I/O.
+#[repr(C, align(512))]
+pub struct AlignedBlock(pub [u8; BLOCK_SIZE]);
+
+impl AlignedBlock {
+    pub fn new() -> Self { AlignedBlock([0u8; BLOCK_SIZE]) }
+    pub fn as_bytes(&self) -> &[u8; BLOCK_SIZE] { &self.0 }
+    pub fn as_mut_bytes(&mut self) -> &mut [u8; BLOCK_SIZE] { &mut self.0 }
+}
+
+impl Default for AlignedBlock { fn default() -> Self { Self::new() } }
+
+

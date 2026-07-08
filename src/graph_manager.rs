@@ -7,21 +7,23 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
-use crate::graph::graph::{Graph, GraphConfig};
+use crate::graph::graph::{Graph, GraphConfig, RedologOverrides};
 use crate::storage::types::StorageResult;
 
 /// Manages lifecycle of multiple named graphs.
 pub struct GraphManager {
     graphs: RwLock<HashMap<String, Arc<Graph>>>,
     data_dir: PathBuf,
+    redolog_overrides: RedologOverrides,
 }
 
 impl GraphManager {
     /// Create a new graph manager.
-    pub fn new(data_dir: PathBuf) -> Self {
+    pub fn new(data_dir: PathBuf, redolog_overrides: RedologOverrides) -> Self {
         Self {
             graphs: RwLock::new(HashMap::new()),
             data_dir,
+            redolog_overrides,
         }
     }
 
@@ -41,7 +43,7 @@ impl GraphManager {
 
         let graph_dir = self.data_dir.join("graphs");
         std::fs::create_dir_all(&graph_dir)?;
-        let graph = Graph::open(&graph_dir, name, GraphConfig::default())?;
+        let graph = Graph::open(&graph_dir, name, &self.redolog_overrides)?;;
 
         let mut graphs = self.graphs.write().unwrap();
         if let Some(g) = graphs.get(name) {
@@ -51,10 +53,12 @@ impl GraphManager {
         Ok(graph)
     }
 
-    /// Get the per-graph config (loads from disk, returns defaults if missing).
+    /// Get the per-graph config (loads from disk, merges global overrides, returns defaults if missing).
     pub fn get_graph_config(&self, name: &str) -> GraphConfig {
         let path = self.data_dir.join("graphs").join(name);
-        GraphConfig::load(&path)
+        let mut config = GraphConfig::load(&path);
+        config.storage.apply_redolog_overrides(&self.redolog_overrides);
+        config
     }
 
     /// Update the per-graph config and persist to disk.

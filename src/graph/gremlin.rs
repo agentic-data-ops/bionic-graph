@@ -144,7 +144,8 @@ pub enum GremlinResult {
         #[serde(rename = "type")]
         element_type: String,
         id: u32,
-        label: String,
+        name: String,
+        labels: Vec<String>,
         keywords: Vec<String>,
         source: u32,
         target: u32,
@@ -204,7 +205,8 @@ impl GremlinResult {
         GremlinResult::Edge {
             element_type: "edge".to_string(),
             id: e.id,
-            label: e.label.clone(),
+            name: e.name.clone(),
+            labels: e.labels.clone(),
             keywords: e.keywords.clone(),
             source: e.source,
             target: e.target,
@@ -468,7 +470,8 @@ fn step_search(
                     if let Ok(Some(e)) = crud::read_edge_by_record(graph, &rec, at) {
                         if let Some(ts) = at {
                             if !tokens.iter().any(|t| {
-                                e.label.contains(t)
+                                e.name.contains(t)
+                                    || e.labels.iter().any(|l| l.contains(t))
                                     || e.keywords.iter().any(|k| k.contains(t))
                                     || e.properties.values().any(|pv| match pv {
                                         PropertyValue::String(s) => s.contains(t),
@@ -584,7 +587,7 @@ fn step_has_label(
         .into_iter()
         .filter(|r| match r {
             GremlinResult::Vertex { labels, .. } => labels.iter().any(|l| l == label),
-            GremlinResult::Edge { label: l, .. } => l == label,
+            GremlinResult::Edge { labels, .. } => labels.iter().any(|l| l == label),
             GremlinResult::Count { .. } => false,
         })
         .collect())
@@ -607,9 +610,10 @@ fn step_has_text(
                     || properties.values().any(|pv| pv_str(pv).to_lowercase().contains(&lower))
             }
             GremlinResult::Edge {
-                label, keywords, properties, ..
+                name, labels, keywords, properties, ..
             } => {
-                label.to_lowercase().contains(&lower)
+                name.to_lowercase().contains(&lower)
+                    || labels.iter().any(|l| l.to_lowercase().contains(&lower))
                     || keywords.iter().any(|k| k.to_lowercase().contains(&lower))
                     || properties.values().any(|pv| pv_str(pv).to_lowercase().contains(&lower))
             }
@@ -752,7 +756,7 @@ fn step_oute(
             if let Ok(rec) = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset) {
                 if let Some(labels) = labels {
                     if let Ok(Some(e)) = crud::read_edge_by_record(graph, &rec, None) {
-                        if !labels.contains(&e.label) {
+                        if !labels.iter().any(|l| e.labels.contains(l)) {
                             continue;
                         }
                         results.push(GremlinResult::from_edge(&e, Some(&rec), None));
@@ -783,7 +787,7 @@ fn step_ine(
             if let Ok(rec) = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset) {
                 if let Some(labels) = labels {
                     if let Ok(Some(e)) = crud::read_edge_by_record(graph, &rec, None) {
-                        if !labels.contains(&e.label) {
+                        if !labels.iter().any(|l| e.labels.contains(l)) {
                             continue;
                         }
                         results.push(GremlinResult::from_edge(&e, Some(&rec), None));
@@ -845,7 +849,7 @@ fn step_values(
                     }
                 }
                 GremlinResult::Edge {
-                    id, label, keywords, source, target, strength, properties, score, rank, ..
+                    id, name, labels, keywords, source, target, strength, properties, score, rank, ..
                 } => {
                     let filtered: HashMap<String, PropertyValue> = properties
                         .into_iter()
@@ -854,7 +858,8 @@ fn step_values(
                     GremlinResult::Edge {
                         element_type: "edge".to_string(),
                         id,
-                        label,
+                        name,
+                        labels,
                         keywords: keywords.clone(),
                         source,
                         target,

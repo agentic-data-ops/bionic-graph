@@ -1,19 +1,22 @@
-//! Raw 16 KB block I/O on the data/index file.
+//! Raw 16 KB block I/O on the data/index file with O_DIRECT.
 //!
-//! Provides positional read/write of fixed-size blocks and file extension for
-//! new block allocation. All operations go through a `Mutex` to allow shared
-//! access from the block cache and redo-log checkpoint paths.
+//! All reads and writes use 512-byte aligned buffers internally and bypass
+//! the OS page cache. The public API preserves the `[u8; BLOCK_SIZE]` type
+//! for backward compatibility — alignment conversion happens internally.
+//! Data durability is provided by the WAL checkpoint mechanism instead of
+//! per-operation fsync.
 
 use std::{
     fs::{File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
+    os::unix::fs::OpenOptionsExt,
     path::Path,
     sync::Mutex,
 };
 
-use crate::storage::types::{BlockIdx, BLOCK_SIZE, StorageResult};
+use crate::storage::types::{AlignedBlock, BlockIdx, StorageResult, BLOCK_SIZE};
 
-/// A file storing fixed-size 16 KB blocks.
+/// A file storing fixed-size 16 KB blocks, opened with O_DIRECT.
 ///
 /// # Layout
 ///
@@ -32,6 +35,7 @@ impl DataFile {
             .create(true)
             .read(true)
             .write(true)
+            .custom_flags(libc::O_DIRECT)
             .open(path.as_ref())?;
         let path = path.as_ref().to_path_buf();
         Ok(Self {
@@ -45,60 +49,71 @@ impl DataFile {
         &self.path
     }
 
-    /// Read one full block into a fixed-size buffer.
+    /// Read one full block (backward-compatible wrapper).
     ///
-    /// If `idx` is beyond the current file length, the block is assumed to be
-    /// unallocated and a zero-filled buffer is returned (no error).
+    /// If `idx` is beyond EOF, returns zeros.
     pub fn read_block(&self, idx: BlockIdx) -> StorageResult<[u8; BLOCK_SIZE]> {
+        self.read_block_aligned(idx).map(|a| a.0)
+    }
+
+    /// Read into a pre-allocated aligned buffer.
+    fn read_block_aligned(&self, idx: BlockIdx) -> StorageResult<AlignedBlock> {
         let mut file = self.file.lock().unwrap();
         let offset = (idx as u64) * (BLOCK_SIZE as u64);
         let file_len = file.metadata()?.len();
 
         if offset >= file_len {
-            // Block beyond EOF → not yet allocated → return zeros
-            return Ok([0u8; BLOCK_SIZE]);
+            return Ok(AlignedBlock::new());
         }
 
         file.seek(SeekFrom::Start(offset))?;
-        let mut buf = [0u8; BLOCK_SIZE];
-        file.read_exact(&mut buf)?;
-        Ok(buf)
+        let mut block = AlignedBlock::new();
+        file.read_exact(&mut block.0)?;
+        Ok(block)
     }
 
-    /// Write one full block.
+    /// Write one full block (backward-compatible wrapper).
     ///
-    /// If `idx` is beyond the current file length, the file is extended (holes
-    /// are filled with zeros up to the write position).
+    /// If `idx` is beyond EOF, the file is extended.
     pub fn write_block(&self, idx: BlockIdx, data: &[u8; BLOCK_SIZE]) -> StorageResult<()> {
+        let mut aligned = AlignedBlock::new();
+        aligned.0.copy_from_slice(data);
+        self.write_block_aligned(idx, &aligned)
+    }
+
+    /// Write from a pre-aligned buffer.
+    fn write_block_aligned(&self, idx: BlockIdx, data: &AlignedBlock) -> StorageResult<()> {
         let mut file = self.file.lock().unwrap();
         let offset = (idx as u64) * (BLOCK_SIZE as u64);
         let file_len = file.metadata()?.len();
 
-        // If writing past EOF, extend the file with zeros first.
         if offset > file_len {
             file.seek(SeekFrom::End(0))?;
-            let zeros = vec![0u8; (offset - file_len) as usize];
-            file.write_all(&zeros)?;
+            let extend = (offset - file_len) as usize;
+            if extend > 0 {
+                let zero_block = AlignedBlock::new();
+                for _ in (0..extend).step_by(BLOCK_SIZE) {
+                    file.write_all(&zero_block.0)?;
+                }
+            }
         }
 
         file.seek(SeekFrom::Start(offset))?;
-        file.write_all(data)?;
+        file.write_all(&data.0)?;
         Ok(())
     }
 
     /// Allocate `count` new blocks by extending the file.
-    ///
-    /// Returns the index of the first newly-allocated block.
     pub fn allocate_blocks(&self, count: u32) -> StorageResult<BlockIdx> {
         let mut file = self.file.lock().unwrap();
         let file_len = file.metadata()?.len();
         let blocks_before = (file_len / (BLOCK_SIZE as u64)) as u32;
 
-        // Seek to end and write zeros
         file.seek(SeekFrom::End(0))?;
-        let zeros = vec![0u8; (count as usize) * BLOCK_SIZE];
-        file.write_all(&zeros)?;
-        file.sync_all()?;
+        let zero_block = AlignedBlock::new();
+        for _ in 0..count {
+            file.write_all(&zero_block.0)?;
+        }
 
         Ok(blocks_before)
     }
@@ -108,13 +123,6 @@ impl DataFile {
         let file = self.file.lock().unwrap();
         let len = file.metadata()?.len();
         Ok(len / (BLOCK_SIZE as u64))
-    }
-
-    /// Flush and fsync all buffered data to disk.
-    pub fn sync_all(&self) -> StorageResult<()> {
-        let file = self.file.lock().unwrap();
-        file.sync_all()?;
-        Ok(())
     }
 }
 

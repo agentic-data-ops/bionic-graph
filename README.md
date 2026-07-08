@@ -108,7 +108,7 @@ After frontend changes, `touch src/ui_serve.rs` is required to force Rust recomp
 | Command | Description |
 |---------|-------------|
 | `cargo run` | Start server (API + frontend) |
-| `cargo test` | Rust unit tests (88+) |
+| `cargo test` | Rust unit tests (90+) |
 | `npm --prefix src/ui run dev` | Frontend dev server (standalone Vite, proxies to port 8080) |
 | `npm --prefix src/ui run build` | Build frontend only |
 | `npm --prefix src/ui run test` | Frontend tests (vitest) |
@@ -209,7 +209,7 @@ curl -X DELETE 'localhost:8080/vertices/1?force=true'
 # Create edge
 curl -X POST localhost:8080/edges \
   -H 'Content-Type: application/json' \
-  -d '{"source":1,"target":2,"label":"works_with","strength":0.8,"properties":{"since":"2024"}}'
+  -d '{"source":1,"target":2,"name":"works_with","labels":["relationship"],"keywords":["colleague"],"strength":0.8,"properties":{"since":"2024"}}'
 ```
 
 #### Token search + traversal
@@ -282,30 +282,30 @@ curl localhost:8080/documents/{id}/content
 
 | Step | Parameters | Description |
 |------|-----------|-------------|
-| `search` | `text`, `mode?`, `match_mode?`, `at?`, `limit?`, `min_rank?` | Token-indexed full-text search. Auto-injects match_mode + optional traverse. |
-| `V` | `ids?`, `at?` | All or specific vertices |
-| `E` | `ids?`, `at?` | All or specific edges |
-| `has` | `key`, `value` | Exact property filter |
-| `hasNot` | `key`, `value` | Negated property filter |
-| `hasKey` | `key` | Filter by property existence |
-| `hasValue` | `value` | Filter by any property value |
-| `hasLabel` | `label` | Label filter |
-| `hasText` | `text` | Case-insensitive substring match |
-| `out` | `depth?`, `labels?` | Outgoing vertex traversal (BFS) |
-| `in` | `depth?`, `labels?` | Incoming vertex traversal (BFS) |
-| `both` | `depth?`, `labels?` | Bidirectional vertex traversal (BFS) |
-| `outE` | `labels?` | Outgoing edges as EdgeResult |
-| `inE` | `labels?` | Incoming edges as EdgeResult |
-| `bothE` | `labels?` | Both-direction edges as EdgeResult |
-| `values` | `keys?` | Extract property values |
-| `limit` | `count` | Cap results |
-| `count` | — | Count results |
-| `dedup` | — | Deduplicate by ID |
-| `repeat` | `steps`, `times` | Loop sub-pipeline N times |
-| `timeTravel` | `at` (μs) | Set query time point |
-| `compact` | `before` (μs) | Passthrough stub |
-| `expand` | `depth?` | Expand vertex: neighbor vertices + connected edges |
-| `traverse` | `decay?`, `activate?`, `max_depth?`, `min_score?` | BFS activation spread |
+| `search` | `text`, `mode?`, `match_mode?`, `at?`, `limit?`, `min_rank?` | Token-indexed full-text search. `mode` = `"greedy"` (union of any token match) or `"exact"` (intersection — must match all tokens). `match_mode` = `"prefix"` or `"word"`. Auto-injects `match_mode` from SearchSettings + optional `traverse` step. |
+| `V` | `ids?`, `at?` | All vertices or filtered by ID array. `at` enables time-travel. |
+| `E` | `ids?`, `at?` | All edges or filtered by ID array. `at` enables time-travel. |
+| `has` | `key`, `value` | Filter results by exact property key-value match (Vertex and Edge properties). |
+| `hasNot` | `key`, `value` | Negated property filter — exclude if property matches. |
+| `hasKey` | `key` | Filter by property key existence. |
+| `hasValue` | `value` | Filter by any property value match. |
+| `hasLabel` | `label` | Filter by labels array (checks both Vertex.labels and Edge.labels). |
+| `hasText` | `text` | Case-insensitive substring match against name, labels, keywords, and string properties. |
+| `out` | `depth?`, `labels?` | BFS traversal to outgoing neighbor vertices. `labels` filters by target vertex labels. `depth` controls BFS depth (default 1). |
+| `in` | `depth?`, `labels?` | BFS traversal to incoming neighbor vertices. |
+| `both` | `depth?`, `labels?` | Bidirectional BFS traversal (out + in, deduplicated). |
+| `outE` | `labels?` | Outgoing edges as Edge results. `labels` filters by Edge.labels array. |
+| `inE` | `labels?` | Incoming edges as Edge results. `labels` filters by Edge.labels array. |
+| `bothE` | `labels?` | Both-direction edges as Edge results (outE + inE, deduplicated). |
+| `values` | `keys?` | Extract specific property keys from each result (filters to listed keys). |
+| `limit` | `count` | Cap number of results to `count`. |
+| `count` | — | Replace results with a single `{count: N}` item. |
+| `dedup` | — | Deduplicate results by ID (removes duplicate vertices/edges). |
+| `repeat` | `steps`, `times` | Execute sub-pipeline `steps` iteratively `times` times. |
+| `timeTravel` | `at` (μs) | Set global query timestamp. Subsequent steps only see data as it existed at `at`. |
+| `compact` | `before` (μs) | Passthrough stub (no-op). |
+| `expand` | `depth?` | From each vertex, add its neighbor vertices + connecting edges to results (both directions). |
+| `traverse` | `decay?`, `activate?`, `max_depth?`, `min_score?` | BFS activation spread from input vertices. Score = parent_score × `decay` × edge_strength. Stops when score < `activate`. Collects results with score >= `min_score`. Defaults: decay=0.95, activate=0.2, max_depth=16, min_score=0.1. |
 
 ---
 

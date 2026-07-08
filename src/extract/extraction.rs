@@ -13,11 +13,21 @@ pub const SYSTEM_PROMPT: &str = r#"You are a precise knowledge extraction engine
 ## Rules
 
 1. **Entities**: Extract named concepts, technologies, people, organizations, projects, APIs, protocols, data formats — anything with a distinct identity mentioned in the text.
-2. **Relationships**: Extract meaningful connections between entities. Use clear, concise predicate labels (e.g. "depends_on", "implements", "extends", "uses", "part_of", "developed_by").
-3. **IDs**: Use the entity's original name directly as the ID — Chinese names stay in Chinese (e.g. "乔峰", "段誉", not "QiaoFeng", "DuanYu"). For English names, keep the original spelling. Be consistent: the same entity always uses the exact same ID across all sections.
-4. **Labels**: Each entity needs at least one label (type). Examples: ["technology"], ["concept"], ["protocol"], ["organization"], ["person"].
-5. **Properties**: Include relevant details as key-value pairs. Standard keys: "description", "mentioned_in", "version", "url".
-6. **No duplicates**: If a named entity was already extracted in a previous section, reuse its exact ID. Do NOT create a new entity with a different ID for the same thing.
+2. **Relationships**: Extract meaningful connections between entities. Use clear, concise predicate names (e.g. "depends_on", "implements", "extends", "uses", "part_of", "developed_by").
+3. **Entity fields**:
+   - `name` (REQUIRED): entity name — Chinese names stay in Chinese (e.g. "乔峰", "段誉"), English names keep original spelling. Be consistent: the same entity always uses the exact same `name` across all sections.
+   - `labels` (REQUIRED, at least 1): entity types — examples: ["technology"], ["concept"], ["protocol"], ["organization"], ["person"]
+   - `keywords` (optional): search keywords extracted from the text
+   - `properties` (optional): key-value details — standard keys: "description", "mentioned_in", "version", "url"
+4. **Relation fields**:
+   - `source` (REQUIRED): source entity name
+   - `target` (REQUIRED): target entity name
+   - `name` (REQUIRED): relationship type label
+   - `labels` (optional): relation type categories — examples: ["dependency"], ["structural"], ["hierarchical"]
+   - `keywords` (optional): search keywords for the relationship
+   - `strength` (optional, default 1.0): relationship strength between 0.0 and 1.0
+   - `properties` (optional): key-value details
+5. **No duplicates**: If a named entity was already extracted in a previous section, reuse its exact `name`. Do NOT create a new entity with a different name for the same thing.
 
 ## Output Format
 
@@ -27,8 +37,9 @@ Respond with ONLY valid JSON. No markdown fences, no extra text.
   "section_summary": "one-sentence summary of this section's topic",
   "entities": [
     {
-      "id": "EntityName",
+      "name": "EntityName",
       "labels": ["Type1", "Type2"],
+      "keywords": ["keyword1", "keyword2"],
       "properties": {
         "description": "Brief description",
         "mentioned_in": "section heading"
@@ -39,7 +50,10 @@ Respond with ONLY valid JSON. No markdown fences, no extra text.
     {
       "source": "EntityName1",
       "target": "EntityName2",
-      "label": "relationship_type",
+      "name": "relationship_type",
+      "labels": ["category1"],
+      "keywords": ["keyword1"],
+      "strength": 0.8,
       "properties": {
         "description": "Context of the relationship"
       }
@@ -81,9 +95,11 @@ struct LlmExtraction {
 #[derive(Debug, Clone, Deserialize)]
 struct LlmEntity {
     #[serde(default)]
-    id: Option<String>,
+    name: Option<String>,
     #[serde(default)]
     labels: Option<Vec<String>>,
+    #[serde(default)]
+    keywords: Option<Vec<String>>,
     #[serde(default)]
     properties: Option<HashMap<String, serde_json::Value>>,
 }
@@ -95,10 +111,18 @@ struct LlmRelation {
     #[serde(default)]
     target: Option<String>,
     #[serde(default)]
-    label: Option<String>,
+    name: Option<String>,
+    #[serde(default)]
+    labels: Option<Vec<String>>,
+    #[serde(default)]
+    keywords: Option<Vec<String>>,
+    #[serde(default = "default_strength")]
+    strength: f32,
     #[serde(default)]
     properties: Option<HashMap<String, serde_json::Value>>,
 }
+
+fn default_strength() -> f32 { 1.0 }
 
 /// Parse the LLM response text into a SectionExtraction.
 pub fn parse_response(heading: &str, response_text: &str) -> Result<SectionExtraction, String> {
@@ -117,14 +141,15 @@ pub fn parse_response(heading: &str, response_text: &str) -> Result<SectionExtra
         .unwrap_or_default()
         .into_iter()
         .filter_map(|e| {
-            let id = e.id.filter(|s| !s.is_empty())?;
+            let name = e.name.filter(|s| !s.is_empty())?;
             let labels = e.labels.unwrap_or_default();
             if labels.is_empty() {
                 return None;
             }
             Some(ExtractedEntity {
-                id,
+                name,
                 labels,
+                keywords: e.keywords.unwrap_or_default(),
                 properties: e.properties.unwrap_or_default()
                     .into_iter().map(|(k, v)| (k, json_val_to_string(v))).collect(),
             })
@@ -138,11 +163,14 @@ pub fn parse_response(heading: &str, response_text: &str) -> Result<SectionExtra
         .filter_map(|r| {
             let source = r.source.filter(|s| !s.is_empty())?;
             let target = r.target.filter(|s| !s.is_empty())?;
-            let label = r.label.filter(|s| !s.is_empty())?;
+            let name = r.name.filter(|s| !s.is_empty())?;
             Some(ExtractedRelation {
                 source,
                 target,
-                label,
+                name,
+                labels: r.labels.unwrap_or_default(),
+                keywords: r.keywords.unwrap_or_default(),
+                strength: r.strength,
                 properties: r.properties.unwrap_or_default()
                     .into_iter().map(|(k, v)| (k, json_val_to_string(v))).collect(),
             })
@@ -233,14 +261,15 @@ pub fn parse_batch_response(
             .unwrap_or_default()
             .into_iter()
             .filter_map(|e| {
-                let id = e.id.filter(|s| !s.is_empty())?;
+                let name = e.name.filter(|s| !s.is_empty())?;
                 let labels = e.labels.unwrap_or_default();
                 if labels.is_empty() {
                     return None;
                 }
                 Some(ExtractedEntity {
-                    id,
+                    name,
                     labels,
+                    keywords: e.keywords.unwrap_or_default(),
                     properties: e.properties.unwrap_or_default()
                         .into_iter().map(|(k, v)| (k, json_val_to_string(v))).collect(),
                 })
@@ -254,11 +283,14 @@ pub fn parse_batch_response(
             .filter_map(|r| {
                 let source = r.source.filter(|s| !s.is_empty())?;
                 let target = r.target.filter(|s| !s.is_empty())?;
-                let label = r.label.filter(|s| !s.is_empty())?;
+                let name = r.name.filter(|s| !s.is_empty())?;
                 Some(ExtractedRelation {
                     source,
                     target,
-                    label,
+                    name,
+                    labels: r.labels.unwrap_or_default(),
+                    keywords: r.keywords.unwrap_or_default(),
+                    strength: r.strength,
                     properties: r.properties.unwrap_or_default()
                         .into_iter().map(|(k, v)| (k, json_val_to_string(v))).collect(),
                 })
@@ -323,18 +355,20 @@ mod tests {
         let json = r#"{
             "section_summary": "Introduction to the system",
             "entities": [
-                {"id": "BionicGraph", "labels": ["project", "software"], "properties": {"description": "A graph index"}},
-                {"id": "Rust", "labels": ["language"], "properties": {}}
+                {"name": "BionicGraph", "labels": ["project", "software"], "keywords": ["graph"], "properties": {"description": "A graph index"}},
+                {"name": "Rust", "labels": ["language"], "keywords": [], "properties": {}}
             ],
             "relations": [
-                {"source": "BionicGraph", "target": "Rust", "label": "written_in", "properties": {}}
+                {"source": "BionicGraph", "target": "Rust", "name": "written_in", "labels": ["dependency"], "keywords": ["implement"], "strength": 0.9, "properties": {}}
             ]
         }"#;
         let result = parse_response("Overview", json).unwrap();
         assert_eq!(result.entities.len(), 2);
         assert_eq!(result.relations.len(), 1);
-        assert_eq!(result.entities[0].id, "BionicGraph");
-        assert_eq!(result.relations[0].label, "written_in");
+        assert_eq!(result.entities[0].name, "BionicGraph");
+        assert_eq!(result.relations[0].name, "written_in");
+        assert_eq!(result.relations[0].labels, vec!["dependency"]);
+        assert!((result.relations[0].strength - 0.9).abs() < 0.001);
     }
 
     #[test]
@@ -374,14 +408,14 @@ mod tests {
         };
         let sections = vec![(0, &s1), (1, &s2)];
         let json = r#"[
-            {"section_summary": "Section A", "entities": [{"id": "X", "labels": ["concept"]}], "relations": []},
+            {"section_summary": "Section A", "entities": [{"name": "X", "labels": ["concept"]}], "relations": []},
             {"section_summary": "Section B", "entities": [], "relations": []}
         ]"#;
         let results = parse_batch_response(json, &sections).unwrap();
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].summary, "Section A");
         assert_eq!(results[0].entities.len(), 1);
-        assert_eq!(results[0].entities[0].id, "X");
+        assert_eq!(results[0].entities[0].name, "X");
         assert_eq!(results[1].summary, "Section B");
         assert!(results[1].entities.is_empty());
     }

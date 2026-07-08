@@ -8,6 +8,7 @@ description = "Ultral fast graph indexed with bionic neural net"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 bincode = "1"
+libc = "0.2"
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 

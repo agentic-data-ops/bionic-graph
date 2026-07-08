@@ -53,8 +53,9 @@ impl ExtractionConfig {
 
 #[derive(Debug, Clone)]
 pub struct ExtractedEntity {
-    pub id: String,
+    pub name: String,
     pub labels: Vec<String>,
+    pub keywords: Vec<String>,
     pub properties: std::collections::HashMap<String, String>,
 }
 
@@ -62,7 +63,10 @@ pub struct ExtractedEntity {
 pub struct ExtractedRelation {
     pub source: String,
     pub target: String,
-    pub label: String,
+    pub name: String,
+    pub labels: Vec<String>,
+    pub keywords: Vec<String>,
+    pub strength: f32,
     pub properties: std::collections::HashMap<String, String>,
 }
 

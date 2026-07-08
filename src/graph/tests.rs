@@ -1,14 +1,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use crate::graph::crud;
-use crate::graph::graph::{Graph, GraphConfig};
+use crate::graph::graph::{Graph, GraphConfig, RedologOverrides};
 use crate::graph::gremlin::{execute_gremlin, GremlinQuery, GremlinResult, GremlinStep};
 use crate::graph::locked;
 use crate::storage::types::PropertyValue;
 
 fn setup_graph() -> (Arc<Graph>, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
-    let g = Graph::open(dir.path(), "test", GraphConfig::default()).unwrap();
+    let g = Graph::open(dir.path(), "test", &RedologOverrides::default()).unwrap();
     (g, dir)
 }
 
@@ -89,10 +89,10 @@ fn edge_create_read() {
     let (g, _) = setup_graph();
     let a = crud::create_vertex(&g, "A", &[], &[], &HashMap::new()).unwrap();
     let b = crud::create_vertex(&g, "B", &[], &[], &HashMap::new()).unwrap();
-    let eid = crud::create_edge(&g, a, b, "knows", &[], 0.9,
+    let eid = crud::create_edge(&g, a, b, "knows", &[], &[], 0.9,
         &props(&[("since", PropertyValue::Integer(2020))])).unwrap();
     let e = crud::get_edge(&g, eid).unwrap().unwrap();
-    assert_eq!(e.label, "knows");
+    assert_eq!(e.name, "knows");
     assert_eq!(e.source, a);
     assert_eq!(e.target, b);
 }
@@ -102,10 +102,10 @@ fn edge_update() {
     let (g, _) = setup_graph();
     let a = crud::create_vertex(&g, "A", &[], &[], &HashMap::new()).unwrap();
     let b = crud::create_vertex(&g, "B", &[], &[], &HashMap::new()).unwrap();
-    let eid = crud::create_edge(&g, a, b, "x", &[], 0.5, &HashMap::new()).unwrap();
-    crud::update_edge(&g, eid, Some("y"), None, Some(0.9), None, true).unwrap();
+    let eid = crud::create_edge(&g, a, b, "x", &[], &[], 0.5, &HashMap::new()).unwrap();
+    crud::update_edge(&g, eid, Some("y"), None, None, Some(0.9), None, true).unwrap();
     let e = crud::get_edge(&g, eid).unwrap().unwrap();
-    assert_eq!(e.label, "y");
+    assert_eq!(e.name, "y");
     assert!((e.strength - 0.9).abs() < 0.001);
 }
 
@@ -114,7 +114,7 @@ fn edge_soft_delete() {
     let (g, _) = setup_graph();
     let a = crud::create_vertex(&g, "A", &[], &[], &HashMap::new()).unwrap();
     let b = crud::create_vertex(&g, "B", &[], &[], &HashMap::new()).unwrap();
-    let eid = crud::create_edge(&g, a, b, "x", &[], 0.5, &HashMap::new()).unwrap();
+    let eid = crud::create_edge(&g, a, b, "x", &[], &[], 0.5, &HashMap::new()).unwrap();
     crud::soft_delete_edge(&g, eid).unwrap();
     assert!(crud::get_edge(&g, eid).unwrap().is_none());
 }
@@ -164,7 +164,7 @@ fn traversal_out() {
     let (g, _) = setup_graph();
     let a = crud::create_vertex(&g, "A", &[], &[], &HashMap::new()).unwrap();
     let b = crud::create_vertex(&g, "B", &[], &[], &HashMap::new()).unwrap();
-    crud::create_edge(&g, a, b, "e", &[], 0.9, &HashMap::new()).unwrap();
+    crud::create_edge(&g, a, b, "e", &[], &[], 0.9, &HashMap::new()).unwrap();
     let ids = vids(&run_steps(&g, vec![
         GremlinStep::V { ids: Some(vec![a]), at: None },
         GremlinStep::Out { depth: None, labels: None },
@@ -177,7 +177,7 @@ fn traversal_in() {
     let (g, _) = setup_graph();
     let a = crud::create_vertex(&g, "A", &[], &[], &HashMap::new()).unwrap();
     let b = crud::create_vertex(&g, "B", &[], &[], &HashMap::new()).unwrap();
-    crud::create_edge(&g, a, b, "e", &[], 0.9, &HashMap::new()).unwrap();
+    crud::create_edge(&g, a, b, "e", &[], &[], 0.9, &HashMap::new()).unwrap();
     let ids = vids(&run_steps(&g, vec![
         GremlinStep::V { ids: Some(vec![b]), at: None },
         GremlinStep::In { depth: None, labels: None },
@@ -190,7 +190,7 @@ fn traversal_expand() {
     let (g, _) = setup_graph();
     let a = crud::create_vertex(&g, "A", &[], &[], &HashMap::new()).unwrap();
     let b = crud::create_vertex(&g, "B", &[], &[], &HashMap::new()).unwrap();
-    crud::create_edge(&g, a, b, "e", &[], 0.9, &HashMap::new()).unwrap();
+    crud::create_edge(&g, a, b, "e", &[], &[], 0.9, &HashMap::new()).unwrap();
     let r = run_steps(&g, vec![
         GremlinStep::V { ids: Some(vec![a]), at: None },
         GremlinStep::Expand { depth: None },
@@ -246,7 +246,7 @@ fn activate_basic() {
     let (g, _) = setup_graph();
     let a = crud::create_vertex(&g, "A", &[], &[], &HashMap::new()).unwrap();
     let b = crud::create_vertex(&g, "B", &[], &[], &HashMap::new()).unwrap();
-    crud::create_edge(&g, a, b, "e", &[], 0.8, &HashMap::new()).unwrap();
+    crud::create_edge(&g, a, b, "e", &[], &[], 0.8, &HashMap::new()).unwrap();
     let r = run_steps(&g, vec![
         GremlinStep::V { ids: Some(vec![a]), at: None },
         GremlinStep::Traverse { decay: Some(1.0), activate: Some(0.0), max_depth: Some(1), min_score: Some(0.0) },
@@ -260,8 +260,8 @@ fn activate_depth() {
     let a = crud::create_vertex(&g, "A", &[], &[], &HashMap::new()).unwrap();
     let b = crud::create_vertex(&g, "B", &[], &[], &HashMap::new()).unwrap();
     let c = crud::create_vertex(&g, "C", &[], &[], &HashMap::new()).unwrap();
-    crud::create_edge(&g, a, b, "e", &[], 0.8, &HashMap::new()).unwrap();
-    crud::create_edge(&g, b, c, "e", &[], 0.6, &HashMap::new()).unwrap();
+    crud::create_edge(&g, a, b, "e", &[], &[], 0.8, &HashMap::new()).unwrap();
+    crud::create_edge(&g, b, c, "e", &[], &[], 0.6, &HashMap::new()).unwrap();
     assert_eq!(vids(&run_steps(&g, vec![
         GremlinStep::V { ids: Some(vec![a]), at: None },
         GremlinStep::Traverse { decay: Some(1.0), activate: Some(0.0), max_depth: Some(1), min_score: Some(0.0) },
@@ -277,7 +277,7 @@ fn activate_min_score() {
     let (g, _) = setup_graph();
     let a = crud::create_vertex(&g, "A", &[], &[], &HashMap::new()).unwrap();
     let b = crud::create_vertex(&g, "B", &[], &[], &HashMap::new()).unwrap();
-    crud::create_edge(&g, a, b, "e", &[], 0.5, &HashMap::new()).unwrap();
+    crud::create_edge(&g, a, b, "e", &[], &[], 0.5, &HashMap::new()).unwrap();
     let r = run_steps(&g, vec![
         GremlinStep::V { ids: Some(vec![a]), at: None },
         GremlinStep::Traverse { decay: Some(1.0), activate: Some(0.0), max_depth: Some(1), min_score: Some(0.6) },
@@ -291,14 +291,14 @@ fn activate_min_score() {
 fn data_persistence() {
     let dir = tempfile::tempdir().unwrap();
     {
-        let g = Graph::open(dir.path(), "test", GraphConfig::default()).unwrap();
+        let g = Graph::open(dir.path(), "test", &RedologOverrides::default()).unwrap();
         let vid = crud::create_vertex(&g, "Alice", &["person".into()], &["alice".into()],
             &props(&[("age", PropertyValue::Integer(30))])).unwrap();
-        crud::create_edge(&g, vid, vid, "self", &[], 1.0, &HashMap::new()).unwrap();
+        crud::create_edge(&g, vid, vid, "self", &[], &[], 1.0, &HashMap::new()).unwrap();
         g.close().unwrap();
     }
     {
-        let g = Graph::open(dir.path(), "test", GraphConfig::default()).unwrap();
+        let g = Graph::open(dir.path(), "test", &RedologOverrides::default()).unwrap();
         let r = run_steps(&g, vec![GremlinStep::V { ids: None, at: None }]);
         assert_eq!(r.len(), 1);
         if let GremlinResult::Vertex { name, properties, .. } = &r[0] {
