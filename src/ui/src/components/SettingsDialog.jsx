@@ -262,7 +262,7 @@ export default function SettingsDialog({
                 </div>
                 <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)] cursor-pointer select-none mb-2">
                   <input type="checkbox" checked={searchConfig.greedy.traverse}
-                    onChange={(e) => setSearchConfig({ ...searchConfig, greedy: { ...searchConfig.greedy, explore: e.target.checked } })}
+                    onChange={(e) => setSearchConfig({ ...searchConfig, greedy: { ...searchConfig.greedy, traverse: e.target.checked } })}
                     className="w-3.5 h-3.5 rounded border-[#3a3a3e] bg-[var(--bg-secondary)] checked:bg-[var(--accent)] checked:border-[#0a84ff] focus:ring-0 cursor-pointer" />
                   启用数据遍历
                 </label>
@@ -310,7 +310,7 @@ export default function SettingsDialog({
                 </div>
                 <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)] cursor-pointer select-none mb-2">
                   <input type="checkbox" checked={searchConfig.exact.traverse}
-                    onChange={(e) => setSearchConfig({ ...searchConfig, exact: { ...searchConfig.exact, explore: e.target.checked } })}
+                    onChange={(e) => setSearchConfig({ ...searchConfig, exact: { ...searchConfig.exact, traverse: e.target.checked } })}
                     className="w-3.5 h-3.5 rounded border-[#3a3a3e] bg-[var(--bg-secondary)] checked:bg-[var(--accent)] checked:border-[#0a84ff] focus:ring-0 cursor-pointer" />
                   启用数据遍历
                 </label>

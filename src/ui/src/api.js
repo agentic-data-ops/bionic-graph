@@ -329,29 +329,6 @@ export async function updateSearchConfig(config) {
   return res.json();
 }
 
-// ─── Neural Search Config (deprecated) ─────────────────────────
-
-/** @deprecated Use fetchSearchConfig instead. */
-export async function fetchNeuralConfig() {
-  console.warn('fetchNeuralConfig is deprecated, use fetchSearchConfig');
-  // Fallback to neural compat endpoint — wraps response in old shape.
-  const res = await fetch('/settings/neural');
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-/** @deprecated Use updateSearchConfig instead. */
-export async function updateNeuralConfig(config) {
-  console.warn('updateNeuralConfig is deprecated, use updateSearchConfig');
-  const res = await fetch('/settings/neural', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(config),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
 // ─── Document Extraction (Backend Task) ─────────────────────────
 
 /** Submit a document for background extraction. Returns { task_id, status } */

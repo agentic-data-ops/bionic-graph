@@ -100,11 +100,30 @@ impl Default for StorageConfig {
 
 // ─── Cluster ─────────────────────────────────────────────────────
 
+/// Role of this node in the cluster.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NodeRole {
+    /// Single master — handles reads + writes.
+    #[serde(rename = "master")]
+    Master,
+    /// Read replica — proxies writes to the master.
+    #[serde(rename = "worker")]
+    Worker,
+}
+
+impl Default for NodeRole {
+    fn default() -> Self {
+        Self::Master
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ClusterConfig {
     /// 是否启用集群模式
     pub enabled: bool,
+    /// 节点角色: "master" 或 "worker"
+    pub role: NodeRole,
     /// 节点间通信监听地址
     pub bind_addr: String,
     /// Worker 专属：Master 的地址
@@ -121,6 +140,7 @@ impl Default for ClusterConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            role: NodeRole::Master,
             bind_addr: "0.0.0.0:9090".to_string(),
             master_addr: None,
             heartbeat_interval_secs: 5,
@@ -192,6 +212,35 @@ impl Default for SearchSettings {
     }
 }
 
+// ─── Rank ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RankConfig {
+    /// 更新顶点和边时自增 Rank
+    pub auto_inc_rank_when_update: bool,
+    /// 读取顶点和边时自增 Rank
+    pub auto_inc_rank_when_read: bool,
+    /// 不活跃时递减 Rank
+    pub auto_dec_rank_when_inactive: bool,
+    /// 访问多长时间（秒）之后变为不活跃
+    pub inactive_after_accessed_secs: u64,
+    /// 不活跃扫描间隔（秒）
+    pub inactive_rank_update_period: u64,
+}
+
+impl Default for RankConfig {
+    fn default() -> Self {
+        Self {
+            auto_inc_rank_when_update: true,
+            auto_inc_rank_when_read: true,
+            auto_dec_rank_when_inactive: true,
+            inactive_after_accessed_secs: 1_296_000, // 15 days
+            inactive_rank_update_period: 86_400,    // 1 day
+        }
+    }
+}
+
 // ─── Top-level Settings ──────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -202,6 +251,7 @@ pub struct Settings {
     pub storage: StorageConfig,
     pub cluster: ClusterConfig,
     pub search: SearchSettings,
+    pub rank: RankConfig,
 }
 
 impl Default for Settings {
@@ -212,6 +262,7 @@ impl Default for Settings {
             storage: StorageConfig::default(),
             cluster: ClusterConfig::default(),
             search: SearchSettings::default(),
+            rank: RankConfig::default(),
         }
     }
 }

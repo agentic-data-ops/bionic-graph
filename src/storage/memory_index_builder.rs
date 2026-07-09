@@ -32,6 +32,7 @@ pub fn build_memory_index(idx_file: &IndexFile) -> StorageResult<MemoryIndex> {
                 if rec.status != DataStatus::Deleted {
                     mem.vertices.insert(rec.vertex_id, ptr);
                     mem.ranks.insert(rec.rank, ptr);
+                    mem.atime_index.insert(rec.atime, ptr);
                 }
             }
             ChunkType::Edge => {
@@ -39,6 +40,7 @@ pub fn build_memory_index(idx_file: &IndexFile) -> StorageResult<MemoryIndex> {
                 if rec.status != DataStatus::Deleted {
                     mem.edges.insert(rec.edge_id, ptr);
                     mem.ranks.insert(rec.rank, ptr);
+                    mem.atime_index.insert(rec.atime, ptr);
                     mem.adjacency.add_edge(rec.edge_id, rec.source, rec.target, ptr);
                 }
             }

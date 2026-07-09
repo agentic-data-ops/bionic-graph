@@ -20,9 +20,6 @@ async function main() {
   await page.route('**/settings', (route) => {
     route.fulfill({ status: 200, body: JSON.stringify({}) });
   });
-  await page.route('**/settings/neural', (route) => {
-    route.fulfill({ status: 200, body: JSON.stringify({}) });
-  });
 
   // Mock addVertex / addEdge — catch all /vertices and /edges calls
   let vertexCreated = false, edgeCreated = false;

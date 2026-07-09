@@ -19,8 +19,9 @@ use crate::config::Settings;
 use crate::documents::DocumentManager;
 use crate::extract::task_manager::{ExtractionTaskManager, TaskResponse, TaskStatus, default_extraction_steps, update_step, compute_overall_pct};
 use crate::graph::graph::Graph;
-use crate::graph::gremlin::{execute_gremlin, GremlinQuery, GremlinResponse};
+use crate::graph::gremlin::{execute_gremlin, GremlinQuery, GremlinResponse, GremlinResult};
 use crate::graph_manager::GraphManager;
+use crate::cluster::node::NodeRegistry;
 
 pub mod settings;
 use crate::storage::types::{PropertyValue, StorageResult};
@@ -32,17 +33,23 @@ pub struct AppState {
     pub settings: Arc<Mutex<Settings>>,
     pub doc_mgr: DocumentManager,
     pub task_mgr: ExtractionTaskManager,
+    /// NodeRegistry for cluster-mode broadcasts (None in standalone).
+    pub cluster_registry: Option<Arc<NodeRegistry>>,
 }
 
 /// Build the axum router for all block-engine graph routes.
-pub fn build_router(gm: Arc<GraphManager>) -> axum::Router {
-    let settings = crate::config::load_or_create_settings();
+pub fn build_router(
+    gm: Arc<GraphManager>,
+    settings: Settings,
+    cluster_registry: Option<Arc<NodeRegistry>>,
+) -> axum::Router {
     let doc_mgr = DocumentManager::new(&settings.storage.data_dir);
     let state = AppState {
         gm,
         settings: Arc::new(Mutex::new(settings)),
         doc_mgr,
         task_mgr: ExtractionTaskManager::new(),
+        cluster_registry,
     };
 
     use axum::routing::{delete, get, post, put};
@@ -61,15 +68,17 @@ pub fn build_router(gm: Arc<GraphManager>) -> axum::Router {
         .route("/vertices", post(create_vertex))
         .route("/vertices/:id", put(update_vertex))
         .route("/vertices/:id", delete(delete_vertex))
+        .route("/vertices/:id/meta", get(handle_get_vertex_meta))
+        .route("/vertices/:id/meta", put(handle_update_vertex_meta))
         // Edge CRUD
         .route("/edges", post(create_edge))
         .route("/edges/:id", put(update_edge))
         .route("/edges/:id", delete(delete_edge))
+        .route("/edges/:id/meta", get(handle_get_edge_meta))
+        .route("/edges/:id/meta", put(handle_update_edge_meta))
         // Settings
         .route("/settings/search", get(settings::get_search_settings))
         .route("/settings/search", put(settings::update_search_settings))
-        .route("/settings/neural", get(settings::get_neural_settings))
-        .route("/settings/neural", put(settings::update_neural_settings))
         .route("/settings/llm", get(settings::get_llm_settings))
         .route("/settings/llm", put(settings::update_llm_settings))
         // Health
@@ -122,7 +131,7 @@ pub async fn health_check(
 // ── Helper: resolve graph name from header or query ─────────────────────────
 
 fn resolve_graph(state: &AppState, graph_name: Option<&str>) -> StorageResult<Arc<Graph>> {
-    let name = graph_name.unwrap_or("default");
+    let name = graph_name.unwrap_or("graph0");
     state.gm.get(name)
 }
 
@@ -181,6 +190,74 @@ pub async fn handle_gremlin(
     }
 
     let response = execute_gremlin(&graph, &query);
+
+    // If this node is a worker in cluster mode, report read vertex/edge IDs
+    // to the master so it can update their rank and atime.
+    if response.success && !response.data.is_empty() {
+        let settings = state.settings.lock().unwrap();
+        if settings.cluster.enabled && settings.cluster.role == crate::config::NodeRole::Worker {
+            if let Some(ref master_addr) = settings.cluster.master_addr {
+                let mut vertex_ids = Vec::new();
+                let mut edge_ids = Vec::new();
+                for item in &response.data {
+                    match item {
+                        crate::graph::gremlin::GremlinResult::Vertex { id, .. } => {
+                            vertex_ids.push(*id);
+                        }
+                        crate::graph::gremlin::GremlinResult::Edge { id, .. } => {
+                            edge_ids.push(*id);
+                        }
+                        _ => {}
+                    }
+                }
+                if !vertex_ids.is_empty() || !edge_ids.is_empty() {
+                    let master_addr = master_addr.clone();
+                    std::thread::spawn(move || {
+                        let client = reqwest::blocking::Client::new();
+                        let touch_url = format!("http://{}/cluster/touch", master_addr);
+                        let body = serde_json::json!({
+                            "vertex_ids": vertex_ids,
+                            "edge_ids": edge_ids,
+                        });
+                        if let Err(e) = client.post(&touch_url).json(&body).send() {
+                            log::debug!("touch report to master failed: {}", e);
+                        }
+                    });
+                }
+            }
+        }
+    }
+
+    // On the master (standalone or cluster), call process_touch directly
+    // to persist IndexUpdate entries to the redo log and optionally broadcast.
+    if response.success && !response.data.is_empty() {
+        let settings = state.settings.lock().unwrap();
+        if !settings.cluster.enabled || settings.cluster.role == crate::config::NodeRole::Master {
+            let mut vertex_ids = Vec::new();
+            let mut edge_ids = Vec::new();
+            for item in &response.data {
+                match item {
+                    GremlinResult::Vertex { id, .. } => vertex_ids.push(*id),
+                    GremlinResult::Edge { id, .. } => edge_ids.push(*id),
+                    _ => {}
+                }
+            }
+            let has_ids = !vertex_ids.is_empty() || !edge_ids.is_empty();
+            let reg = state.cluster_registry.clone();
+            let do_touch = settings.rank.auto_inc_rank_when_read;
+            drop(settings);
+            if has_ids && do_touch {
+                if let Ok(g) = state.gm.get("default") {
+                    tokio::spawn(async move {
+                        crate::cluster::server::process_touch(
+                            &g, &vertex_ids, &edge_ids, reg.as_deref(),
+                        ).await;
+                    });
+                }
+            }
+        }
+    }
+
     Json(response)
 }
 
@@ -332,6 +409,65 @@ pub async fn delete_vertex(
     }
 }
 
+// ── GET /vertices/:id/meta ──────────────────────────────────────────────────
+
+/// Read a vertex's full metadata (status, version, ctime, mtime, atime, rank).
+/// Does NOT trigger any rank/atime update.
+pub async fn handle_get_vertex_meta(
+    State(state): State<AppState>,
+    Path(id): Path<u32>,
+) -> Json<serde_json::Value> {
+    let graph = match resolve_graph(&state, None) {
+        Ok(g) => g,
+        Err(e) => return Json(serde_json::json!({"error": e.to_string()})),
+    };
+    let _vlock = graph.locks.read_vertex(id);
+    let result = crate::graph::crud::get_vertex_index_record(&graph, id);
+    drop(_vlock);
+    match result {
+        Ok(Some(rec)) => Json(serde_json::json!({
+            "success": true,
+            "status": rec.status as u8,
+            "version": rec.version,
+            "ctime": rec.ctime,
+            "mtime": rec.mtime,
+            "atime": rec.atime,
+            "rank": rec.rank,
+        })),
+        Ok(None) => Json(serde_json::json!({"success": false, "error": "not found"})),
+        Err(e) => Json(serde_json::json!({"success": false, "error": e.to_string()})),
+    }
+}
+
+// ── PUT /vertices/:id/meta ─────────────────────────────────────────────────
+
+/// Update a vertex's rank and/or atime. Body: `{"rank": u32, "atime": u64}`.
+/// Either field is optional — only provided fields are updated.
+pub async fn handle_update_vertex_meta(
+    State(state): State<AppState>,
+    Path(id): Path<u32>,
+    Json(body): Json<serde_json::Value>,
+) -> StatusCode {
+    let new_rank = body.get("rank").and_then(|v| v.as_u64()).map(|v| v as u32);
+    let new_atime = body.get("atime").and_then(|v| v.as_u64());
+    if new_rank.is_none() && new_atime.is_none() {
+        return StatusCode::BAD_REQUEST;
+    }
+    let graph = match resolve_graph(&state, None) {
+        Ok(g) => g,
+        Err(_) => return StatusCode::NOT_FOUND,
+    };
+    let _meta = graph.locks.read_metadata();
+    let _vlock = graph.locks.write_vertex(id);
+    let result = crate::graph::crud::update_vertex_meta(&graph, id, new_rank, new_atime);
+    drop(_vlock);
+    drop(_meta);
+    match result {
+        Ok(()) => StatusCode::OK,
+        Err(_) => StatusCode::NOT_FOUND,
+    }
+}
+
 // ── POST /edges ─────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -435,6 +571,64 @@ pub async fn delete_edge(
 
     match result {
         Ok(_) => StatusCode::OK,
+        Err(_) => StatusCode::NOT_FOUND,
+    }
+}
+
+// ── GET /edges/:id/meta ────────────────────────────────────────────────────
+
+/// Read an edge's full metadata (status, version, ctime, mtime, atime, rank).
+/// Does NOT trigger any rank/atime update.
+pub async fn handle_get_edge_meta(
+    State(state): State<AppState>,
+    Path(id): Path<u32>,
+) -> Json<serde_json::Value> {
+    let graph = match resolve_graph(&state, None) {
+        Ok(g) => g,
+        Err(e) => return Json(serde_json::json!({"error": e.to_string()})),
+    };
+    let _elock = graph.locks.read_edge(id);
+    let result = crate::graph::crud::get_edge_index_record(&graph, id);
+    drop(_elock);
+    match result {
+        Ok(Some(rec)) => Json(serde_json::json!({
+            "success": true,
+            "status": rec.status as u8,
+            "version": rec.version,
+            "ctime": rec.ctime,
+            "mtime": rec.mtime,
+            "atime": rec.atime,
+            "rank": rec.rank,
+        })),
+        Ok(None) => Json(serde_json::json!({"success": false, "error": "not found"})),
+        Err(e) => Json(serde_json::json!({"success": false, "error": e.to_string()})),
+    }
+}
+
+// ── PUT /edges/:id/meta ───────────────────────────────────────────────────
+
+/// Update an edge's rank and/or atime. Body: `{"rank": u32, "atime": u64}`.
+pub async fn handle_update_edge_meta(
+    State(state): State<AppState>,
+    Path(id): Path<u32>,
+    Json(body): Json<serde_json::Value>,
+) -> StatusCode {
+    let new_rank = body.get("rank").and_then(|v| v.as_u64()).map(|v| v as u32);
+    let new_atime = body.get("atime").and_then(|v| v.as_u64());
+    if new_rank.is_none() && new_atime.is_none() {
+        return StatusCode::BAD_REQUEST;
+    }
+    let graph = match resolve_graph(&state, None) {
+        Ok(g) => g,
+        Err(_) => return StatusCode::NOT_FOUND,
+    };
+    let _meta = graph.locks.read_metadata();
+    let _elock = graph.locks.write_edge(id);
+    let result = crate::graph::crud::update_edge_meta(&graph, id, new_rank, new_atime);
+    drop(_elock);
+    drop(_meta);
+    match result {
+        Ok(()) => StatusCode::OK,
         Err(_) => StatusCode::NOT_FOUND,
     }
 }

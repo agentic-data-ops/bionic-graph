@@ -1,8 +1,12 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Parser;
-use bionic_graph::config::load_or_create_settings;
+use bionic_graph::cluster::node::NodeRegistry;
+use bionic_graph::cluster::server::{build_cluster_router, ClusterAppState};
+use bionic_graph::config::load_or_create_settings_from;
+use bionic_graph::config::NodeRole;
 use bionic_graph::gremlin::build_router as build_new_router;
 use bionic_graph::graph::graph::RedologOverrides;
 use bionic_graph::graph_manager::GraphManager;
@@ -42,7 +46,7 @@ async fn main() {
     .init();
 
     let args = Args::parse();
-    let mut settings = load_or_create_settings();
+    let mut settings = load_or_create_settings_from(args.config.map(std::path::PathBuf::from));
 
     if let Some(dir) = &args.data_dir {
         settings.storage.data_dir = dir.clone();
@@ -52,6 +56,33 @@ async fn main() {
     }
     if let Some(p) = args.port {
         settings.server.port = p;
+    }
+
+    // Shared shutdown signal for all servers.
+    let shutdown = Arc::new(tokio::sync::Notify::new());
+
+    // Signal handler task — notifies shutdown on SIGINT / SIGTERM.
+    {
+        let sig = shutdown.clone();
+        tokio::spawn(async move {
+            #[cfg(unix)]
+            {
+                let mut term = tokio::signal::unix::signal(
+                    tokio::signal::unix::SignalKind::terminate(),
+                )
+                .expect("Failed to install SIGTERM handler");
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {},
+                    _ = term.recv() => {},
+                }
+            }
+            #[cfg(not(unix))]
+            tokio::signal::ctrl_c()
+                .await
+                .expect("Failed to install Ctrl+C handler");
+            log::info!("Shutdown signal received — finishing requests...");
+            sig.notify_one();
+        });
     }
 
     log::info!(
@@ -69,40 +100,147 @@ async fn main() {
     };
     let gm = Arc::new(GraphManager::new(data_dir, redolog_overrides));
 
-    // Build the new router.
-    let app = build_new_router(gm.clone());
+    // Ensure the default graph "graph0" exists on first startup.
+    if let Err(e) = gm.get("graph0") {
+        log::warn!("Failed to create default graph 'graph0': {}", e);
+    }
 
-    let addr: SocketAddr = format!("{}:{}", settings.server.host, settings.server.port)
+    // Create cluster registry early so it can be shared between
+    // the main API server and the cluster communication server.
+    let cluster_registry: Option<Arc<bionic_graph::cluster::node::NodeRegistry>> =
+        if settings.cluster.enabled {
+            Some(Arc::new(bionic_graph::cluster::node::NodeRegistry::new(&settings.cluster)))
+        } else {
+            None
+        };
+
+    // ── Main API server ──────────────────────────────────────────────────────
+    let app = build_new_router(gm.clone(), settings.clone(), cluster_registry.clone());
+
+    let api_addr: SocketAddr = format!("{}:{}", settings.server.host, settings.server.port)
         .parse()
         .expect("Invalid address");
 
-    log_info_banner(&addr);
+    log_info_banner(&api_addr);
 
-    let listener = tokio::net::TcpListener::bind(addr)
+    let api_listener = tokio::net::TcpListener::bind(api_addr)
         .await
-        .expect("Failed to bind address");
+        .expect("Failed to bind API address");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            #[cfg(unix)]
-            {
-                let mut term = tokio::signal::unix::signal(
-                    tokio::signal::unix::SignalKind::terminate(),
-                )
-                .expect("Failed to install SIGTERM handler");
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {},
-                    _ = term.recv() => {},
+    let main_shutdown = shutdown.clone();
+    let api_server = async {
+        axum::serve(api_listener, app)
+            .with_graceful_shutdown(async move { main_shutdown.notified().await })
+            .await
+            .expect("Main server error");
+    };
+
+    // ── Cluster server ───────────────────────────────────────────────────────
+    let is_master = settings.cluster.role == NodeRole::Master;
+
+    let cluster_server = async {
+        if !settings.cluster.enabled {
+            return;
+        }
+
+        log::info!(
+            "Cluster mode enabled — role: {}, bind: {}",
+            if is_master { "master" } else { "worker" },
+            settings.cluster.bind_addr,
+        );
+
+        let registry = cluster_registry.clone().unwrap();
+        let api_addr_str = format!("{}:{}", settings.server.host, settings.server.port);
+        let cluster_state = ClusterAppState {
+            gm: gm.clone(),
+            registry: registry.clone(),
+            is_master,
+            api_addr: api_addr_str,
+        };
+        let cluster_router = build_cluster_router(cluster_state);
+
+        let cluster_addr: SocketAddr = settings
+            .cluster
+            .bind_addr
+            .parse()
+            .expect("Invalid cluster bind address");
+
+        let cluster_listener = tokio::net::TcpListener::bind(cluster_addr)
+            .await
+            .expect("Failed to bind cluster address");
+
+        // If master, spawn heartbeat cleanup task.
+        if is_master {
+            let reg = registry.clone();
+            let interval = Duration::from_secs(settings.cluster.heartbeat_interval_secs);
+            let sig = shutdown.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = tokio::time::sleep(interval) => {
+                            let expired = reg.purge_expired();
+                            if !expired.is_empty() {
+                                log::info!("Purged {} expired worker(s): {:?}", expired.len(), expired);
+                            }
+                        }
+                        _ = sig.notified() => break,
+                    }
                 }
+            });
+        }
+
+        // If worker, start heartbeat sender.
+        if !is_master {
+            if let Some(ref master_addr) = settings.cluster.master_addr {
+                let master_cluster = master_addr.clone();
+                let interval = Duration::from_secs(settings.cluster.heartbeat_interval_secs);
+                let sig = shutdown.clone();
+                tokio::spawn(async move {
+                    let client = reqwest::Client::new();
+                    loop {
+                        let heartbeat = bionic_graph::cluster::node::ClusterMessage::Heartbeat {
+                            node_id: "worker".to_string(),
+                            api_addr: settings.server.host.clone(),
+                            cluster_addr: settings.cluster.bind_addr.clone(),
+                            last_acked_seq: 0,
+                        };
+                        let url = format!("http://{}/cluster/heartbeat", master_cluster);
+                        if let Err(e) = client
+                            .post(&url)
+                            .json(&heartbeat)
+                            .send()
+                            .await
+                        {
+                            log::warn!("Heartbeat to master failed: {}", e);
+                        }
+                        tokio::select! {
+                            _ = tokio::time::sleep(interval) => {},
+                            _ = sig.notified() => break,
+                        }
+                    }
+                });
             }
-            #[cfg(not(unix))]
-            tokio::signal::ctrl_c()
-                .await
-                .expect("Failed to install Ctrl+C handler");
-            log::info!("Shutdown signal received — finishing requests...");
-        })
-        .await
-        .expect("Server error");
+        }
+
+        let cluster_shutdown = shutdown.clone();
+        axum::serve(cluster_listener, cluster_router)
+            .with_graceful_shutdown(async move { cluster_shutdown.notified().await })
+            .await
+            .expect("Cluster server error");
+    };
+
+    // Start rank decay background task (if enabled).
+    if let Ok(default_graph) = gm.get("default") {
+        bionic_graph::graph::rank_decay::spawn_rank_decay(
+            default_graph,
+            settings.rank.auto_dec_rank_when_inactive,
+            settings.rank.inactive_after_accessed_secs,
+            settings.rank.inactive_rank_update_period,
+        );
+    }
+
+    // Run both servers concurrently.
+    tokio::join!(api_server, cluster_server);
 
     log::info!("Server shut down. Goodbye.");
 

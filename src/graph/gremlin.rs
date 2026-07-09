@@ -115,6 +115,12 @@ pub enum GremlinStep {
         max_depth: Option<u8>,
         min_score: Option<f32>,
     },
+    #[serde(rename = "rank")]
+    Rank {
+        limit: Option<u32>,
+        /// Minimum rank threshold (inclusive).
+        min: Option<u32>,
+    },
 }
 
 /// A Gremlin query — a sequence of steps to execute.
@@ -274,6 +280,7 @@ fn execute_step(
             max_depth,
             min_score,
         } => step_traverse(graph, input, *decay, *activate, *max_depth, *min_score),
+        GremlinStep::Rank { limit, min } => step_rank(graph, input, *limit, *min),
     }
 }
 
@@ -1098,6 +1105,86 @@ fn step_traverse(
     }
 
     Ok(gremlin_results)
+}
+
+/// Gremlin `rank` step — return top results by rank.
+///
+/// As a source step (empty input): iterate rank index descending.
+/// As a filter step: sort existing results by rank.
+fn step_rank(
+    graph: &Arc<Graph>,
+    input: Vec<GremlinResult>,
+    limit: Option<u32>,
+    min_rank: Option<u32>,
+) -> StorageResult<Vec<GremlinResult>> {
+    let min = min_rank.unwrap_or(0);
+    let limit = limit.unwrap_or(u32::MAX) as usize;
+
+    if input.is_empty() {
+        // Source mode: iterate rank index descending.
+        let mi = graph.memory_index.read().unwrap();
+        let ptrs = mi.ranks.all_by_rank();
+        let mut results = Vec::new();
+
+        for &&ptr in ptrs.iter() {
+            if results.len() >= limit {
+                break;
+            }
+            // Try vertex first.
+            if let Ok(rec) = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset) {
+                if rec.rank >= min {
+                    if let Ok(Some(v)) = crud::read_vertex_by_record(graph, &rec, None) {
+                        results.push(GremlinResult::from_vertex(&v, Some(&rec), None));
+                        continue;
+                    }
+                }
+            }
+            // Try edge.
+            if results.len() < limit {
+                if let Ok(rec) = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset) {
+                    if rec.rank >= min {
+                        if let Ok(Some(e)) = crud::read_edge_by_record(graph, &rec, None) {
+                            results.push(GremlinResult::from_edge(&e, Some(&rec), None));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(results)
+    } else {
+        // Filter mode: rank-sort existing results.
+        let mi = graph.memory_index.read().unwrap();
+        let mut ranked: Vec<(u32, GremlinResult)> = Vec::new();
+
+        for item in input {
+            let id = match item {
+                GremlinResult::Vertex { id, .. } => id,
+                GremlinResult::Edge { id, .. } => id,
+                _ => continue,
+            };
+            let rank = match &item {
+                GremlinResult::Vertex { .. } => {
+                    mi.vertices.get(id).and_then(|ptr| {
+                        graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset).ok()
+                    }).map(|r| r.rank).unwrap_or(0)
+                }
+                GremlinResult::Edge { .. } => {
+                    mi.edges.get(id).and_then(|ptr| {
+                        graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset).ok()
+                    }).map(|r| r.rank).unwrap_or(0)
+                }
+                _ => 0,
+            };
+            if rank >= min {
+                ranked.push((rank, item));
+            }
+        }
+
+        ranked.sort_by(|a, b| b.0.cmp(&a.0));
+        ranked.truncate(limit);
+
+        Ok(ranked.into_iter().map(|(_, r)| r).collect())
+    }
 }
 
 // ── Property value helpers ───────────────────────────────────────────────────

@@ -26,8 +26,8 @@ Unlike relational or document databases, Bionic-Graph is optimized for **graph t
 │  /settings | /extract  | /graphs                             │
 ├──────────────────────────────────────────────────────────────┤
 │              Graph Engine (token-indexed query)                │
-│  Gremlin pipeline (24 steps)  |  BFS+DFS traversal            │
-│  Lock-safe CRUD  |  jieba-rs tokenizer  |  rank tracking      │
+│  Gremlin pipeline (25 steps)  |  BFS+DFS traversal            │
+│  Lock-safe CRUD  |  jieba-rs tokenizer  |  rank/atime tracking│
 ├──────────────────────────────────────────────────────────────┤
 │              In-Memory Index (rebuild at startup)              │
 │  BTreeMap (vertex/edge by ID)  |  TokenMap (prefix + word)    │

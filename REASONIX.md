@@ -19,12 +19,12 @@
 ```
 src/
 ├── main.rs                  # CLI entry + HTTP server bootstrap
-├── lib.rs                   # Crate root — 11 pub mod declarations
+├── lib.rs                   # Crate root — 11+ pub mod declarations
 ├── config/                  # Settings structs + JSON file loader
 │   ├── mod.rs               # Re-exports
 │   ├── loader.rs            # ~/.config/bionic-graph/settings.json load/save
 │   └── settings.rs          # ServerConfig, LlmConfig, StorageConfig,
-│                            #   ClusterConfig, SearchSettings (greedy/exact)
+│                            #   ClusterConfig, SearchSettings, RankConfig
 ├── storage/                 # Block-based storage engine (16KB blocks, 64B chunks)
 │   ├── mod.rs               # Re-exports 9 submodules
 │   ├── types.rs             # Fundamental types, constants, binary layouts
@@ -36,7 +36,8 @@ src/
 │   │                        #   size (64MB) + time (15min, configurable) rotation,
 │   │                        #   checkpoint protocol, CRC32, replay
 │   ├── index_file.rs        # On-disk index (64B fixed records: Vertex/Edge/Token)
-│   ├── memory_index.rs      # In-memory BTreeMap/HashMap indexes
+│   ├── memory_index.rs      # In-memory BTreeMap/HashMap indexes (vertex, edge,
+│   │                        #   token, rank, atime, adjacency)
 │   └── memory_index_builder.rs  # Rebuild in-memory index at startup
 ├── lock/                    # Striped RwLock pools for concurrency
 │   ├── mod.rs
@@ -45,14 +46,15 @@ src/
 │   ├── mod.rs               # Re-exports
 │   ├── graph.rs             # Graph struct (facade), GraphConfig, lifecycle
 │   ├── crud.rs              # Vertex/Edge CRUD with WAL + token extraction + rank
-│   ├── gremlin.rs           # Gremlin pipeline step engine (24 steps)
+│   ├── gremlin.rs           # Gremlin pipeline step engine (25 steps)
 │   ├── locked.rs            # Lock-safe CRUD wrappers
 │   ├── serialize.rs         # Bincode serialization with JSON properties
 │   ├── tokenizer.rs         # jieba-rs tokenizer, stop-words, min length 2
+│   ├── rank_decay.rs        # Periodic rank decay background task
 │   └── tests.rs             # #[cfg(test)] integration tests (90+)
 ├── gremlin/                 # REST API routes + handlers (axum)
-│   ├── mod.rs               # AppState, build_router (29 routes), handlers
-│   └── settings.rs          # GET/PUT /settings/search + legacy /settings/neural
+│   ├── mod.rs               # AppState, build_router (30+ routes), handlers
+│   └── settings.rs          # GET/PUT /settings/search, /settings/llm
 ├── graph_manager.rs         # Multi-graph manager (HashMap<String, Arc<Graph>>), close_all()
 ├── documents.rs             # Document CRUD (file storage + JSON index)
 ├── extract/                 # LLM-based document extraction pipeline
@@ -68,7 +70,7 @@ src/
 │   └── openai.rs            # GET /v1/models + POST /v1/chat/completions (SSE)
 ├── cluster/                 # Master-worker cluster mode
 │   ├── mod.rs
-│   ├── config.rs            # ClusterConfig
+│   ├── server.rs            # Cluster HTTP server (heartbeat/forward/replicate/touch)
 │   ├── node.rs              # NodeRegistry (master/worker)
 │   ├── forward.rs           # Write forwarding (worker → master)
 │   └── replication.rs       # Redo-log replication
@@ -90,7 +92,7 @@ src/ui/
 │   │   ├── GraphViewer.jsx  # vis-network Canvas 2D visualization
 │   │   ├── GraphManagerDialog.jsx  # Graph library management
 │   │   ├── KnowledgeBase.jsx       # Document management dialog
-│   │   ├── SettingsDialog.jsx      # Settings panel
+│   │   ├── SettingsDialog.jsx      # Settings panel (搜索 + 排序 tabs)
 │   │   └── PropertyPanel.jsx       # Node/edge property inspector
 │   └── locales/             # i18n (en/zh)
 ├── test/
@@ -141,10 +143,10 @@ App.jsx
 │   └── ChatInput.jsx    — 输入框 + 模式控制栏
 ├── KnowledgeBase.jsx    — 知识库弹窗
 ├── GraphManagerDialog.jsx — 图库管理弹窗
-└── SettingsDialog.jsx   — 设置弹窗
+└── SettingsDialog.jsx   — 设置弹窗（搜索/排序/LLM 三个页签）
 ```
 
-## Gremlin Steps (24 total)
+## Gremlin Steps (25 total)
 
 | Step | Parameters | Description |
 |------|-----------|-------------|
@@ -160,8 +162,9 @@ App.jsx
 | `compact` | `before` | Passthrough stub |
 | `expand` | `depth?` | Add neighbors + edges |
 | `traverse` | `decay?`, `activate?`, `max_depth?`, `min_score?` | BFS activation spread |
+| `rank` | `limit?`, `min?` | Return top results by rank (source or filter step) |
 
-## REST API Endpoints (29 routes)
+## REST API Endpoints (31+ routes)
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -171,9 +174,11 @@ App.jsx
 | POST | `/gremlin` | Gremlin pipeline query |
 | GET | `/search` | Token search shortcut |
 | POST/PUT/DELETE | `/vertices`, `/vertices/:id` | Vertex CRUD |
+| GET/PUT | `/vertices/:id/meta` | Vertex metadata (rank/atime/status/version/timestamps) |
 | POST/PUT/DELETE | `/edges`, `/edges/:id` | Edge CRUD |
+| GET/PUT | `/edges/:id/meta` | Edge metadata |
 | GET/PUT | `/settings/search` | Search settings |
-| GET/PUT | `/settings/neural` | Legacy compat wrapper |
+| GET/PUT | `/settings/llm` | LLM provider config |
 | GET | `/documents` | List documents |
 | POST | `/documents` | Create document |
 | GET | `/documents/:id` | Get document metadata |
@@ -186,79 +191,94 @@ App.jsx
 | GET | `/maas/openai/v1/models` | Model listing |
 | POST | `/maas/openai/v1/chat/completions` | Chat proxy (SSE) |
 
-> Graph name via `?graph=` query param (default `"default"`). DELETE supports `?force=true`.
+> Default graph: `"graph0"` when `?graph=` omitted. DELETE supports `?force=true`.
 
-## WAL Write Path Architecture
+## RankConfig
 
-The WAL uses a FIFO queue + background batch writer:
-
-```
-CRUD → encode_entry() → send(WriterMessage::Entry) → wait(Condvar, epoch)
-       Background writer thread:
-       recv() → accumulate batch (≤128 entries, 10ms timeout)
-             → check rotation (size 64MB OR age 15min)
-             → write_all(batch) → fsync → advance_epoch → notify_all
-```
-
-Caller blocks until the writer confirms durability. Features:
-- **Batching**: up to 128 entries per fsync (vs. 1 entry per fsync before)
-- **Ordering**: FIFO channel guarantees operation sequence
-- **Crash safety**: WAL file is a real on-disk file (not orphaned FD)
-- **Checkpoint on rotation**: flush dirty data blocks before deleting old WAL
-- **SIGINT grace**: `GraphManager::close_all()` flushes all graphs + checkpoints WALs
-
-## GraphStorageConfig
-
-Per-graph config in `config.json`:
+Settings under `"rank"` key in settings.json:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `cache_capacity` | usize | 4096 | LRU block cache entries (×16KB = 64 MB) |
-| `max_dirty_age_secs` | Option<u64> | 60 | Auto-flush dirty blocks after N seconds |
-| `rotation_threshold_mb` | u64 | 64 | WAL size threshold for rotation (MB) |
-| `rotation_max_age_secs` | Option<u64> | 900 | WAL age threshold (seconds, 15 min) |
-| `free_list_target` | usize | 128 | Bitmap free-list pre-fill count |
+| `auto_inc_rank_when_update` | bool | true | Increment rank on vertex/edge update |
+| `auto_inc_rank_when_read` | bool | true | Increment rank on vertex/edge read |
+| `auto_dec_rank_when_inactive` | bool | true | Periodically decay rank for inactive entities |
+| `inactive_after_accessed_secs` | u64 | 1296000 | Seconds of inactivity before considered stale (15 days) |
+| `inactive_rank_update_period` | u64 | 86400 | Rank decay scan interval in seconds (1 day) |
+
+## MemoryIndex
+
+| Index | Type | Purpose |
+|-------|------|---------|
+| `vertices` | BTreeMap<u32, IndexPointer> | Vertex ID → pointer |
+| `edges` | BTreeMap<u32, IndexPointer> | Edge ID → pointer |
+| `tokens` | BTreeMap<String, Vec<IndexPointer>> | Token string → pointers (prefix search) |
+| `ranks` | BTreeMap<u32, Vec<IndexPointer>> | Rank → pointers (descending order for hot queries) |
+| `atime_index` | BTreeMap<u64, Vec<IndexPointer>> | Atime → pointers (range scan for inactivity decay) |
+| `adjacency` | HashMap | Vertex → outgoing/incoming edges |
+| `entity_tokens` | HashMap<(u8, u32), Vec<String>> | Entity → token strings (for hard delete cleanup) |
+
+## Cluster Architecture
+
+```
+┌─────────┐     ┌─────────┐     ┌─────────┐
+│ Worker 1│     │ Master  │     │ Worker 2│
+│ (read)  │◄────│(R+W)    │────►│ (read)  │
+└────┬────┘     └─────────┘     └────┬────┘
+     │               │               │
+     └─── writes ────┘               │
+          forwarded                  │
+                                     │
+        Redo log replication ────────┘
+```
+
+**Cluster endpoints** (on cluster bind_addr):
+| Method | Path | Direction | Description |
+|--------|------|-----------|-------------|
+| POST | `/cluster/heartbeat` | Worker → Master | Worker registration + heartbeat |
+| POST | `/cluster/forward` | Worker → Master | Forwarded write request |
+| POST | `/cluster/replicate` | Master → Worker | Redo log entry push |
+| POST | `/cluster/touch` | Worker → Master | Read report for rank/atime update |
+
+## Rank Lifecycle
+
+```
+Update → update_vertex/edge: rank += 1, atime = now ──────────┐
+                                                                │
+Read → execute_gremlin → process_touch ───► get_vertex_locked   │
+       (async, via settings.auto_inc_rank_when_read)             │
+              │                                                  │
+              ▼                                                  ▼
+         build_touch_entries → IndexUpdate redo log ───────► broadcast to workers
+                                                                │
+Decay ←─ spawn_rank_decay (background, every period secs)        │
+       └── atime_index.range_up_to(threshold)                    │
+           └── rank = rank.saturating_sub(1) ◄───────────────────┘
+```
 
 ## Watch out for
 - **Route params**: axum 0.7.9 requires `:param` syntax.
 - **Data dir**: `<data_dir>/graphs/<name>/` with files: `data`, `bitmap`, `index`, `config.json`, `redo_*`.
-- **Default graph**: `"default"` when `?graph=` omitted.
-- **POST /vertices**: top-level `name` (String), optional `keywords`, `labels`, `properties`. `properties.name` NOT used.
-- **POST /edges**: requires `source`, `target`, `name` (String). Optional `labels` (Vec<String>), `keywords` (Vec<String>), `strength` (f32, default 1.0), `properties` (map).
-- **DELETE ?force=true**: hard delete; without force: soft delete (DataStatus::Deleted).
-- **Search step**: takes `text` (raw string), tokenized by jieba-rs. `mode`="greedy"|"exact", `match_mode`="prefix"|"word".
+- **Default graph**: `"graph0"` when `?graph=` omitted.
+- **POST /vertices**: top-level `name` (String), optional `keywords`, `labels`, `properties`.
+- **POST /edges**: requires `source`, `target`, `name` (String). Optional `labels`, `keywords`, `strength` (f32, default 1.0), `properties`.
+- **DELETE ?force=true**: hard delete; without force: soft delete.
+- **Search step**: takes `text` (raw string), tokenized by jieba-rs.
 - **`/gremlin` auto-injects**: `match_mode` from SearchSettings + optionally appends `traverse` step.
-- **Time travel**: `at` on steps; `timeTravel` step sets global timestamp.
 - **traverse step**: BFS via score * decay * edge_strength; stops when score < activate.
-- **Memory index rebuilt at startup** — no incremental persistence.
+- **rank step**: source mode iterates rank index descending; filter mode sorts input by rank.
+- **Memory index rebuilt at startup** — includes vertices, edges, tokens, ranks, atime_index, adjacency.
 - **Lock order**: metadata → block → vertex → edge (enforced by helpers).
 - **Properties as JSON strings** inside binary blob (bincode incompatibility).
 - **Token strings**: `[u8; 43]` inline — >43 chars truncated.
-- **compact step**: no-op passthrough.
 - **`touch src/ui_serve.rs`** needed after frontend changes.
 - **`document_extractor.rs`, `pipeline.rs`**: orphaned dead code (not in mod.rs).
-- **EdgePayload fields**: `name` (relationship name), `labels` (relation type categories), `keywords`, `strength`, `properties`, `source`, `target`.
-- **VertexPayload fields**: `name`, `labels` (entity types), `keywords`, `properties`.
-- **Extraction**: SYSTEM_PROMPT tells LLM to output `name`, `labels`, `keywords`, `properties` for entities; and `source`, `target`, `name`, `labels`, `keywords`, `strength`, `properties` for relations. Parsing skips entries without a valid `name`.
-- **WAL batch writer**: `append()` sends via `mpsc::channel` to background thread. Caller blocks on Condvar until durability confirmed. Batch ≤128 entries, 10ms timeout.
-- **Time-based WAL rotation**: `rotation_max_age_secs` in per-graph `config.json`. Default 900s (15 min).
+- **Extraction**: SYSTEM_PROMPT tells LLM to output `name`, `labels`, `keywords`, `properties` for entities; and `source`, `target`, `name`, `labels`, `keywords`, `strength`, `properties` for relations.
+- **WAL batch writer**: `append()` sends via `mpsc::channel` to background thread. Caller blocks on Condvar until durability confirmed.
 - **SIGINT/SIGTERM**: server calls `GraphManager::close_all()` → flushes dirty blocks + checkpoints all WALs.
-- **WAL file naming**: `redo_<yyyymmddHHMMss>_<######>` (zero-padded seq for intra-second disambiguation).
-- **`Graph::close()`**: calls `flush()` + `sync()` + `renew()`. No longer uses the old `checkpoint()` closure API.
+- **`Graph::close()`**: calls `flush()` + `sync()` + `renew()`.
+- **Cluster mode**: requires `"role": "master"` or `"role": "worker"` in settings. Heartbeat every 5s by default.
 
 ## Implemented Plans
-- `011-diskgraph-integration-incremental-persistence.md`
-- `2024-06-23-search-mode-theme-doc-fields.md`
-- `007-settings-neural-config-search-ui.md`
-- `008-chat-input-toolbar-layout.md`
-- `001-arch-verify.md`
-- `002-section-paragraph-graph.md`
-- `003-keyword-semantic-search.md`
-- `005-ui-rewrite-knowledgebase-visnetwork.md`
-- `2024-06-23-vertex-redolog-overhaul.md`
-- `009-maas-proxy-neural-fix-frontend-polish.md`
-- `010-session-comprehensive-refactor.md`
-- `012-neural-activation-spread-enhancements.md`
 - `100-graph-rearch-design.md` — Block-based storage architecture
 - `101-graph-rearch-plan.md` — Re-architecture coding plan (Phase 1-8)
-- `--- edge-data-structure-update.md` — EdgePayload label→name, +labels; token hit_key uses property keys; extraction prompt updated
+- `--- edge-data-structure-update.md` — EdgePayload label→name, +labels

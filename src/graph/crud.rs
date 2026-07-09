@@ -179,6 +179,123 @@ pub fn get_edge(graph: &Graph, eid: u32) -> StorageResult<Option<EdgePayload>> {
     Ok(Some(payload))
 }
 
+/// Read a vertex's index record (rank + atime) without updating anything.
+/// Safe for introspection — does NOT call `update_rank_and_atime`.
+pub fn get_vertex_index_record(graph: &Graph, vid: u32) -> StorageResult<Option<VertexIndexRecord>> {
+    let ptr = {
+        let mi = graph.memory_index.read().unwrap();
+        mi.vertices.get(vid).copied()
+    };
+    let Some(ptr) = ptr else { return Ok(None) };
+    let rec = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset)?;
+    if rec.status == DataStatus::Deleted {
+        return Ok(None);
+    }
+    Ok(Some(rec))
+}
+
+/// Read an edge's index record (rank + atime) without updating anything.
+/// Safe for introspection — does NOT call `update_rank_and_atime`.
+pub fn get_edge_index_record(graph: &Graph, eid: u32) -> StorageResult<Option<EdgeIndexRecord>> {
+    let ptr = {
+        let mi = graph.memory_index.read().unwrap();
+        mi.edges.get(eid).copied()
+    };
+    let Some(ptr) = ptr else { return Ok(None) };
+    let rec = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset)?;
+    if rec.status == DataStatus::Deleted {
+        return Ok(None);
+    }
+    Ok(Some(rec))
+}
+
+/// Update a vertex's metadata (rank and/or atime). Creates an IndexUpdate
+/// redo log entry. If a field is `None`, its current value is preserved.
+pub fn update_vertex_meta(graph: &Graph, vid: u32, new_rank: Option<u32>, new_atime: Option<u64>) -> StorageResult<()> {
+    let ptr = {
+        let mi = graph.memory_index.read().unwrap();
+        mi.vertices.get(vid).copied()
+    }.ok_or_else(|| StorageError::Other(format!("vertex {} not found", vid)))?;
+
+    let mut rec = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset)?;
+    let old_rank = rec.rank;
+    let old_atime = rec.atime;
+
+    if let Some(r) = new_rank {
+        rec.rank = r;
+    }
+    if let Some(a) = new_atime {
+        rec.atime = a;
+    }
+
+    if rec.rank == old_rank && rec.atime == old_atime {
+        return Ok(()); // nothing changed
+    }
+
+    graph.index_file.update_vertex_record(ptr.block_idx, ptr.chunk_offset, &rec)?;
+
+    let mut mi = graph.memory_index.write().unwrap();
+    if old_rank != rec.rank {
+        mi.ranks.remove(old_rank, &ptr);
+        mi.ranks.insert(rec.rank, ptr);
+    }
+    if old_atime != rec.atime {
+        mi.atime_index.remove(old_atime, &ptr);
+        mi.atime_index.insert(rec.atime, ptr);
+    }
+
+    // Write IndexUpdate redo log entry (always full rank+atime).
+    let mut data = Vec::with_capacity(12);
+    data.extend_from_slice(&rec.rank.to_le_bytes());
+    data.extend_from_slice(&rec.atime.to_le_bytes());
+    graph.redo_log.append(OpType::VertexIndexUpdate, vid as u64, &data)?;
+
+    Ok(())
+}
+
+/// Update an edge's metadata (rank and/or atime). Creates an IndexUpdate
+/// redo log entry. If a field is `None`, its current value is preserved.
+pub fn update_edge_meta(graph: &Graph, eid: u32, new_rank: Option<u32>, new_atime: Option<u64>) -> StorageResult<()> {
+    let ptr = {
+        let mi = graph.memory_index.read().unwrap();
+        mi.edges.get(eid).copied()
+    }.ok_or_else(|| StorageError::Other(format!("edge {} not found", eid)))?;
+
+    let mut rec = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset)?;
+    let old_rank = rec.rank;
+    let old_atime = rec.atime;
+
+    if let Some(r) = new_rank {
+        rec.rank = r;
+    }
+    if let Some(a) = new_atime {
+        rec.atime = a;
+    }
+
+    if rec.rank == old_rank && rec.atime == old_atime {
+        return Ok(());
+    }
+
+    graph.index_file.update_edge_record(ptr.block_idx, ptr.chunk_offset, &rec)?;
+
+    let mut mi = graph.memory_index.write().unwrap();
+    if old_rank != rec.rank {
+        mi.ranks.remove(old_rank, &ptr);
+        mi.ranks.insert(rec.rank, ptr);
+    }
+    if old_atime != rec.atime {
+        mi.atime_index.remove(old_atime, &ptr);
+        mi.atime_index.insert(rec.atime, ptr);
+    }
+
+    let mut data = Vec::with_capacity(12);
+    data.extend_from_slice(&rec.rank.to_le_bytes());
+    data.extend_from_slice(&rec.atime.to_le_bytes());
+    graph.redo_log.append(OpType::EdgeIndexUpdate, eid as u64, &data)?;
+
+    Ok(())
+}
+
 // ── Update ──────────────────────────────────────────────────────────────────
 
 /// Update a vertex's mutable fields.
@@ -249,6 +366,7 @@ pub fn update_vertex(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_micros() as u64;
+    new_rec.atime = new_rec.mtime;
     new_rec.rank += 1;
 
     graph.index_file.update_vertex_record(old_ptr.block_idx, old_ptr.chunk_offset, &new_rec)?;
@@ -258,6 +376,8 @@ pub fn update_vertex(
         let mut mi = graph.memory_index.write().unwrap();
         mi.ranks.remove(old_rec.rank, &old_ptr);
         mi.ranks.insert(new_rec.rank, old_ptr);
+        mi.atime_index.remove(old_rec.atime, &old_ptr);
+        mi.atime_index.insert(new_rec.atime, old_ptr);
     }
 
     // Free old data chunks.
@@ -334,6 +454,7 @@ pub fn update_edge(
     new_rec.data_len = serialized.len() as u16;
     new_rec.version += 1;
     new_rec.mtime = timestamp_us();
+    new_rec.atime = new_rec.mtime;
     new_rec.rank += 1;
 
     graph.index_file.update_edge_record(old_ptr.block_idx, old_ptr.chunk_offset, &new_rec)?;
@@ -342,6 +463,8 @@ pub fn update_edge(
         let mut mi = graph.memory_index.write().unwrap();
         mi.ranks.remove(old_rec.rank, &old_ptr);
         mi.ranks.insert(new_rec.rank, old_ptr);
+        mi.atime_index.remove(old_rec.atime, &old_ptr);
+        mi.atime_index.insert(new_rec.atime, old_ptr);
     }
 
     free_data_chunks(graph, old_rec.data_block_idx, old_rec.data_chunk_offset,
@@ -510,8 +633,53 @@ pub fn replay_entry(graph: &Graph, entry: &RedoLogEntry) -> StorageResult<()> {
                 mi.adjacency.remove_edge(entry.op_id as u32, entry.op_id as u32, &ptr);
             }
         }
-        OpType::VertexIndexUpdate | OpType::EdgeIndexUpdate
-        | OpType::TokenCreate | OpType::TokenUpdate | OpType::TokenDelete
+        OpType::VertexIndexUpdate => {
+            // data = [rank: u32 LE (4)] [atime: u64 LE (8)] — 12 bytes
+            if entry.data.len() >= 12 {
+                let new_rank = u32::from_le_bytes(entry.data[0..4].try_into().unwrap());
+                let new_atime = u64::from_le_bytes(entry.data[4..12].try_into().unwrap());
+            // Drop read guard before write guard to avoid RwLock deadlock.
+                let found = graph.memory_index.read().unwrap().vertices.get(entry.op_id as u32).copied();
+                if let Some(ptr) = found {
+                    if let Ok(mut rec) = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset) {
+                        let old_rank = rec.rank;
+                        rec.rank = new_rank;
+                        rec.atime = new_atime;
+                        if let Ok(()) = graph.index_file.update_vertex_record(ptr.block_idx, ptr.chunk_offset, &rec) {
+                            let mut mi = graph.memory_index.write().unwrap();
+                            mi.ranks.remove(old_rank, &ptr);
+                            mi.ranks.insert(new_rank, ptr);
+                            mi.atime_index.remove(rec.atime, &ptr);
+                            mi.atime_index.insert(new_atime, ptr);
+                        }
+                    }
+                }
+            }
+        }
+        OpType::EdgeIndexUpdate => {
+            // data = [rank: u32 LE (4)] [atime: u64 LE (8)] — 12 bytes
+            if entry.data.len() >= 12 {
+                let new_rank = u32::from_le_bytes(entry.data[0..4].try_into().unwrap());
+                let new_atime = u64::from_le_bytes(entry.data[4..12].try_into().unwrap());
+                // Drop read guard before write guard to avoid RwLock deadlock.
+                let found = graph.memory_index.read().unwrap().edges.get(entry.op_id as u32).copied();
+                if let Some(ptr) = found {
+                    if let Ok(mut rec) = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset) {
+                        let old_rank = rec.rank;
+                        rec.rank = new_rank;
+                        rec.atime = new_atime;
+                        if let Ok(()) = graph.index_file.update_edge_record(ptr.block_idx, ptr.chunk_offset, &rec) {
+                            let mut mi = graph.memory_index.write().unwrap();
+                            mi.ranks.remove(old_rank, &ptr);
+                            mi.ranks.insert(new_rank, ptr);
+                            mi.atime_index.remove(rec.atime, &ptr);
+                            mi.atime_index.insert(new_atime, ptr);
+                        }
+                    }
+                }
+            }
+        }
+        OpType::TokenCreate | OpType::TokenUpdate | OpType::TokenDelete
         | OpType::TokenIndexUpdate => {}
     }
     Ok(())
@@ -633,7 +801,7 @@ fn write_data_chunks(graph: &Graph, block_idx: u32, chunk_offset: u8, chunks: u8
 }
 
 /// Read data from chunks given the total data length.
-fn read_data_chunks(graph: &Graph, block_idx: u32, chunk_offset: u8, data_len: u16) -> StorageResult<Vec<u8>> {
+pub(crate) fn read_data_chunks(graph: &Graph, block_idx: u32, chunk_offset: u8, data_len: u16) -> StorageResult<Vec<u8>> {
     let chunks = BlockAllocator::chunks_needed(data_len as usize);
     let mut cache = graph.block_cache.write().unwrap();
     let block = cache.get_or_load(block_idx, |idx| {
@@ -819,6 +987,8 @@ fn update_rank_and_atime(graph: &Graph, ptr: &IndexPointer, rec: &impl HasRankAn
             let mut mi = graph.memory_index.write().unwrap();
             mi.ranks.remove(rec.rank(), ptr);
             mi.ranks.insert(new_rank, *ptr);
+            mi.atime_index.remove(rec.atime(), ptr);
+            mi.atime_index.insert(now, *ptr);
         }
         crate::storage::types::ChunkType::Edge => {
             let mut new_rec = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset)?;
@@ -829,6 +999,8 @@ fn update_rank_and_atime(graph: &Graph, ptr: &IndexPointer, rec: &impl HasRankAn
             let mut mi = graph.memory_index.write().unwrap();
             mi.ranks.remove(rec.rank(), ptr);
             mi.ranks.insert(new_rank, *ptr);
+            mi.atime_index.remove(rec.atime(), ptr);
+            mi.atime_index.insert(now, *ptr);
         }
         _ => {}
     }
@@ -854,7 +1026,7 @@ impl HasRankAndTime for EdgeIndexRecord {
     fn chunk_type(&self) -> crate::storage::types::ChunkType { self.chunk_type }
 }
 
-fn timestamp_us() -> u64 {
+pub(crate) fn timestamp_us() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()

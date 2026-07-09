@@ -15,6 +15,7 @@ pub mod crud;
 pub mod graph;
 pub mod gremlin;
 pub mod locked;
+pub mod rank_decay;
 pub mod serialize;
 pub mod tokenizer;
 

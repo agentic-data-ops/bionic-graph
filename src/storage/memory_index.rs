@@ -265,6 +265,56 @@ impl RankIndex {
     }
 }
 
+// ── Atime index ──────────────────────────────────────────────────────────────
+
+/// B-tree mapping atime (microsecond timestamp) → list of index pointers.
+///
+/// Enables efficient range scans for inactive entity detection:
+/// `range(..threshold)` finds all entities not accessed since `threshold`.
+#[derive(Clone, Debug, Default)]
+pub struct AtimeIndex {
+    inner: BTreeMap<u64, Vec<IndexPointer>>,
+}
+
+impl AtimeIndex {
+    pub fn new() -> Self {
+        Self {
+            inner: BTreeMap::new(),
+        }
+    }
+
+    /// Insert a pointer at the given atime.
+    pub fn insert(&mut self, atime: u64, ptr: IndexPointer) {
+        self.inner.entry(atime).or_default().push(ptr);
+    }
+
+    /// Remove a pointer from the atime index.
+    pub fn remove(&mut self, atime: u64, ptr: &IndexPointer) {
+        if let Some(ptrs) = self.inner.get_mut(&atime) {
+            ptrs.retain(|p| p != ptr);
+            if ptrs.is_empty() {
+                self.inner.remove(&atime);
+            }
+        }
+    }
+
+    /// Get all pointers with atime ≤ threshold (oldest first).
+    pub fn range_up_to(&self, threshold: u64) -> Vec<(u64, IndexPointer)> {
+        let mut result = Vec::new();
+        for (&atime, ptrs) in self.inner.range(..=threshold) {
+            for &ptr in ptrs {
+                result.push((atime, ptr));
+            }
+        }
+        result
+    }
+
+    /// Number of distinct atime values.
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+}
+
 // ── Edge adjacency index (for traversal) ────────────────────────────────────
 
 /// Maps a vertex ID to its outgoing and incoming edges.
@@ -342,6 +392,7 @@ pub struct MemoryIndex {
     pub edges: EdgeBTree,
     pub tokens: TokenMap,
     pub ranks: RankIndex,
+    pub atime_index: AtimeIndex,
     pub adjacency: AdjacencyIndex,
     /// Reverse index: (ref_type, ref_id) → list of token strings referencing that entity.
     /// ref_type: 0=vertex, 1=edge. Built at startup from token scan and maintained

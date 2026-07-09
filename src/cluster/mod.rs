@@ -35,7 +35,7 @@
 //! cargo run -- --cluster-worker 0.0.0.0:9091 --master 0.0.0.0:9090
 //! ```
 
-pub mod config;
 pub mod forward;
 pub mod node;
 pub mod replication;
+pub mod server;

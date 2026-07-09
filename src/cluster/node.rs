@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::cluster::config::ClusterConfig;
+use crate::config::settings::ClusterConfig;
 
 /// Identity and status of a single worker node.
 #[derive(Clone, Debug, Serialize, Deserialize)]
