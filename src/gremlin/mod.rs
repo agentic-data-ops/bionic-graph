@@ -81,6 +81,8 @@ pub fn build_router(
         .route("/settings/search", put(settings::update_search_settings))
         .route("/settings/llm", get(settings::get_llm_settings))
         .route("/settings/llm", put(settings::update_llm_settings))
+        .route("/settings/rank", get(settings::get_rank_settings))
+        .route("/settings/rank", put(settings::update_rank_settings))
         // Health
         .route("/health", get(health_check))
         // MaaS — OpenAI-compatible proxy

@@ -77,3 +77,32 @@ pub async fn update_llm_settings(
     }
     StatusCode::OK
 }
+
+// ── /settings/rank ──────────────────────────────────────────────────────────
+
+use crate::config::settings::RankConfig;
+
+/// GET /settings/rank — return the current rank config.
+pub async fn get_rank_settings(
+    State(state): State<AppState>,
+) -> Json<RankConfig> {
+    let settings = state.settings.lock().unwrap();
+    Json(settings.rank.clone())
+}
+
+/// PUT /settings/rank — update rank config and persist to disk.
+pub async fn update_rank_settings(
+    State(state): State<AppState>,
+    Json(new_config): Json<RankConfig>,
+) -> StatusCode {
+    let save_result = {
+        let mut guard = state.settings.lock().unwrap();
+        guard.rank = new_config;
+        crate::config::loader::save_settings(&guard)
+    };
+    if let Err(e) = save_result {
+        log::warn!("Failed to save rank settings: {}", e);
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    }
+    StatusCode::OK
+}

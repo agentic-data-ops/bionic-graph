@@ -329,6 +329,26 @@ export async function updateSearchConfig(config) {
   return res.json();
 }
 
+// ─── Rank Config ────────────────────────────────────────────────
+
+/** Fetch rank configuration from the backend. */
+export async function fetchRankConfig() {
+  const res = await fetch('/settings/rank');
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+/** Update rank configuration on the backend. */
+export async function updateRankConfig(config) {
+  const res = await fetch('/settings/rank', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 // ─── Document Extraction (Backend Task) ─────────────────────────
 
 /** Submit a document for background extraction. Returns { task_id, status } */

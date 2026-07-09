@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { fetchSearchConfig, updateSearchConfig } from '../api';
+import { fetchSearchConfig, updateSearchConfig, fetchRankConfig, updateRankConfig } from '../api';
 
 function Modal({ title, children, onClose }) {
   return (
@@ -49,6 +49,9 @@ export default function SettingsDialog({
   const [searchConfig, setSearchConfig] = useState(null);
   const [searchSaving, setSearchSaving] = useState(false);
   const [searchMessage, setSearchMessage] = useState('');
+  const [rankConfig, setRankConfig] = useState(null);
+  const [rankSaving, setRankSaving] = useState(false);
+  const [rankMessage, setRankMessage] = useState('');
   const f3 = (v) => v !== undefined && v !== null ? Number(v).toFixed(3) : '';
   useEffect(() => {
     if (open) {
@@ -62,7 +65,9 @@ export default function SettingsDialog({
           localStorage.setItem('bgraph-settings', JSON.stringify(stored));
         } catch (e) {}
       }).catch(() => {});
+      fetchRankConfig().then((d) => setRankConfig(d)).catch(() => {});
       setSearchMessage('');
+      setRankMessage('');
     }
   }, [open]);
 
@@ -125,6 +130,7 @@ export default function SettingsDialog({
       <div className="flex gap-1.5 mb-5">
         <button className={tabCls(tab === 'providers')} onClick={() => setTab('providers')}>{t('settings.model')}</button>
         <button className={tabCls(tab === 'search')} onClick={() => setTab('search')}>搜索</button>
+        <button className={tabCls(tab === 'rank')} onClick={() => setTab('rank')}>排序</button>
       </div>
 
       {/* ─── Providers ─── */}
@@ -383,6 +389,70 @@ export default function SettingsDialog({
             </div>
           ) : (
             <p className="text-[var(--text-tertiary)] text-sm text-center py-8 tracking-tight">加载配置中...</p>
+          )}
+        </div>
+      )}
+      {tab === 'rank' && (
+        <div className="space-y-4">
+          {rankConfig ? (
+            <>
+              <div className="grid grid-cols-2 gap-4">
+                <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)] cursor-pointer select-none">
+                  <input type="checkbox" checked={rankConfig.auto_inc_rank_when_update}
+                    onChange={(e) => setRankConfig({ ...rankConfig, auto_inc_rank_when_update: e.target.checked })}
+                    className="w-3.5 h-3.5 rounded border-[#3a3a3e] bg-[var(--bg-secondary)] checked:bg-[var(--accent)]" />
+                  更新时自动增加排序值
+                </label>
+                <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)] cursor-pointer select-none">
+                  <input type="checkbox" checked={rankConfig.auto_inc_rank_when_read}
+                    onChange={(e) => setRankConfig({ ...rankConfig, auto_inc_rank_when_read: e.target.checked })}
+                    className="w-3.5 h-3.5 rounded border-[#3a3a3e] bg-[var(--bg-secondary)] checked:bg-[var(--accent)]" />
+                  读取时自动增加排序值
+                </label>
+                <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)] cursor-pointer select-none">
+                  <input type="checkbox" checked={rankConfig.auto_dec_rank_when_inactive}
+                    onChange={(e) => setRankConfig({ ...rankConfig, auto_dec_rank_when_inactive: e.target.checked })}
+                    className="w-3.5 h-3.5 rounded border-[#3a3a3e] bg-[var(--bg-secondary)] checked:bg-[var(--accent)]" />
+                  不活跃时自动降低排序值
+                </label>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-[var(--text-tertiary)] mb-1">不活跃阈值（秒）</label>
+                  <input type="number" min="60" step="60" value={rankConfig.inactive_after_accessed_secs}
+                    onChange={(e) => setRankConfig({ ...rankConfig, inactive_after_accessed_secs: Number(e.target.value) })}
+                    className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border)] text-xs text-[var(--text-primary)]" />
+                </div>
+                <div>
+                  <label className="block text-xs text-[var(--text-tertiary)] mb-1">扫描间隔（秒）</label>
+                  <input type="number" min="10" step="10" value={rankConfig.inactive_rank_update_period}
+                    onChange={(e) => setRankConfig({ ...rankConfig, inactive_rank_update_period: Number(e.target.value) })}
+                    className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border)] text-xs text-[var(--text-primary)]" />
+                </div>
+              </div>
+              <div className="flex items-center gap-3 pt-1">
+                <button className="px-4 py-1.5 rounded-lg bg-[var(--accent)] text-white text-xs font-medium hover:opacity-90 transition-all"
+                  disabled={rankSaving}
+                  onClick={async () => {
+                    setRankSaving(true);
+                    try {
+                      await updateRankConfig(rankConfig);
+                      setRankMessage('✅ 保存成功');
+                    } catch (e) {
+                      setRankMessage('❌ 保存失败: ' + e.message);
+                    }
+                    setRankSaving(false);
+                    setTimeout(() => setRankMessage(''), 2000);
+                  }}>
+                  {rankSaving ? '保存中...' : '保存配置'}
+                </button>
+                {rankMessage && (
+                  <span className="text-xs text-[var(--text-secondary)]">{rankMessage}</span>
+                )}
+              </div>
+            </>
+          ) : (
+            <p className="text-[var(--text-tertiary)] text-sm text-center py-8">加载配置中...</p>
           )}
         </div>
       )}

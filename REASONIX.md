@@ -282,3 +282,10 @@ Decay ←─ spawn_rank_decay (background, every period secs)        │
 - `100-graph-rearch-design.md` — Block-based storage architecture
 - `101-graph-rearch-plan.md` — Re-architecture coding plan (Phase 1-8)
 - `--- edge-data-structure-update.md` — EdgePayload label→name, +labels
+
+## TODO
+1. **前端测试** — 使用 Playwright 对前端交互进行端到端测试，覆盖图可视化、知识库管理、设置面板等核心功能
+2. **构建个体自我意识图谱模板** — 设计并实现个体自我意识的知识图谱模板（persona template），包含个性特征、记忆模式、认知偏好等维度
+3. **设计个体自我行为机制** — 在 GraphAgent 框架中实现个体基于自身图谱的自主行为决策机制（意图识别 → 目标规划 → 行为执行 → 反馈学习）
+4. **构建社会图谱** — 构建多个体间的社会关系图谱，包含信任度、影响力、社交距离等维度
+5. **设计社会行为机制** — 实现群体层面的社会行为机制（信息传播、合作博弈、共识形成、社会规范演化）
