@@ -1,14 +1,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use crate::graph::crud;
-use crate::graph::graph::{Graph, GraphConfig, RedologOverrides};
+use crate::graph::graph::{Graph, GraphConfig};
 use crate::graph::gremlin::{execute_gremlin, GremlinQuery, GremlinResult, GremlinStep};
 use crate::graph::locked;
 use crate::storage::types::PropertyValue;
 
 fn setup_graph() -> (Arc<Graph>, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
-    let g = Graph::open(dir.path(), "test", &RedologOverrides::default()).unwrap();
+    let g = Graph::open(dir.path(), "test").unwrap();
     (g, dir)
 }
 
@@ -291,14 +291,14 @@ fn activate_min_score() {
 fn data_persistence() {
     let dir = tempfile::tempdir().unwrap();
     {
-        let g = Graph::open(dir.path(), "test", &RedologOverrides::default()).unwrap();
+        let g = Graph::open(dir.path(), "test").unwrap();
         let vid = crud::create_vertex(&g, "Alice", &["person".into()], &["alice".into()],
             &props(&[("age", PropertyValue::Integer(30))])).unwrap();
         crud::create_edge(&g, vid, vid, "self", &[], &[], 1.0, &HashMap::new()).unwrap();
         g.close().unwrap();
     }
     {
-        let g = Graph::open(dir.path(), "test", &RedologOverrides::default()).unwrap();
+        let g = Graph::open(dir.path(), "test").unwrap();
         let r = run_steps(&g, vec![GremlinStep::V { ids: None, at: None }]);
         assert_eq!(r.len(), 1);
         if let GremlinResult::Vertex { name, properties, .. } = &r[0] {

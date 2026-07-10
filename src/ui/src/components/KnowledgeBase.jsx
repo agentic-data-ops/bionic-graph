@@ -316,7 +316,7 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
             <select className="w-full px-3 py-2 rounded-xl bg-[var(--bg-secondary)] text-[var(--text-primary)] text-sm border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] appearance-none cursor-pointer"
               style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23636366' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px center', paddingRight: '32px' }}
               value={importGraph} onChange={(e) => setImportGraph(e.target.value)}>
-              {graphs.map((g) => <option key={g} value={g}>{g}</option>)}
+              {graphs.map((g) => <option key={g.name || g} value={g.name || g}>{g.name || g}</option>)}
             </select>
           </div>
           <div>

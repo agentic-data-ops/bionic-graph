@@ -20,15 +20,29 @@ export async function listGraphs() {
   return api('/graphs');
 }
 
-export async function createGraph(name, timeTravel = false) {
+export async function createGraph(name, description = '', timeTravel = false) {
   return api('/graphs', {
     method: 'POST',
-    body: JSON.stringify({ name, time_travel: timeTravel }),
+    body: JSON.stringify({ name, description, time_travel: timeTravel }),
   });
 }
 
 export async function deleteGraph(name) {
   return api(`/graphs/${name}`, { method: 'DELETE' });
+}
+
+export async function setDefaultGraph(name) {
+  return api('/graphs', {
+    method: 'PUT',
+    body: JSON.stringify({ default: name }),
+  });
+}
+
+export async function updateGraphMeta(name, description, timeTravel) {
+  return api(`/graphs/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ description, time_travel: timeTravel }),
+  });
 }
 
 export async function gremlin(steps, graph = 'default') {
@@ -367,7 +381,7 @@ export async function startDocumentExtraction(docId, graphName, model) {
 
 /** Get extraction task status (with step progress). */
 export async function getExtractionTask(taskId) {
-  const res = await fetch(`/extract/tasks/${encodeURIComponent(taskId)}`);
+  const res = await fetch(`/extract/task/${encodeURIComponent(taskId)}`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }

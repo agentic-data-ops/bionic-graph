@@ -2,6 +2,88 @@ import { useState, useRef, useCallback, useEffect, forwardRef, useImperativeHand
 import { useTranslation } from 'react-i18next';
 import { fetchModels } from '../api';
 
+// ── Model selector component (extracted from IIFE to comply with Rules of Hooks) ──
+function ChatModelSelector({
+  providers,
+  defaultModelKey,
+  activeProvider,
+  chatModel,
+  onProviderChange,
+  onChatModelChange,
+}) {
+  const { t } = useTranslation();
+  const [modelList, setModelList] = useState(null);
+  const [defaultModel, setDefaultModel] = useState('');
+  const [fetching, setFetching] = useState(false);
+  const initialised = useRef(false);
+
+  // Fetch model list + default model from backend.
+  // Re-fetches when providers or defaultModelKey change (settings modified).
+  useEffect(() => {
+    if (!fetching) {
+      setFetching(true);
+      fetchModels().then(({ models, defaultModel: dm }) => {
+        const list = models?.data || [];
+        setModelList(list);
+        setDefaultModel(dm || '');
+
+        // On first load only, determine the initial model key:
+        // 1. Try localStorage saved model
+        // 2. If missing or not in the list, use backend defaultModel
+        if (!initialised.current) {
+          initialised.current = true;
+          const saved = localStorage.getItem('bgraph-last-model');
+          const validSaved = saved && list.some(e => e.id === saved);
+          const targetKey = validSaved ? saved : (dm || list[0]?.id || '');
+          if (targetKey) {
+            const parts = targetKey.split('/');
+            if (parts.length >= 2) {
+              onProviderChange(parts[0]);
+              onChatModelChange(parts.slice(1).join('/'));
+            }
+          }
+        }
+      }).catch(() => {}).finally(() => setFetching(false));
+    }
+  }, [providers, defaultModelKey]);
+
+  if (!modelList) {
+    return <span className="text-xs text-[var(--text-tertiary)]">加载中...</span>;
+  }
+
+  const currentModel = chatModel || '';
+  const currentProvider = activeProvider || '';
+  const currentKey = currentProvider && currentModel ? `${currentProvider}/${currentModel}` : '';
+
+  const options = modelList.map(entry => ({
+    key: entry.id,
+    providerName: entry.owned_by,
+    model: entry.id.includes('/') ? entry.id.split('/').slice(1).join('/') : entry.id,
+    isDefault: entry.id === defaultModel,
+  }));
+
+  return (
+    <select
+      className="bg-[var(--bg-tertiary)] text-[var(--text-primary)] rounded-lg px-2.5 py-1 text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] cursor-pointer appearance-none flex-shrink-0"
+      style={{ maxWidth: '220px', backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath fill='%2386868b' d='M0 0l4 5 4-5z'/%3E%3Csvg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 6px center', paddingRight: '22px' }}
+      value={currentKey}
+      onChange={(e) => {
+        const selected = options.find(o => o.key === e.target.value);
+        if (!selected) return;
+        localStorage.setItem('bgraph-last-model', selected.key);
+        onProviderChange(selected.providerName);
+        onChatModelChange(selected.model);
+      }}
+    >
+      {options.map((opt) => (
+        <option key={opt.key} value={opt.key}>
+          {opt.key}{opt.isDefault ? ` ${t('chat.default')}` : ''}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 const ChatInput = forwardRef(function ChatInput({
   providers,
   activeProvider,
@@ -20,6 +102,7 @@ const ChatInput = forwardRef(function ChatInput({
   onGraphNameChange,
   graphs,
   timeTravelGraphs,
+  graphMetas,
   defaultModelKey,
   chatModel,
   onChatModelChange,
@@ -64,78 +147,14 @@ const ChatInput = forwardRef(function ChatInput({
       {/* Mode bar */}
       <div className="flex items-center gap-3 mb-2.5 flex-wrap">
         {/* Model selector — leftmost */}
-        {(() => {
-          const [modelList, setModelList] = useState(null);
-          const [defaultModel, setDefaultModel] = useState('');
-          const [fetching, setFetching] = useState(false);
-          const initialised = useRef(false);
-
-          // Fetch model list + default model from backend.
-          // Re-fetches when providers or defaultModelKey change (settings modified).
-          useEffect(() => {
-            if (!fetching) {
-              setFetching(true);
-              fetchModels().then(({ models, defaultModel: dm }) => {
-                const list = models?.data || [];
-                setModelList(list);
-                setDefaultModel(dm || '');
-
-                // On first load only, determine the initial model key:
-                // 1. Try localStorage saved model
-                // 2. If missing or not in the list, use backend defaultModel
-                if (!initialised.current) {
-                  initialised.current = true;
-                  const saved = localStorage.getItem('bgraph-last-model');
-                  const validSaved = saved && list.some(e => e.id === saved);
-                  const targetKey = validSaved ? saved : (dm || list[0]?.id || '');
-                  if (targetKey) {
-                    const parts = targetKey.split('/');
-                    if (parts.length >= 2) {
-                      onProviderChange(parts[0]);
-                      onChatModelChange(parts.slice(1).join('/'));
-                    }
-                  }
-                }
-              }).catch(() => {}).finally(() => setFetching(false));
-            }
-          }, [providers, defaultModelKey]);
-
-          if (!modelList) {
-            return <span className="text-xs text-[var(--text-tertiary)]">加载中...</span>;
-          }
-
-          const currentModel = chatModel || '';
-          const currentProvider = activeProvider || '';
-          const currentKey = currentProvider && currentModel ? `${currentProvider}/${currentModel}` : '';
-
-          const options = modelList.map(entry => ({
-            key: entry.id,
-            providerName: entry.owned_by,
-            model: entry.id.includes('/') ? entry.id.split('/').slice(1).join('/') : entry.id,
-            isDefault: entry.id === defaultModel,
-          }));
-
-          return (
-            <select
-              className="bg-[var(--bg-tertiary)] text-[var(--text-primary)] rounded-lg px-2.5 py-1 text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] cursor-pointer appearance-none flex-shrink-0"
-              style={{ maxWidth: '220px', backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath fill='%2386868b' d='M0 0l4 5 4-5z'/%3E%3Csvg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 6px center', paddingRight: '22px' }}
-              value={currentKey}
-              onChange={(e) => {
-                const selected = options.find(o => o.key === e.target.value);
-                if (!selected) return;
-                localStorage.setItem('bgraph-last-model', selected.key);
-                onProviderChange(selected.providerName);
-                onChatModelChange(selected.model);
-              }}
-            >
-              {options.map((opt) => (
-                <option key={opt.key} value={opt.key}>
-                  {opt.key}{opt.isDefault ? ` ${t('chat.default')}` : ''}
-                </option>
-              ))}
-            </select>
-          );
-        })()}
+        <ChatModelSelector
+          providers={providers}
+          defaultModelKey={defaultModelKey}
+          activeProvider={activeProvider}
+          chatModel={chatModel}
+          onProviderChange={onProviderChange}
+          onChatModelChange={onChatModelChange}
+        />
 
         {/* Graph toggle */}
         <label className="flex items-center gap-1.5 cursor-pointer select-none flex-shrink-0" onClick={(e) => { e.preventDefault(); onGraphToggle(!useGraph); }}>
@@ -187,7 +206,7 @@ const ChatInput = forwardRef(function ChatInput({
             </label>
 
             {/* Time travel — only if graph supports it */}
-            {timeTravelGraphs[graphName] && (<>
+            {(Array.isArray(graphMetas) ? graphMetas.find(g => g.name === graphName)?.time_travel : timeTravelGraphs[graphName]) && (<>
             <label className="flex items-center gap-1.5 cursor-pointer select-none text-xs text-[var(--text-secondary)] font-medium whitespace-nowrap">
               <input type="checkbox" checked={timeTravel} onChange={(e) => onTimeTravelToggle(e.target.checked)}
                 className="w-3.5 h-3.5 rounded border-[var(--border)] bg-[var(--bg-tertiary)] checked:bg-[var(--accent)] checked:border-[var(--accent)] focus:ring-0 cursor-pointer" />

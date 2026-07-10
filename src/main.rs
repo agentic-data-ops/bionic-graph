@@ -8,7 +8,6 @@ use bionic_graph::cluster::server::{build_cluster_router, ClusterAppState};
 use bionic_graph::config::load_or_create_settings_from;
 use bionic_graph::config::NodeRole;
 use bionic_graph::gremlin::build_router as build_new_router;
-use bionic_graph::graph::graph::RedologOverrides;
 use bionic_graph::graph_manager::GraphManager;
 
 /// Bionic-Graph: Block-based knowledge graph with token-indexed search.
@@ -94,11 +93,7 @@ async fn main() {
 
     // Initialize the new block-based graph manager.
     let data_dir = std::path::PathBuf::from(&settings.storage.data_dir);
-    let redolog_overrides = RedologOverrides {
-        max_size_mb: settings.storage.redolog_rotation_max_size_mb,
-        max_age_secs: settings.storage.redolog_rotation_max_age_secs,
-    };
-    let gm = Arc::new(GraphManager::new(data_dir, redolog_overrides));
+    let gm = Arc::new(GraphManager::new(data_dir));
 
     // Ensure the default graph "graph0" exists on first startup.
     if let Err(e) = gm.get("graph0") {
@@ -230,7 +225,7 @@ async fn main() {
     };
 
     // Start rank decay background task (if enabled).
-    if let Ok(default_graph) = gm.get("default") {
+    if let Ok(default_graph) = gm.get("graph0") {
         bionic_graph::graph::rank_decay::spawn_rank_decay(
             default_graph,
             settings.rank.auto_dec_rank_when_inactive,

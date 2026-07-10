@@ -31,6 +31,31 @@ const tabCls = (active) =>
       : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
   }`;
 
+// ── Time unit conversion helpers ────────────────────────────────────────────
+const TIME_UNITS = [
+  { label: '秒', value: 1 },
+  { label: '分钟', value: 60 },
+  { label: '小时', value: 3600 },
+  { label: '天', value: 86400 },
+];
+
+/** Convert seconds to best-fit display value + unit. */
+function secondsToDisplay(secs) {
+  if (secs == null || secs <= 0) return { value: 0, unit: 1 };
+  for (let i = TIME_UNITS.length - 1; i >= 0; i--) {
+    const u = TIME_UNITS[i];
+    if (secs >= u.value && secs % u.value === 0) {
+      return { value: secs / u.value, unit: u.value };
+    }
+  }
+  return { value: secs, unit: 1 };
+}
+
+/** Convert display value + unit back to seconds. */
+function displayToSeconds(value, unit) {
+  return Math.round(value * unit);
+}
+
 export default function SettingsDialog({
   open,
   onClose,
@@ -52,6 +77,8 @@ export default function SettingsDialog({
   const [rankConfig, setRankConfig] = useState(null);
   const [rankSaving, setRankSaving] = useState(false);
   const [rankMessage, setRankMessage] = useState('');
+  const [rankThreshold, setRankThreshold] = useState({ value: 15, unit: 86400 });
+  const [rankPeriod, setRankPeriod] = useState({ value: 1, unit: 86400 });
   const f3 = (v) => v !== undefined && v !== null ? Number(v).toFixed(3) : '';
   useEffect(() => {
     if (open) {
@@ -65,7 +92,11 @@ export default function SettingsDialog({
           localStorage.setItem('bgraph-settings', JSON.stringify(stored));
         } catch (e) {}
       }).catch(() => {});
-      fetchRankConfig().then((d) => setRankConfig(d)).catch(() => {});
+      fetchRankConfig().then((d) => {
+        setRankConfig(d);
+        setRankThreshold(secondsToDisplay(d.inactive_after_accessed_secs));
+        setRankPeriod(secondsToDisplay(d.inactive_rank_update_period));
+      }).catch(() => {});
       setSearchMessage('');
       setRankMessage('');
     }
@@ -418,16 +449,30 @@ export default function SettingsDialog({
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs text-[var(--text-tertiary)] mb-1">不活跃阈值（秒）</label>
-                  <input type="number" min="60" step="60" value={rankConfig.inactive_after_accessed_secs}
-                    onChange={(e) => setRankConfig({ ...rankConfig, inactive_after_accessed_secs: Number(e.target.value) })}
-                    className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border)] text-xs text-[var(--text-primary)]" />
+                  <label className="block text-xs text-[var(--text-tertiary)] mb-1">不活跃阈值</label>
+                  <div className="flex gap-1">
+                    <input type="number" min="1" value={rankThreshold.value}
+                      onChange={(e) => setRankThreshold({ ...rankThreshold, value: Number(e.target.value) })}
+                      className="flex-1 px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border)] text-xs text-[var(--text-primary)]" />
+                    <select value={rankThreshold.unit}
+                      onChange={(e) => setRankThreshold({ ...rankThreshold, unit: Number(e.target.value) })}
+                      className="px-2 py-1.5 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border)] text-xs text-[var(--text-primary)] appearance-none cursor-pointer">
+                      {TIME_UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
+                    </select>
+                  </div>
                 </div>
                 <div>
-                  <label className="block text-xs text-[var(--text-tertiary)] mb-1">扫描间隔（秒）</label>
-                  <input type="number" min="10" step="10" value={rankConfig.inactive_rank_update_period}
-                    onChange={(e) => setRankConfig({ ...rankConfig, inactive_rank_update_period: Number(e.target.value) })}
-                    className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border)] text-xs text-[var(--text-primary)]" />
+                  <label className="block text-xs text-[var(--text-tertiary)] mb-1">扫描间隔</label>
+                  <div className="flex gap-1">
+                    <input type="number" min="1" value={rankPeriod.value}
+                      onChange={(e) => setRankPeriod({ ...rankPeriod, value: Number(e.target.value) })}
+                      className="flex-1 px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border)] text-xs text-[var(--text-primary)]" />
+                    <select value={rankPeriod.unit}
+                      onChange={(e) => setRankPeriod({ ...rankPeriod, unit: Number(e.target.value) })}
+                      className="px-2 py-1.5 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border)] text-xs text-[var(--text-primary)] appearance-none cursor-pointer">
+                      {TIME_UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
+                    </select>
+                  </div>
                 </div>
               </div>
               <div className="flex items-center gap-3 pt-1">
@@ -436,7 +481,12 @@ export default function SettingsDialog({
                   onClick={async () => {
                     setRankSaving(true);
                     try {
-                      await updateRankConfig(rankConfig);
+                      const payload = {
+                        ...rankConfig,
+                        inactive_after_accessed_secs: displayToSeconds(rankThreshold.value, rankThreshold.unit),
+                        inactive_rank_update_period: displayToSeconds(rankPeriod.value, rankPeriod.unit),
+                      };
+                      await updateRankConfig(payload);
                       setRankMessage('✅ 保存成功');
                     } catch (e) {
                       setRankMessage('❌ 保存失败: ' + e.message);

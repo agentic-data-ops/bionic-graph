@@ -55,10 +55,16 @@ pub fn build_router(
     use axum::routing::{delete, get, post, put};
 
     axum::Router::new()
+        // UI — serve the frontend SPA
+        .route("/", get(crate::ui_serve::ui_root_handler))
+        .route("/ui", get(crate::ui_serve::ui_root_handler))
+        .route("/ui/*path", get(crate::ui_serve::ui_handler))
         // Graph lifecycle
         .route("/graphs", get(list_graphs))
         .route("/graphs", post(create_graph))
+        .route("/graphs", put(set_default_graph))
         .route("/graphs/:name", delete(delete_graph))
+        .route("/graphs/:name", put(update_graph_meta))
         .route("/graphs/:name/config", get(get_graph_config_handler))
         .route("/graphs/:name/config", put(put_graph_config_handler))
         // Query
@@ -133,8 +139,8 @@ pub async fn health_check(
 // ── Helper: resolve graph name from header or query ─────────────────────────
 
 fn resolve_graph(state: &AppState, graph_name: Option<&str>) -> StorageResult<Arc<Graph>> {
-    let name = graph_name.unwrap_or("graph0");
-    state.gm.get(name)
+    let name = graph_name.map(|s| s.to_string()).unwrap_or_else(|| state.gm.get_default_name());
+    state.gm.get(&name)
 }
 
 // ── POST /gremlin2 ──────────────────────────────────────────────────────────
@@ -187,6 +193,17 @@ pub async fn handle_gremlin(
                 activate: Some(cfg.activate),
                 max_depth: Some(cfg.depth),
                 min_score: Some(cfg.score),
+            });
+        }
+    }
+
+    // Reject TimeTravel steps if the graph doesn't have time-travel enabled.
+    if !state.gm.time_travel_enabled(&graph.name) {
+        if query.steps.iter().any(|s| matches!(s, crate::graph::gremlin::GremlinStep::TimeTravel { .. })) {
+            return Json(GremlinResponse {
+                success: false,
+                data: vec![],
+                error: Some(format!("图 '{}' 未开启时间旅行，不支持 TimeTravel 查询", graph.name)),
             });
         }
     }
@@ -398,7 +415,12 @@ pub async fn delete_vertex(
         Err(_) => return StatusCode::NOT_FOUND,
     };
 
-    let force = params.force.unwrap_or(false);
+    let tt_enabled = state.gm.time_travel_enabled(&graph.name);
+    let force = match params.force {
+        Some(false) if !tt_enabled => return StatusCode::BAD_REQUEST,
+        Some(v) => v,
+        None => !tt_enabled,
+    };
     let result = if force {
         crate::graph::locked::hard_delete_vertex_locked(&graph, id)
     } else {
@@ -564,7 +586,12 @@ pub async fn delete_edge(
         Err(_) => return StatusCode::NOT_FOUND,
     };
 
-    let force = params.force.unwrap_or(false);
+    let tt_enabled = state.gm.time_travel_enabled(&graph.name);
+    let force = match params.force {
+        Some(false) if !tt_enabled => return StatusCode::BAD_REQUEST,
+        Some(v) => v,
+        None => !tt_enabled,
+    };
     let result = if force {
         crate::graph::locked::hard_delete_edge_locked(&graph, id)
     } else {
@@ -635,32 +662,32 @@ pub async fn handle_update_edge_meta(
     }
 }
 
-// ── GET /graphs2 ────────────────────────────────────────────────────────────
-
-#[derive(Serialize)]
-pub struct GraphInfo {
-    pub name: String,
-}
+// ── GET /graphs ────────────────────────────────────────────────────────────
 
 pub async fn list_graphs(State(state): State<AppState>) -> Json<serde_json::Value> {
-    let names = state.gm.list().unwrap_or_default();
-    let graphs: Vec<GraphInfo> = names.into_iter().map(|n| GraphInfo { name: n }).collect();
+    let (graphs, default) = state.gm.get_registry();
     Json(serde_json::json!({
         "graphs": graphs,
-        "time_travel": {}
+        "default": default,
     }))
 }
 
-// ── POST /graphs2 ───────────────────────────────────────────────────────────
+// ── POST /graphs ────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 pub struct CreateGraphParams {
     pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub time_travel: bool,
 }
 
 #[derive(Serialize)]
 pub struct CreateGraphResponse {
     pub name: String,
+    pub description: String,
+    pub time_travel: bool,
     pub created: bool,
 }
 
@@ -668,21 +695,30 @@ pub async fn create_graph(
     State(state): State<AppState>,
     Json(params): Json<CreateGraphParams>,
 ) -> Json<CreateGraphResponse> {
-    let exists = state.gm.list().ok().map_or(false, |names| names.contains(&params.name));
-    if exists {
-        return Json(CreateGraphResponse {
-            name: params.name,
-            created: false,
-        });
+    // Check existence via registry (not dir scan).
+    {
+        let (graphs, _) = state.gm.get_registry();
+        if graphs.iter().any(|g| g.name == params.name) {
+            return Json(CreateGraphResponse {
+                name: params.name,
+                description: params.description,
+                time_travel: params.time_travel,
+                created: false,
+            });
+        }
     }
-    // Opening the graph creates it.
+    // Opening the graph creates it on disk.
     match state.gm.get(&params.name) {
         Ok(_) => Json(CreateGraphResponse {
             name: params.name,
+            description: params.description,
+            time_travel: params.time_travel,
             created: true,
         }),
-        Err(e) => Json(CreateGraphResponse {
+        Err(_) => Json(CreateGraphResponse {
             name: params.name,
+            description: params.description,
+            time_travel: params.time_travel,
             created: false,
         }),
     }
@@ -697,6 +733,46 @@ pub async fn delete_graph(
     match state.gm.delete(&name) {
         Ok(_) => StatusCode::OK,
         Err(_) => StatusCode::NOT_FOUND,
+    }
+}
+
+// ── PUT /graphs — set default graph ──────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct SetDefaultGraphBody {
+    #[serde(default)]
+    pub default: String,
+}
+
+pub async fn set_default_graph(
+    State(state): State<AppState>,
+    Json(body): Json<SetDefaultGraphBody>,
+) -> StatusCode {
+    match state.gm.set_default(&body.default) {
+        Ok(_) => StatusCode::OK,
+        Err(_) => StatusCode::NOT_FOUND,
+    }
+}
+
+// ── PUT /graphs/:name — update graph metadata ────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct UpdateGraphMetaBody {
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub time_travel: bool,
+}
+
+pub async fn update_graph_meta(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(body): Json<UpdateGraphMetaBody>,
+) -> StatusCode {
+    match state.gm.update_meta(&name, &body.description, body.time_travel) {
+        Ok(true) => StatusCode::OK,
+        Ok(false) => StatusCode::NOT_FOUND,
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 

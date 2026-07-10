@@ -37,6 +37,7 @@ export default function ChatArea({
   onDefaultGraphChange,
   graphs,
   timeTravelGraphs,
+  graphMetas,
   defaultModelKey,
   chatModel,
   onChatModelChange,
@@ -79,7 +80,8 @@ export default function ChatArea({
 
         const ttMicros = timeTravel && timeTravelPoint ? localDatetimeToUTC(timeTravelPoint) : null;
         const progressMsgId = uid();
-        const progressMsg = { id: progressMsgId, type: 'search_progress', title: text, steps, timeTravelEnabled: timeTravelGraphs[defaultGraph] || false, timeTravelAt: ttMicros };
+        const ttEnabled = (Array.isArray(graphMetas) ? graphMetas.find(g => g.name === defaultGraph)?.time_travel : false) || false;
+        const progressMsg = { id: progressMsgId, type: 'search_progress', title: text, steps, timeTravelEnabled: ttEnabled, timeTravelAt: ttMicros };
         setSearchStream(progressMsg);
         setIsGenerating(true);
 
@@ -134,7 +136,8 @@ ${JSON.stringify(items, null, 2)}`;
           requestAnimationFrame(() => chatInputRef.current?.focus());
           abortRef.current = null;
           setIsGenerating(false);
-          onUpdateConv({ ...conv, messages: [...updatedMsgs, { ...progressMsg, steps: doneSteps, graphData: finalData, graphName: defaultGraph, timeTravelEnabled: timeTravelGraphs[defaultGraph] || false, timeTravelAt: ttMicros }] });
+          const ttEnabled2 = (Array.isArray(graphMetas) ? graphMetas.find(g => g.name === defaultGraph)?.time_travel : false) || false;
+          onUpdateConv({ ...conv, messages: [...updatedMsgs, { ...progressMsg, steps: doneSteps, graphData: finalData, graphName: defaultGraph, timeTravelEnabled: ttEnabled2, timeTravelAt: ttMicros }] });
 
         } catch (e) {
           const failedSteps = (steps || []).map((s) => ({ ...s, status: 'failed' }));
@@ -188,7 +191,7 @@ ${JSON.stringify(items, null, 2)}`;
         }
       }
     },
-    [activeConv, useGraph, defaultGraph, providers, activeProvider, onUpdateConv, chatModel, kwSearchMode, enableSemanticFilter, timeTravel, timeTravelPoint, timeTravelGraphs]
+    [activeConv, useGraph, defaultGraph, providers, activeProvider, onUpdateConv, chatModel, kwSearchMode, enableSemanticFilter, timeTravel, timeTravelPoint, timeTravelGraphs, graphMetas]
   );
 
   const messages = activeConv?.messages || [];
@@ -252,6 +255,7 @@ ${JSON.stringify(items, null, 2)}`;
         onTimeTravelToggle={onTimeTravelToggle}
         timeTravelPoint={timeTravelPoint}
         onTimeTravelPointChange={onTimeTravelPointChange}
+        graphMetas={graphMetas}
         timeTravelGraphs={timeTravelGraphs}
         defaultModelKey={defaultModelKey}
         graphName={defaultGraph}

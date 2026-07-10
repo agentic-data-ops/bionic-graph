@@ -2,28 +2,43 @@
 //!
 //! Global defaults come from `settings.json`. Each graph can override
 //! its own settings in `<data_dir>/graphs/<name>/config.json`.
+//! Graph metadata (descriptions, time-travel, default) is persisted in
+//! `<data_dir>/graphs/metadata.json`.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
-use crate::graph::graph::{Graph, GraphConfig, RedologOverrides};
+use crate::graph::graph::{Graph, GraphConfig};
+use crate::graph::graph_registry::{GraphMetadata, GraphRegistry};
 use crate::storage::types::StorageResult;
 
 /// Manages lifecycle of multiple named graphs.
 pub struct GraphManager {
     graphs: RwLock<HashMap<String, Arc<Graph>>>,
     data_dir: PathBuf,
-    redolog_overrides: RedologOverrides,
+    registry: RwLock<GraphRegistry>,
 }
 
 impl GraphManager {
-    /// Create a new graph manager.
-    pub fn new(data_dir: PathBuf, redolog_overrides: RedologOverrides) -> Self {
+    /// Create a new graph manager, loading or initializing the registry.
+    pub fn new(data_dir: PathBuf) -> Self {
+        let graphs_dir = data_dir.join("graphs");
+        let registry = GraphRegistry::load(&graphs_dir)
+            .unwrap_or_else(|| GraphRegistry::create_initial(&graphs_dir).unwrap_or_else(|_| {
+                GraphRegistry {
+                    default: "graph0".to_string(),
+                    graphs: vec![GraphMetadata {
+                        name: "graph0".to_string(),
+                        description: "默认图库".to_string(),
+                        time_travel: false,
+                    }],
+                }
+            }));
         Self {
             graphs: RwLock::new(HashMap::new()),
             data_dir,
-            redolog_overrides,
+            registry: RwLock::new(registry),
         }
     }
 
@@ -41,9 +56,18 @@ impl GraphManager {
             }
         }
 
-        let graph_dir = self.data_dir.join("graphs");
-        std::fs::create_dir_all(&graph_dir)?;
-        let graph = Graph::open(&graph_dir, name, &self.redolog_overrides)?;;
+        let graphs_dir = self.data_dir.join("graphs");
+        std::fs::create_dir_all(&graphs_dir)?;
+        let graph = Graph::open(&graphs_dir, name)?;
+
+        // Ensure the graph is tracked in the registry.
+        {
+            let mut reg = self.registry.write().unwrap();
+            if !reg.exists(name) {
+                reg.ensure(name, "", false);
+                reg.save(&graphs_dir)?;
+            }
+        }
 
         let mut graphs = self.graphs.write().unwrap();
         if let Some(g) = graphs.get(name) {
@@ -53,45 +77,73 @@ impl GraphManager {
         Ok(graph)
     }
 
-    /// Get the per-graph config (loads from disk, merges global overrides, returns defaults if missing).
+    /// Get the per-graph config.
     pub fn get_graph_config(&self, name: &str) -> GraphConfig {
         let path = self.data_dir.join("graphs").join(name);
-        let mut config = GraphConfig::load(&path);
-        config.storage.apply_redolog_overrides(&self.redolog_overrides);
-        config
+        GraphConfig::load(&path)
     }
 
     /// Update the per-graph config and persist to disk.
     pub fn set_graph_config(&self, name: &str, config: &GraphConfig) -> StorageResult<()> {
         let path = self.data_dir.join("graphs").join(name);
         config.save(&path)?;
-        // If the graph is loaded in memory, update its settings
-        // (currently Graph fields are immutable after open — close/reopen needed)
         Ok(())
     }
 
     /// List all known graph names.
     pub fn list(&self) -> StorageResult<Vec<String>> {
-        let mut names = Vec::new();
-        let graphs_dir = self.data_dir.join("graphs");
-        if !graphs_dir.exists() {
-            return Ok(names);
-        }
-        if let Ok(entries) = std::fs::read_dir(&graphs_dir) {
-            for entry in entries.flatten() {
-                if entry.file_type().map_or(false, |t| t.is_dir()) {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if entry.path().join("data").exists() {
-                        names.push(name);
-                    }
-                }
-            }
-        }
-        names.sort();
-        Ok(names)
+        let reg = self.registry.read().unwrap();
+        Ok(reg.list())
     }
 
-    /// Delete a graph from memory and disk.
+    /// Get the default graph name.
+    pub fn get_default_name(&self) -> String {
+        let reg = self.registry.read().unwrap();
+        reg.get_default().to_string()
+    }
+
+    /// Get all graph metadata (including the default name).
+    pub fn get_registry(&self) -> (Vec<GraphMetadata>, String) {
+        let reg = self.registry.read().unwrap();
+        (reg.graphs.clone(), reg.default.clone())
+    }
+
+    /// Get metadata for a specific graph.
+    pub fn get_meta(&self, name: &str) -> Option<GraphMetadata> {
+        let reg = self.registry.read().unwrap();
+        reg.get_meta(name).cloned()
+    }
+
+    /// Check if a graph has time-travel enabled.
+    pub fn time_travel_enabled(&self, name: &str) -> bool {
+        let reg = self.registry.read().unwrap();
+        reg.time_travel_enabled(name)
+    }
+
+    /// Set the default graph.
+    pub fn set_default(&self, name: &str) -> StorageResult<()> {
+        let graphs_dir = self.data_dir.join("graphs");
+        let mut reg = self.registry.write().unwrap();
+        if !reg.exists(name) {
+            return Err(crate::storage::types::StorageError::GraphNotFound(name.to_string()));
+        }
+        reg.set_default(name);
+        reg.save(&graphs_dir)?;
+        Ok(())
+    }
+
+    /// Update a graph's metadata (description, time_travel).
+    pub fn update_meta(&self, name: &str, description: &str, time_travel: bool) -> StorageResult<bool> {
+        let graphs_dir = self.data_dir.join("graphs");
+        let mut reg = self.registry.write().unwrap();
+        let found = reg.update(name, description, time_travel);
+        if found {
+            reg.save(&graphs_dir)?;
+        }
+        Ok(found)
+    }
+
+    /// Delete a graph from memory, disk, and registry.
     pub fn delete(&self, name: &str) -> StorageResult<()> {
         {
             let mut graphs = self.graphs.write().unwrap();
@@ -101,10 +153,15 @@ impl GraphManager {
                 }
             }
         }
-        let path = self.data_dir.join("graphs").join(name);
-        if path.exists() {
-            std::fs::remove_dir_all(&path)?;
+        let graph_path = self.data_dir.join("graphs").join(name);
+        if graph_path.exists() {
+            std::fs::remove_dir_all(&graph_path)?;
         }
+        // Remove from registry.
+        let graphs_dir = self.data_dir.join("graphs");
+        let mut reg = self.registry.write().unwrap();
+        reg.remove(name);
+        reg.save(&graphs_dir)?;
         Ok(())
     }
 
@@ -117,8 +174,7 @@ impl GraphManager {
         Ok(names)
     }
 
-    /// Close all open graphs — flushes dirty blocks and checkpoints WALs.
-    /// Called during server shutdown to ensure data durability.
+    /// Close all open graphs.
     pub fn close_all(&self) {
         let names: Vec<String> = {
             let graphs = self.graphs.read().unwrap();
@@ -131,7 +187,6 @@ impl GraphManager {
                 }
             }
         }
-        // Clear the map after closing.
         if let Ok(mut graphs) = self.graphs.write() {
             graphs.clear();
         }

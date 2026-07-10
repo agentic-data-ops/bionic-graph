@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{extract::State, Json};
 use serde::Deserialize;
 
 use crate::config::settings::SearchSettings;
@@ -25,7 +25,7 @@ pub async fn get_search_settings(
 pub async fn update_search_settings(
     State(state): State<AppState>,
     Json(new_settings): Json<SearchSettings>,
-) -> StatusCode {
+) -> Json<serde_json::Value> {
     let save_result = {
         let mut guard = state.settings.lock().unwrap();
         guard.search = new_settings;
@@ -33,9 +33,9 @@ pub async fn update_search_settings(
     };
     if let Err(e) = save_result {
         log::warn!("Failed to save search settings: {}", e);
-        return StatusCode::INTERNAL_SERVER_ERROR;
+        return Json(serde_json::json!({ "status": "error", "message": e.to_string() }));
     }
-    StatusCode::OK
+    Json(serde_json::json!({ "status": "ok" }))
 }
 
 // ── /settings/llm ───────────────────────────────────────────────────────────
@@ -60,7 +60,7 @@ pub struct UpdateLlmBody {
 pub async fn update_llm_settings(
     State(state): State<AppState>,
     Json(body): Json<UpdateLlmBody>,
-) -> StatusCode {
+) -> Json<serde_json::Value> {
     let save_result = {
         let mut guard = state.settings.lock().unwrap();
         if let Some(providers) = body.providers {
@@ -73,9 +73,9 @@ pub async fn update_llm_settings(
     };
     if let Err(e) = save_result {
         log::warn!("Failed to save LLM settings: {}", e);
-        return StatusCode::INTERNAL_SERVER_ERROR;
+        return Json(serde_json::json!({ "status": "error", "message": e.to_string() }));
     }
-    StatusCode::OK
+    Json(serde_json::json!({ "status": "ok" }))
 }
 
 // ── /settings/rank ──────────────────────────────────────────────────────────
@@ -94,7 +94,7 @@ pub async fn get_rank_settings(
 pub async fn update_rank_settings(
     State(state): State<AppState>,
     Json(new_config): Json<RankConfig>,
-) -> StatusCode {
+) -> Json<serde_json::Value> {
     let save_result = {
         let mut guard = state.settings.lock().unwrap();
         guard.rank = new_config;
@@ -102,7 +102,7 @@ pub async fn update_rank_settings(
     };
     if let Err(e) = save_result {
         log::warn!("Failed to save rank settings: {}", e);
-        return StatusCode::INTERNAL_SERVER_ERROR;
+        return Json(serde_json::json!({ "status": "error", "message": e.to_string() }));
     }
-    StatusCode::OK
+    Json(serde_json::json!({ "status": "ok" }))
 }

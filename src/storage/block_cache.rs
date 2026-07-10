@@ -41,23 +41,16 @@ pub struct BlockCache {
     lru_order: VecDeque<BlockIdx>,
     capacity: usize,
     stats: CacheStats,
-    /// Maximum age (in seconds) for a dirty block before it is auto-flushed.
-    /// `None` disables time-based flush.
-    max_dirty_age_secs: Option<u64>,
 }
 
+
 impl BlockCache {
-    /// Create a new cache with the given capacity.
-    ///
-    /// `max_dirty_age_secs`: if `Some`, dirty blocks older than this are
-    /// eligible for time-based flush during `get_or_load` and `flush_dirty`.
-    pub fn new(capacity: usize, max_dirty_age_secs: Option<u64>) -> Self {
+    pub fn new(capacity: usize) -> Self {
         Self {
             blocks: HashMap::with_capacity(capacity),
             lru_order: VecDeque::with_capacity(capacity),
             capacity,
             stats: CacheStats::default(),
-            max_dirty_age_secs,
         }
     }
 
@@ -190,39 +183,6 @@ impl BlockCache {
         Ok(count)
     }
 
-    /// Flush dirty blocks that exceed the maximum age threshold.
-    ///
-    /// Returns the number of blocks flushed.
-    pub fn flush_aged_dirty<F>(&mut self, flusher: &F) -> StorageResult<usize>
-    where
-        F: Fn(BlockIdx, &[u8; BLOCK_SIZE]) -> StorageResult<()>,
-    {
-        let Some(max_age) = self.max_dirty_age_secs else {
-            return Ok(0);
-        };
-        let cutoff = Instant::now() - std::time::Duration::from_secs(max_age);
-
-        let aged: Vec<BlockIdx> = self
-            .blocks
-            .iter()
-            .filter(|(_, b)| b.is_dirty && b.last_access < cutoff)
-            .map(|(idx, _)| *idx)
-            .collect();
-
-        let count = aged.len();
-        for idx in &aged {
-            if let Some(block) = self.blocks.get(idx) {
-                flusher(*idx, &block.data)?;
-            }
-        }
-        for idx in &aged {
-            if let Some(block) = self.blocks.get_mut(idx) {
-                block.is_dirty = false;
-            }
-        }
-        self.stats.dirty_flushes += count as u64;
-        Ok(count)
-    }
 
     /// Access a block without loading (returns `None` if not cached).
     /// This is useful for the index scanner which may check cache first.

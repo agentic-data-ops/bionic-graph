@@ -27,7 +27,7 @@ const DEFAULT_SETTINGS = {
     },
   ],
   activeProvider: 'DeepSeek',
-  defaultGraph: 'default',
+  defaultGraph: '',
   timeTravel: false,
   timeTravelPoint: '',
   useGraph: false,
@@ -101,7 +101,6 @@ export default function App() {
   const [kbInitialContent, setKbInitialContent] = useState('');
   const [kbInitialGraph, setKbInitialGraph] = useState('');
   const [graphs, setGraphs] = useState([]);
-  const [timeTravelGraphs, setTimeTravelGraphs] = useState({});
 
   // ── Theme ──
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
@@ -116,11 +115,12 @@ export default function App() {
   useEffect(() => {
     listGraphs()
       .then((d) => {
-        const gs = d.graphs || [];
-        setGraphs(gs);
-        setTimeTravelGraphs(d.time_travel || {});
-        if (!gs.includes(settings.defaultGraph)) {
-          setSettings((s) => ({ ...s, defaultGraph: gs[0] || 'default' }));
+        const metas = d.graphs || [];
+        setGraphs(metas);
+        const apiDefault = d.default || '';
+        // If no default set yet, or stored default not in list, use API default
+        if (!settings.defaultGraph || !metas.some(g => g.name === settings.defaultGraph)) {
+          setSettings((s) => ({ ...s, defaultGraph: apiDefault || (metas[0]?.name || '') }));
         }
       })
       .catch(() => {});
@@ -280,7 +280,7 @@ export default function App() {
   }, [conversations.length, handleNewChat]);
 
   return (
-    <div className="h-screen flex overflow-hidden select-none bg-[var(--bg-primary)] text-[var(--text-primary)]">
+    <div className="h-screen flex overflow-hidden select-none bg-[var(--bg-primary)] text-[var(--text-primary)]" data-version="2">
       {/* Sidebar */}
       <Sidebar
         conversations={conversations}
@@ -310,8 +310,9 @@ export default function App() {
         onTimeTravelPointChange={(v) => handleUpdateSettings({ timeTravelPoint: v })}
         defaultGraph={settings.defaultGraph}
         onDefaultGraphChange={(g) => handleUpdateSettings({ defaultGraph: g })}
-        graphs={graphs}
-        timeTravelGraphs={timeTravelGraphs}
+        graphs={graphs.map(g => g.name || g)}
+        graphMetas={graphs}
+        timeTravelGraphs={{}}
         defaultModelKey={settings.defaultModelKey}
         chatModel={settings.chatModel}
         onChatModelChange={(m) => handleUpdateSettings({ chatModel: m })}
@@ -344,8 +345,8 @@ export default function App() {
         onClose={() => setGraphManagerOpen(false)}
         graphName={settings.defaultGraph}
         onGraphNameChange={(g) => handleUpdateSettings({ defaultGraph: g })}
-        graphs={graphs}
-        onGraphsChange={setGraphs}
+        graphMetas={graphs}
+        onGraphMetasChange={setGraphs}
       />
 
       {/* Settings dialog */}

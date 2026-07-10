@@ -32,18 +32,6 @@ use crate::storage::{
 /// Each graph can independently tune these parameters. Defaults match the
 /// engine's built-in constants and can be overridden via `PUT /graphs/:name/config`.
 
-// ─── Redolog global overrides ──────────────────────────────────────────────
-
-/// Global overrides for redo-log rotation settings (from settings.json).
-/// Applied after loading per-graph config.json, so global values win.
-#[derive(Debug, Clone, Default)]
-pub struct RedologOverrides {
-    /// Override for rotation_threshold_mb (MB). None = use per-graph / code default.
-    pub max_size_mb: Option<u64>,
-    /// Override for rotation_max_age_secs (seconds). None = use per-graph / code default.
-    pub max_age_secs: Option<u64>,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GraphConfig {
@@ -70,8 +58,6 @@ impl Default for GraphConfig {
 pub struct GraphStorageConfig {
     /// LRU 块缓存容量（块数 × 16KB = 内存占用）。默认 4096 = 64 MB
     pub cache_capacity: usize,
-    /// 脏块自动刷盘超时（秒）。null 表示不启用时间触发的刷盘
-    pub max_dirty_age_secs: Option<u64>,
     /// WAL 文件旋转大小（MB）
     pub rotation_threshold_mb: u64,
     /// WAL 文件旋转时间（秒）。超过此时间自动旋转。null 表示不启用时间旋转
@@ -84,7 +70,6 @@ impl Default for GraphStorageConfig {
     fn default() -> Self {
         Self {
             cache_capacity: 4096,
-            max_dirty_age_secs: Some(60),
             rotation_threshold_mb: 64,
             rotation_max_age_secs: Some(900),
             free_list_target: 128,
@@ -93,16 +78,6 @@ impl Default for GraphStorageConfig {
 }
 
 impl GraphStorageConfig {
-    /// Apply global redo-log overrides from settings.json.
-    /// These override per-graph config values when set.
-    pub fn apply_redolog_overrides(&mut self, overrides: &RedologOverrides) {
-        if let Some(mb) = overrides.max_size_mb {
-            self.rotation_threshold_mb = mb;
-        }
-        if let Some(secs) = overrides.max_age_secs {
-            self.rotation_max_age_secs = Some(secs);
-        }
-    }
 }
 
 /// 锁引擎配置段
@@ -185,20 +160,18 @@ impl Graph {
     /// This is the main entry point. On first call for a new graph, the
     /// storage files are created. On subsequent calls, the redo log is
     /// replayed and the in-memory index rebuilt.
-    pub fn open<P: AsRef<Path>>(dir: P, name: &str, overrides: &RedologOverrides) -> StorageResult<Arc<Self>> {
+    pub fn open<P: AsRef<Path>>(dir: P, name: &str) -> StorageResult<Arc<Self>> {
         let graph_dir = dir.as_ref().join(name);
         std::fs::create_dir_all(&graph_dir)?;
 
         // Load per-graph config (falls back to defaults if no config.json)
-        let mut config = GraphConfig::load(&graph_dir);
-        // Apply global overrides from settings.json (win over per-graph config)
-        config.storage.apply_redolog_overrides(overrides);
+        let config = GraphConfig::load(&graph_dir);
 
         // ── Open storage files ───────────────────────────────────────────
         let data_file = DataFile::open(graph_dir.join("data"))?;
         let data_blocks = data_file.block_count()?;
         let bitmap_file = RwLock::new(BitmapFile::open(graph_dir.join("bitmap"), data_blocks)?);
-        let block_cache = RwLock::new(BlockCache::new(config.storage.cache_capacity, config.storage.max_dirty_age_secs));
+        let block_cache = RwLock::new(BlockCache::new(config.storage.cache_capacity));
         let redo_log = RedoLog::open_with_config(
             &graph_dir,
             config.storage.rotation_threshold_mb * 1024 * 1024,
