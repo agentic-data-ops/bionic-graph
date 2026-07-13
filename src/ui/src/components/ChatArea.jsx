@@ -52,7 +52,6 @@ export default function ChatArea({
 
   const chatInputRef = useRef(null);
   const [kwSearchMode, setKwSearchMode] = useState("greedy");
-  const [enableSemanticFilter, setEnableSemanticFilter] = useState(false);
   const [searchStream, setSearchStream] = useState(null);
   const abortRef = useRef(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -74,9 +73,7 @@ export default function ChatArea({
 
       if (useGraph) {
         const searchStep = { icon: '🔍', name: 'Searching knowledge graph', status: 'running', llmOutput: '' };
-        const steps = enableSemanticFilter
-          ? [searchStep, { icon: '🎯', name: 'Filtering semantically', status: 'pending', llmOutput: '' }]
-          : [searchStep];
+        const steps = [searchStep];
 
         const ttMicros = timeTravel && timeTravelPoint ? localDatetimeToUTC(timeTravelPoint) : null;
         const progressMsgId = uid();
@@ -92,46 +89,8 @@ export default function ChatArea({
           const res = await gremlin(gremlinSteps, defaultGraph);
 
           let finalData = res;
-          if (enableSemanticFilter && (res?.data || []).length > 0) {
-            const step2run = { icon: '🎯', name: 'Filtering semantically', status: 'running', llmOutput: '' };
-            setSearchStream({ ...progressMsg, steps: [searchStep, step2run] });
 
-            const modelKey = `${activeProvider}/${chatModel || 'default'}`;
-            const items = (res?.data || []).slice(0, 50);
-            const filterPrompt = `You are a semantic relevance filter. Given a user query and a list of search results from a knowledge graph, identify which results are semantically relevant. Return ONLY a JSON array of indices (0-based) of the relevant items. If none are relevant, return [].
-
-Search results are graph items with fields: type, id, name, label, labels, properties.
-
-User query: ${text}
-
-Search results:
-${JSON.stringify(items, null, 2)}`;
-
-            const { response: filterResponse, abort } = chatCompletionProxy(
-              [{ role: 'system', content: 'You are a precise semantic relevance filter. Respond only with a JSON array of 0-based indices.' }, { role: 'user', content: filterPrompt }],
-              modelKey,
-            );
-            abortRef.current = abort;
-            let filterBuf = '';
-            await parseSSEStream(await filterResponse, (t => { filterBuf += t; }));
-            abortRef.current = null;
-
-            try {
-              const indices = JSON.parse(filterBuf.trim());
-              if (Array.isArray(indices) && indices.length > 0) {
-                const valid = indices.filter(i => i >= 0 && i < items.length);
-                finalData = { ...res, data: valid.map(i => items[i]) };
-              } else {
-                finalData = { ...res, data: [] };
-              }
-            } catch (e) {
-              // LLM output not valid JSON — keep original results
-            }
-          }
-
-          const doneSteps = enableSemanticFilter
-            ? [{ icon: '✅', name: 'Graph search completed', status: 'done', llmOutput: '' }, { icon: '✅', name: 'Semantic filtering done', status: 'done', llmOutput: '' }]
-            : [{ icon: '✅', name: 'Graph search completed', status: 'done', llmOutput: '' }];
+          const doneSteps = [{ icon: '✅', name: 'Graph search completed', status: 'done', llmOutput: '' }];
           setSearchStream(null);
           requestAnimationFrame(() => chatInputRef.current?.focus());
           abortRef.current = null;
@@ -191,7 +150,7 @@ ${JSON.stringify(items, null, 2)}`;
         }
       }
     },
-    [activeConv, useGraph, defaultGraph, providers, activeProvider, onUpdateConv, chatModel, kwSearchMode, enableSemanticFilter, timeTravel, timeTravelPoint, timeTravelGraphs, graphMetas]
+    [activeConv, useGraph, defaultGraph, providers, activeProvider, onUpdateConv, chatModel, kwSearchMode, timeTravel, timeTravelPoint, timeTravelGraphs, graphMetas]
   );
 
   const messages = activeConv?.messages || [];
@@ -244,8 +203,6 @@ ${JSON.stringify(items, null, 2)}`;
         onStop={() => { abortRef.current?.(); abortRef.current = null; setIsGenerating(false); }}
         kwSearchMode={kwSearchMode}
         onkwSearchModeChange={setKwSearchMode}
-        enableSemanticFilter={enableSemanticFilter}
-        onSemanticFilterChange={setEnableSemanticFilter}
         providers={providers}
         activeProvider={activeProvider}
         onProviderChange={onProviderChange}

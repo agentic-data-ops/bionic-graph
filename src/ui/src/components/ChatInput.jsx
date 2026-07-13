@@ -198,13 +198,6 @@ const ChatInput = forwardRef(function ChatInput({
               )}
             </div>
 
-            {/* Semantic filter toggle */}
-            <label className="flex items-center gap-1.5 cursor-pointer select-none text-xs text-[var(--text-secondary)] font-medium whitespace-nowrap">
-              <input type="checkbox" checked={enableSemanticFilter} onChange={(e) => onSemanticFilterChange(e.target.checked)}
-                className="w-3.5 h-3.5 rounded border-[var(--border)] bg-[var(--bg-tertiary)] checked:bg-[var(--accent)] checked:border-[var(--accent)] focus:ring-0 cursor-pointer" />
-              {t('chat.semanticFilter')}
-            </label>
-
             {/* Time travel — only if graph supports it */}
             {(Array.isArray(graphMetas) ? graphMetas.find(g => g.name === graphName)?.time_travel : timeTravelGraphs[graphName]) && (<>
             <label className="flex items-center gap-1.5 cursor-pointer select-none text-xs text-[var(--text-secondary)] font-medium whitespace-nowrap">

@@ -31,13 +31,12 @@ const DEFAULT_SETTINGS = {
   timeTravel: false,
   timeTravelPoint: '',
   useGraph: false,
-  enableSemanticFilter: false,
   chatModel: null,
   defaultModelKey: '',
 };
 
 // Keys persisted to localStorage (user preferences only — no system config)
-const USER_PREFS_KEYS = ['activeProvider','defaultGraph','timeTravel','timeTravelPoint','useGraph','enableSemanticFilter','chatModel'];
+const USER_PREFS_KEYS = ['activeProvider','defaultGraph','timeTravel','timeTravelPoint','useGraph','chatModel'];
 
 function loadSettings() {
   try {
@@ -302,8 +301,6 @@ export default function App() {
         onProviderChange={(name) => handleUpdateSettings({ activeProvider: name })}
         useGraph={settings.useGraph}
         onGraphToggle={(v) => handleUpdateSettings({ useGraph: v })}
-        enableSemanticFilter={settings.enableSemanticFilter}
-        onSemanticFilterChange={(v) => handleUpdateSettings({ enableSemanticFilter: v })}
         timeTravel={settings.timeTravel}
         onTimeTravelToggle={(v) => handleUpdateSettings({ timeTravel: v })}
         timeTravelPoint={settings.timeTravelPoint}
