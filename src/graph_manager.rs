@@ -30,8 +30,8 @@ impl GraphManager {
                     default: "graph0".to_string(),
                     graphs: vec![GraphMetadata {
                         name: "graph0".to_string(),
-                        description: "默认图库".to_string(),
-                        time_travel: false,
+                        description: "".to_string(),
+                        time_travel: true,
                     }],
                 }
             }));

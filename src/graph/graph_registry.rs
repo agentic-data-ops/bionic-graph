@@ -57,15 +57,42 @@ impl GraphRegistry {
     }
 
     /// Create the initial registry (first-time setup).
+    /// Scans existing graph directories first; if none found, creates graph0.
     pub fn create_initial(graphs_dir: &Path) -> StorageResult<Self> {
         std::fs::create_dir_all(graphs_dir)?;
-        let reg = Self {
-            default: "graph0".to_string(),
-            graphs: vec![GraphMetadata {
-                name: "graph0".to_string(),
-                description: "默认图库".to_string(),
-                time_travel: false,
-            }],
+
+        // Scan for existing graph directories (legacy data from before registry).
+        let mut existing: Vec<String> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(graphs_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if entry.file_type().map_or(false, |t| t.is_dir()) && entry.path().join("data").exists() {
+                    existing.push(name);
+                }
+            }
+        }
+        existing.sort();
+
+        let reg = if existing.is_empty() {
+            // No existing graphs — create the default.
+            Self {
+                default: "graph0".to_string(),
+                graphs: vec![GraphMetadata {
+                    name: "graph0".to_string(),
+                    description: "".to_string(),
+                    time_travel: true,
+                }],
+            }
+        } else {
+            // Use the first existing graph as default.
+            Self {
+                default: existing[0].clone(),
+                graphs: existing.into_iter().map(|name| GraphMetadata {
+                    name,
+                    description: "".to_string(),
+                    time_travel: false,
+                }).collect(),
+            }
         };
         reg.save(graphs_dir)?;
         Ok(reg)

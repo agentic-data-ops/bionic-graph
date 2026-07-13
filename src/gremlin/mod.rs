@@ -709,12 +709,16 @@ pub async fn create_graph(
     }
     // Opening the graph creates it on disk.
     match state.gm.get(&params.name) {
-        Ok(_) => Json(CreateGraphResponse {
-            name: params.name,
-            description: params.description,
-            time_travel: params.time_travel,
-            created: true,
-        }),
+        Ok(_) => {
+            // Persist the provided description / time_travel to the registry.
+            let _ = state.gm.update_meta(&params.name, &params.description, params.time_travel);
+            Json(CreateGraphResponse {
+                name: params.name,
+                description: params.description,
+                time_travel: params.time_travel,
+                created: true,
+            })
+        },
         Err(_) => Json(CreateGraphResponse {
             name: params.name,
             description: params.description,
@@ -747,10 +751,10 @@ pub struct SetDefaultGraphBody {
 pub async fn set_default_graph(
     State(state): State<AppState>,
     Json(body): Json<SetDefaultGraphBody>,
-) -> StatusCode {
+) -> Json<serde_json::Value> {
     match state.gm.set_default(&body.default) {
-        Ok(_) => StatusCode::OK,
-        Err(_) => StatusCode::NOT_FOUND,
+        Ok(_) => Json(serde_json::json!({"status": "ok"})),
+        Err(_) => Json(serde_json::json!({"status": "error", "message": "graph not found"})),
     }
 }
 
@@ -768,11 +772,11 @@ pub async fn update_graph_meta(
     State(state): State<AppState>,
     Path(name): Path<String>,
     Json(body): Json<UpdateGraphMetaBody>,
-) -> StatusCode {
+) -> Json<serde_json::Value> {
     match state.gm.update_meta(&name, &body.description, body.time_travel) {
-        Ok(true) => StatusCode::OK,
-        Ok(false) => StatusCode::NOT_FOUND,
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        Ok(true) => Json(serde_json::json!({"status": "ok"})),
+        Ok(false) => Json(serde_json::json!({"status": "error", "message": "not found"})),
+        Err(e) => Json(serde_json::json!({"status": "error", "message": e.to_string()})),
     }
 }
 

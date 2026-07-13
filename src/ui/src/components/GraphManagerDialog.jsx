@@ -36,7 +36,7 @@ export default function GraphManagerDialog({
   const [showAddGraph, setShowAddGraph] = useState(false);
   const [newGraphName, setNewGraphName] = useState('');
   const [newGraphDesc, setNewGraphDesc] = useState('');
-  const [newGraphTT, setNewGraphTT] = useState(false);
+  const [newGraphTT, setNewGraphTT] = useState(true);
   const [editingMeta, setEditingMeta] = useState(null); // { name, description, time_travel }
 
   // Reload metas from backend when dialog opens.
@@ -109,15 +109,18 @@ export default function GraphManagerDialog({
               </div>
               <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 ml-2">
                 {meta.name !== graphName && (
-                  <button className="px-2 py-1 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] rounded-lg transition-all"
+                  <button className="px-2 py-1 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] rounded-lg transition-all cursor-pointer"
                     onClick={() => handleSetDefault(meta.name)}>设为默认</button>
                 )}
-                <button className="px-2 py-1 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] rounded-lg transition-all"
+                <button className="px-2 py-1 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] rounded-lg transition-all cursor-pointer"
                   onClick={() => setEditingMeta({ name: meta.name, description: meta.description || '', time_travel: meta.time_travel || false })}>
                   编辑
                 </button>
-                <button className="px-2 py-1 text-xs text-[var(--danger)] hover:bg-[color-mix(in srgb, var(--bg-hover), var(--danger) 30%)] rounded-lg transition-all"
-                  onClick={() => handleDeleteGraph(meta.name)}>{t('settings.delete')}</button>
+                <button className="px-2 py-1 text-xs text-[var(--danger)] hover:bg-[color-mix(in srgb, var(--bg-hover), var(--danger) 30%)] rounded-lg transition-all cursor-pointer"
+                  onClick={() => {
+                    const msg = `确定要删除图库「${meta.name}」吗？\n此操作不可恢复，所有数据将被永久清除。`;
+                    if (window.confirm(msg)) handleDeleteGraph(meta.name);
+                  }}>{t('settings.delete')}</button>
               </div>
             </div>
           ))}
