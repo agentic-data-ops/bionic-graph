@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn test_hit_and_miss() {
-        let mut cache = BlockCache::new(10, None);
+        let mut cache = BlockCache::new(10);
         let _ = cache
             .get_or_load(0, test_loader, &noop_flusher)
             .unwrap();
@@ -310,7 +310,7 @@ mod tests {
 
     #[test]
     fn test_dirty_marked_and_flushed() {
-        let mut cache = BlockCache::new(10, None);
+        let mut cache = BlockCache::new(10);
         let data = cache
             .get_or_load(5, test_loader, &noop_flusher)
             .unwrap();
@@ -325,7 +325,7 @@ mod tests {
 
     #[test]
     fn test_eviction_evicts_lru() {
-        let mut cache = BlockCache::new(2, None);
+        let mut cache = BlockCache::new(2);
         cache
             .get_or_load(1, test_loader, &noop_flusher)
             .unwrap();

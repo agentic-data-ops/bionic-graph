@@ -1023,6 +1023,9 @@ fn step_traverse(
         visited.insert(*id, *score);
     }
 
+    // Track edges traversed during BFS (source, target, edge_id).
+    let mut traversed_edges: Vec<(u32, u32, u32)> = Vec::new();
+
     let mut frontier: Vec<(u32, f32, usize)> = scored.into_iter().map(|(id, s)| (id, s, 0)).collect();
     let mut front_idx = 0;
 
@@ -1048,6 +1051,8 @@ fn step_traverse(
                     continue; // below propagation threshold
                 }
 
+                traversed_edges.push((cur_id, *target, *_eid));
+
                 let prev = visited.entry(*target).or_insert(0.0);
                 if new_score > *prev {
                     *prev = new_score;
@@ -1072,6 +1077,8 @@ fn step_traverse(
                 if new_score < activate {
                     continue;
                 }
+
+                traversed_edges.push((*source, cur_id, *_eid));
 
                 let prev = visited.entry(*source).or_insert(0.0);
                 if new_score > *prev {
@@ -1099,6 +1106,24 @@ fn step_traverse(
             if let Ok(rec) = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset) {
                 if let Ok(Some(v)) = crud::read_vertex_by_record(graph, &rec, None) {
                     gremlin_results.push(GremlinResult::from_vertex(&v, Some(&rec), Some(score)));
+                }
+            }
+        }
+    }
+
+    // Include traversed edges where both endpoint scores >= min_score.
+    traversed_edges.sort();
+    traversed_edges.dedup();
+    for (src, tgt, eid) in &traversed_edges {
+        let src_score = visited.get(src).copied().unwrap_or(0.0);
+        let tgt_score = visited.get(tgt).copied().unwrap_or(0.0);
+        if src_score >= min_score && tgt_score >= min_score {
+            if let Some(ptr) = mi.edges.get(*eid) {
+                if let Ok(rec) = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset) {
+                    if let Ok(Some(e)) = crud::read_edge_by_record(graph, &rec, None) {
+                        let edge_score = (src_score + tgt_score) / 2.0;
+                        gremlin_results.push(GremlinResult::from_edge(&e, Some(&rec), Some(edge_score)));
+                    }
                 }
             }
         }

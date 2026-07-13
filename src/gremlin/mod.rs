@@ -993,6 +993,8 @@ pub async fn submit_extraction(
     let settings = state.settings.clone();
     let doc_title = doc.title.clone();
     let graph_arc = graph.clone();
+    let doc_mgr = state.doc_mgr.clone();
+    let gname = graph_name.to_string();
 
     tokio::spawn(async move {
         let tid = task_id_clone.clone();
@@ -1235,6 +1237,11 @@ Return ONLY valid JSON with this structure:
                     task.steps.clone()
                 } else { vec![] }
             });
+        }
+
+        // Write extracted tags back to the document metadata.
+        if !parsed.tags.is_empty() {
+            doc_mgr.update(&doc_id, &doc_title, &parsed.tags, Some(&gname));
         }
 
         // Mark task as completed
