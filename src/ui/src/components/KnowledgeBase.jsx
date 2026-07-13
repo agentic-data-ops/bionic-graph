@@ -146,7 +146,7 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
       setImportSteps([]);
       if (initialGraph) setImportGraph(initialGraph);
       Promise.all([
-        listDocuments().then((d) => setDocuments(d.documents || [])).catch(() => {}),
+        listDocuments().then((d) => setDocuments(Array.isArray(d) ? d : (d.documents || []))).catch(() => {}),
         listGraphs().then((d) => setGraphs(d.graphs || [])).catch(() => {}),
       ]).then(() => setLoading(false));
     }
@@ -211,7 +211,7 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
           addStep({ label: `Extraction complete: ${stats.new_vertices || 0} vertices, ${stats.new_edges || 0} edges`, status: 'done', detail: '' });
           addStep({ label: 'Import complete', status: 'done', detail: '' });
           const docs = await listDocuments();
-          setDocuments(docs.documents || []);
+          setDocuments(Array.isArray(docs) ? docs : (docs.documents || []));
           setImporting(false);
           return;
         }
@@ -264,7 +264,7 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
     try {
       await updateDocument(showEdit, editTitle, editTags);
       const docs = await listDocuments();
-      setDocuments(docs.documents || []);
+      setDocuments(Array.isArray(docs) ? docs : (docs.documents || []));
       setShowEdit(null);
       setEditTitle('');
       setEditTags([]);
@@ -279,7 +279,7 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
     setDeleteConfirm(null);
     try {
       await deleteDocument(doc.id, deleteGraphData);
-      const docs = await listDocuments(); setDocuments(docs.documents || []);
+      const docs = await listDocuments(); setDocuments(Array.isArray(docs) ? docs : (docs.documents || []));
     } catch (e) { console.error('Delete error:', e); }
   }, [deleteConfirm, deleteGraphData]);
 

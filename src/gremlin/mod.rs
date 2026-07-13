@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 
 use crate::config::Settings;
-use crate::documents::DocumentManager;
+use crate::documents::{Document, DocumentManager};
 use crate::extract::task_manager::{ExtractionTaskManager, TaskResponse, TaskStatus, default_extraction_steps, update_step, compute_overall_pct};
 use crate::graph::graph::Graph;
 use crate::graph::gremlin::{execute_gremlin, GremlinQuery, GremlinResponse, GremlinResult};
@@ -733,10 +733,10 @@ pub async fn create_graph(
 pub async fn delete_graph(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> StatusCode {
+) -> Json<serde_json::Value> {
     match state.gm.delete(&name) {
-        Ok(_) => StatusCode::OK,
-        Err(_) => StatusCode::NOT_FOUND,
+        Ok(_) => Json(serde_json::json!({"status": "ok"})),
+        Err(_) => Json(serde_json::json!({"status": "error", "message": "not found"})),
     }
 }
 
@@ -863,24 +863,77 @@ pub async fn update_document(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(body): Json<UpdateDocumentBody>,
-) -> StatusCode {
+) -> Json<serde_json::Value> {
     let title = body.title.as_deref().unwrap_or("");
     let tags = body.tags.as_deref().unwrap_or(&[]);
     match state.doc_mgr.update(&id, title, tags, body.graph.as_deref()) {
-        Some(_) => StatusCode::OK,
-        None => StatusCode::NOT_FOUND,
+        Some(_) => Json(serde_json::json!({"status": "ok"})),
+        None => Json(serde_json::json!({"status": "error", "message": "not found"})),
     }
 }
 
-/// Delete a document.
+/// Delete a document and optionally clean up associated graph data.
 pub async fn delete_document(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> StatusCode {
-    if state.doc_mgr.delete(&id) {
-        StatusCode::OK
+) -> Json<serde_json::Value> {
+    // Get the document before deleting, so we know which graph to clean.
+    let doc = state.doc_mgr.get(&id);
+    let graph_name = doc.as_ref().map(|d| d.graph_name.clone());
+
+    let deleted = state.doc_mgr.delete(&id);
+
+    // Clean up graph vertices/edges that carry this doc's _source_doc_id.
+    if let Some(ref gname) = graph_name {
+        if let Ok(graph) = state.gm.get(gname) {
+            // Phase 1: Collect all vertex IDs while holding memory_index lock.
+            let all_vids: Vec<u32> = {
+                let mi = graph.memory_index.read().unwrap();
+                mi.vertices.keys().copied().collect()
+            };
+
+            // Phase 2: Check each vertex's _source_doc_id property (lock released).
+            let mut match_vids: Vec<u32> = Vec::new();
+            for vid in &all_vids {
+                if let Ok(Some(vertex)) = crate::graph::locked::get_vertex_locked(&graph, *vid) {
+                    if vertex.properties.get("_source_doc_id")
+                        .map_or(false, |v| matches!(v, PropertyValue::String(s) if s == &id))
+                    {
+                        match_vids.push(*vid);
+                    }
+                }
+            }
+
+            // Phase 3: Collect connected edges and delete everything.
+            if !match_vids.is_empty() {
+                let mut edge_ids: Vec<u32> = Vec::new();
+                {
+                    let mi = graph.memory_index.read().unwrap();
+                    for vid in &match_vids {
+                        for &(eid, _, _) in mi.adjacency.out_edges(*vid) {
+                            edge_ids.push(eid);
+                        }
+                        for &(eid, _, _) in mi.adjacency.in_edges(*vid) {
+                            edge_ids.push(eid);
+                        }
+                    }
+                }
+                for eid in &edge_ids {
+                    let _ = crate::graph::locked::hard_delete_edge_locked(&graph, *eid);
+                }
+                for vid in &match_vids {
+                    let _ = crate::graph::locked::hard_delete_vertex_locked(&graph, *vid);
+                }
+                log::info!("Cleaned {} vertices and {} edges for doc '{}' in graph '{}'",
+                    match_vids.len(), edge_ids.len(), id, gname);
+            }
+        }
+    }
+
+    if deleted {
+        Json(serde_json::json!({"status": "ok"}))
     } else {
-        StatusCode::NOT_FOUND
+        Json(serde_json::json!({"status": "error", "message": "not found"}))
     }
 }
 
@@ -913,11 +966,11 @@ pub async fn submit_extraction(
     Json(body): Json<SubmitExtractionBody>,
 ) -> Result<Json<SubmitExtractionResponse>, StatusCode> {
     let graph_name = body.graph.as_deref().unwrap_or("default");
-    let doc_id = &body.document_id;
+    let doc_id = body.document_id.clone();
 
     // Verify document exists
-    let doc = state.doc_mgr.get(doc_id).ok_or(StatusCode::NOT_FOUND)?;
-    let content = state.doc_mgr.get_content(doc_id).ok_or(StatusCode::NOT_FOUND)?;
+    let doc = state.doc_mgr.get(&doc_id).ok_or(StatusCode::NOT_FOUND)?;
+    let content = state.doc_mgr.get_content(&doc_id).ok_or(StatusCode::NOT_FOUND)?;
 
     // Resolve the graph
     let graph = state.gm.get(graph_name).map_err(|_| StatusCode::NOT_FOUND)?;
@@ -1069,6 +1122,8 @@ Return ONLY valid JSON with this structure:
             keywords: Option<Vec<String>>,
             #[serde(default = "default_strength")]
             strength: f32,
+            #[serde(default)]
+            properties: Option<HashMap<String, serde_json::Value>>,
         }
 
         fn default_strength() -> f32 { 1.0 }
@@ -1102,6 +1157,8 @@ Return ONLY valid JSON with this structure:
             let entity_props: HashMap<String, PropertyValue> = entity.properties.as_ref()
                 .map(|p| p.iter().map(|(k, v)| (k.clone(), json_to_property_value(v))).collect())
                 .unwrap_or_default();
+            let mut entity_props = entity_props;
+            entity_props.insert("_source_doc_id".to_string(), PropertyValue::String(doc_id.clone()));
 
             match crate::graph::locked::create_vertex_locked(
                 &graph_arc, name, &type_labels, &entity_kw, &entity_props,
@@ -1150,10 +1207,15 @@ Return ONLY valid JSON with this structure:
             let rel_name = relation.name.as_deref().unwrap_or("related_to");
             let rel_labels = relation.labels.clone().unwrap_or_default();
             let rel_keywords = relation.keywords.clone().unwrap_or_default();
+            let rel_props: HashMap<String, PropertyValue> = relation.properties.as_ref()
+                .map(|p| p.iter().map(|(k, v)| (k.clone(), json_to_property_value(v))).collect())
+                .unwrap_or_default();
+            let mut rel_props = rel_props;
+            rel_props.insert("_source_doc_id".to_string(), PropertyValue::String(doc_id.clone()));
 
             if let (Some(&src_vid), Some(&tgt_vid)) = (name_to_vid.get(src_name), name_to_vid.get(tgt_name)) {
                 match crate::graph::locked::create_edge_locked(
-                    &graph_arc, src_vid, tgt_vid, rel_name, &rel_labels, &rel_keywords, relation.strength, &HashMap::new(),
+                    &graph_arc, src_vid, tgt_vid, rel_name, &rel_labels, &rel_keywords, relation.strength, &rel_props,
                 ) {
                     Ok(_) => edge_count += 1,
                     Err(e) => log::warn!("Failed to create edge '{}->{}': {}", src_name, tgt_name, e),
