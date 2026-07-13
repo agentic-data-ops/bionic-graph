@@ -1009,10 +1009,15 @@ fn step_traverse(
     let mi = graph.memory_index.read().unwrap();
 
     // Seed: input vertices get score = 1.0.
+    // If input contains edges, their endpoints also get score = 1.0.
     let mut scored: Vec<(u32, f32)> = Vec::new();
     for item in &input {
         if let GremlinResult::Vertex { id, .. } = item {
             scored.push((*id, 1.0));
+        }
+        if let GremlinResult::Edge { source, target, .. } = item {
+            scored.push((*source, 1.0));
+            scored.push((*target, 1.0));
         }
     }
 
