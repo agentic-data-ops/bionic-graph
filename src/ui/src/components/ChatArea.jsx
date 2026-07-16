@@ -20,6 +20,41 @@ function uid() {
   return `m${Date.now()}-${++_idCounter}`;
 }
 
+/** Extract and format graph search context from `search_progress` messages. */
+function formatGraphContext(items) {
+  if (!items?.length) return '';
+  return items
+    .slice(0, 50)
+    .map((item) => {
+      if (item.type === 'vertex') {
+        return `[实体] ${item.name}${item.labels?.length ? ' (' + item.labels.join(', ') + ')' : ''}`;
+      } else if (item.type === 'edge') {
+        return `[关系] ${item.name}: ${item.source} → ${item.target}`;
+      }
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+/** Collect graph search data from conversation history + current search result. */
+function collectGraphContext(convMessages, currentSearchData) {
+  const ctx = [];
+  // Historical: extract from search_progress messages
+  if (convMessages) {
+    for (const msg of convMessages) {
+      if (msg.type === 'search_progress' && msg.graphData?.data?.length) {
+        ctx.push(...msg.graphData.data);
+      }
+    }
+  }
+  // Current (if any)
+  if (currentSearchData?.data?.length) {
+    ctx.push(...currentSearchData.data);
+  }
+  return formatGraphContext(ctx);
+}
+
 export default function ChatArea({
   activeConv,
   onUpdateConv,
@@ -99,19 +134,6 @@ export default function ChatArea({
           // ── Call LLM with graph context (informational, no restrictive prompt) ──
           const modelKey = `${activeProvider}/${chatModel || 'default'}`;
 
-          // Build search context summary from graph results
-          const searchContext = finalData?.data?.slice(0, 50)
-            .map((item) => {
-              if (item.type === 'vertex') {
-                return `[实体] ${item.name}${item.labels?.length ? ' (' + item.labels.join(', ') + ')' : ''}`;
-              } else if (item.type === 'edge') {
-                return `[关系] ${item.name}: ${item.source} → ${item.target}`;
-              }
-              return '';
-            })
-            .filter(Boolean)
-            .join('\n') || '';
-
           // Build conversation history (same as non-graph mode)
           const llmMessages = updatedMsgs
             .filter((m) => m.type === 'user' || (m.type === 'assistant' && m.content))
@@ -121,10 +143,12 @@ export default function ChatArea({
             }));
 
           // Inject graph search context as neutral data (not restrictive)
-          if (searchContext) {
+          // Includes both current search results and historical search_progress messages
+          const graphCtx = collectGraphContext(conv.messages, finalData);
+          if (graphCtx) {
             llmMessages.unshift({
               role: 'system',
-              content: `以下是从知识图谱中检索到的相关信息：\n${searchContext}`,
+              content: `以下是从知识图谱中检索到的相关信息：\n${graphCtx}`,
             });
           }
 
@@ -173,6 +197,15 @@ export default function ChatArea({
             role: m.type === 'user' ? 'user' : 'assistant',
             content: m.content,
           }));
+
+        // Even in non-graph mode, inject historical graph context from previous turns
+        const graphCtx = collectGraphContext(conv.messages, null);
+        if (graphCtx) {
+          llmMessages.unshift({
+            role: 'system',
+            content: `以下是从知识图谱中检索到的相关信息：\n${graphCtx}`,
+          });
+        }
 
         const assistantMsg = { id: uid(), type: 'assistant', content: '' };
 
