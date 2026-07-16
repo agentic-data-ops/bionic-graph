@@ -6,7 +6,6 @@ import ChatInput from './ChatInput';
 import {
   chatCompletionProxy,
   parseSSEStream,
-  graphSearch,
   gremlin,
 } from '../api';
 
@@ -97,11 +96,21 @@ export default function ChatArea({
           const searchMsg = { ...progressMsg, steps: doneSteps, graphData: finalData, graphName: defaultGraph, timeTravelEnabled: ttEnabled2, timeTravelAt: ttMicros };
           onUpdateConv({ ...conv, messages: [...updatedMsgs, searchMsg] });
 
-          // ── Call LLM with search results + chat history ──
+          // ── Call LLM with graph context (informational, no restrictive prompt) ──
           const modelKey = `${activeProvider}/${chatModel || 'default'}`;
+
+          // Build search context summary from graph results
           const searchContext = finalData?.data?.slice(0, 50)
-            .map((item) => `[${item.type}] ${item.name}${item.labels?.length ? ' (' + item.labels.join(', ') + ')' : ''}`)
-            .join('\n') || '(no results)';
+            .map((item) => {
+              if (item.type === 'vertex') {
+                return `[实体] ${item.name}${item.labels?.length ? ' (' + item.labels.join(', ') + ')' : ''}`;
+              } else if (item.type === 'edge') {
+                return `[关系] ${item.name}: ${item.source} → ${item.target}`;
+              }
+              return '';
+            })
+            .filter(Boolean)
+            .join('\n') || '';
 
           // Build conversation history (same as non-graph mode)
           const llmMessages = updatedMsgs
@@ -111,11 +120,13 @@ export default function ChatArea({
               content: m.content,
             }));
 
-          // Prepend system message with graph search context
-          llmMessages.unshift({
-            role: 'system',
-            content: `You are a helpful assistant with access to a knowledge graph. Use the following search results to inform your answer.\n\nGraph search results:\n${searchContext}\n\nAnswer the user's question based on these results and the conversation history. If the results don't contain enough information, say so.`,
-          });
+          // Inject graph search context as neutral data (not restrictive)
+          if (searchContext) {
+            llmMessages.unshift({
+              role: 'system',
+              content: `以下是从知识图谱中检索到的相关信息：\n${searchContext}`,
+            });
+          }
 
           const assistantMsg = { id: uid(), type: 'assistant', content: '' };
           try {
