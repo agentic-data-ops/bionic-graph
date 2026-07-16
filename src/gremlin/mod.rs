@@ -36,6 +36,8 @@ pub struct AppState {
     pub task_mgr: ExtractionTaskManager,
     /// NodeRegistry for cluster-mode broadcasts (None in standalone).
     pub cluster_registry: Option<Arc<NodeRegistry>>,
+    /// Master's API address for worker→master forwarding (None on master / standalone).
+    pub master_api_addr: Option<String>,
 }
 
 /// Build the axum router for all block-engine graph routes.
@@ -43,6 +45,7 @@ pub fn build_router(
     gm: Arc<GraphManager>,
     settings: Settings,
     cluster_registry: Option<Arc<NodeRegistry>>,
+    master_api_addr: Option<String>,
 ) -> axum::Router {
     let doc_mgr = DocumentManager::new(&settings.storage.data_dir);
     let state = AppState {
@@ -51,6 +54,7 @@ pub fn build_router(
         doc_mgr,
         task_mgr: ExtractionTaskManager::new(),
         cluster_registry,
+        master_api_addr,
     };
 
     use axum::routing::{delete, get, post, put};

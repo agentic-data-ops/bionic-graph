@@ -121,7 +121,22 @@ async fn main() {
         };
 
     // ── Main API server ──────────────────────────────────────────────────────
-    let app = build_new_router(gm.clone(), settings.clone(), cluster_registry.clone());
+    // Determine master API address for worker→master forwarding.
+    let master_api_addr: Option<String> = if settings.cluster.enabled && settings.cluster.role == NodeRole::Worker {
+        settings.cluster.master_addr.as_ref().map(|addr| {
+            // Derive master's API port: cluster port (e.g. 9090) → API port (e.g. 8090)
+            if let Some(col) = addr.rfind(':') {
+                let host = &addr[..col];
+                let port: u16 = addr[col+1..].parse().unwrap_or(9090);
+                format!("{}:{}", host, port.saturating_sub(1000))
+            } else {
+                addr.clone()
+            }
+        })
+    } else {
+        None
+    };
+    let app = build_new_router(gm.clone(), settings.clone(), cluster_registry.clone(), master_api_addr);
 
     let api_addr: SocketAddr = format!("{}:{}", settings.server.host, settings.server.port)
         .parse()

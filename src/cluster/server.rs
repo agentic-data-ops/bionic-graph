@@ -46,6 +46,7 @@ pub fn build_cluster_router(state: ClusterAppState) -> Router {
         .route("/cluster/forward", post(handle_forward))
         .route("/cluster/replicate", post(handle_replicate))
         .route("/cluster/touch", post(handle_touch))
+        .route("/cluster/tokenizer-sync", post(handle_tokenizer_sync))
         .with_state(state)
 }
 
@@ -101,6 +102,42 @@ async fn handle_forward(
 
     // If the write succeeded, broadcast to all workers.
     if result.success {
+        // Tokenizer operations: broadcast directly to workers' tokenizer-sync endpoint.
+        if req.path == "/settings/tokenizer/words" {
+            let workers = state.registry.alive_workers();
+            let op = match req.method.to_uppercase().as_str() {
+                "POST" => "add",
+                "DELETE" => "remove",
+                _ => "",
+            };
+            if !op.is_empty() && !workers.is_empty() {
+                if let Some(ref req_body) = req.body {
+                    let workers_for_broadcast = workers.clone();
+                    let body_clone = req_body.clone();
+                    let op_str = op.to_string();
+                    tokio::spawn(async move {
+                        for worker in &workers_for_broadcast {
+                            let url = format!("http://{}/cluster/tokenizer-sync", worker.cluster_addr);
+                            let client = reqwest::Client::new();
+                            let sync_body = serde_json::json!({
+                                "operation": &op_str,
+                                "words": serde_json::from_str::<serde_json::Value>(&body_clone)
+                                    .ok().and_then(|v| v.get("words").cloned())
+                                    .unwrap_or(serde_json::Value::Null),
+                            });
+                            if let Err(e) = client.post(&url)
+                                .json(&sync_body)
+                                .send().await
+                            {
+                                log::warn!("Tokenizer sync to worker {} failed: {}", worker.node_id, e);
+                            }
+                        }
+                    });
+                }
+            }
+            return Json(result);
+        }
+
         let workers = state.registry.alive_workers();
         if !workers.is_empty() {
             let entries = build_broadcast_entries(&state, &req, &result);
@@ -463,4 +500,29 @@ async fn handle_touch(
 
     process_touch(&graph, &req.vertex_ids, &req.edge_ids, Some(&state.registry)).await;
     StatusCode::OK
+}
+
+/// POST /cluster/tokenizer-sync
+///
+/// Master broadcasts tokenizer word changes to workers.
+/// Workers apply the changes directly to their local jieba instance.
+async fn handle_tokenizer_sync(
+    Json(body): Json<TokenizerSyncBody>,
+) -> Json<serde_json::Value> {
+    let words: Vec<String> = body.words.into_iter().filter(|w| w.chars().count() >= 2).collect();
+    if words.is_empty() {
+        return Json(serde_json::json!({"status": "ok", "applied": 0}));
+    }
+    match body.operation.as_str() {
+        "add" => crate::graph::tokenizer::add_custom_words(&words),
+        "remove" => crate::graph::tokenizer::remove_custom_words(&words),
+        _ => return Json(serde_json::json!({"status": "error", "message": "unknown operation"})),
+    }
+    Json(serde_json::json!({"status": "ok", "applied": words.len()}))
+}
+
+#[derive(serde::Deserialize)]
+struct TokenizerSyncBody {
+    operation: String,
+    words: Vec<String>,
 }
