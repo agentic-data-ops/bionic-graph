@@ -24,6 +24,7 @@ use crate::graph_manager::GraphManager;
 use crate::cluster::node::NodeRegistry;
 
 pub mod settings;
+pub mod tokenizer_settings;
 use crate::storage::types::{PropertyValue, StorageResult};
 
 /// Shared application state for all graph routes.
@@ -89,6 +90,9 @@ pub fn build_router(
         .route("/settings/llm", put(settings::update_llm_settings))
         .route("/settings/rank", get(settings::get_rank_settings))
         .route("/settings/rank", put(settings::update_rank_settings))
+        .route("/settings/tokenizer", get(tokenizer_settings::get_tokenizer_settings))
+        .route("/settings/tokenizer/words", post(tokenizer_settings::add_tokenizer_words))
+        .route("/settings/tokenizer/words", delete(tokenizer_settings::remove_tokenizer_words))
         // Health
         .route("/health", get(health_check))
         // MaaS — OpenAI-compatible proxy

@@ -90,13 +90,56 @@ export default function ChatArea({
 
           let finalData = res;
 
+          // Show search progress message
           const doneSteps = [{ icon: '✅', name: 'Graph search completed', status: 'done', llmOutput: '' }];
           setSearchStream(null);
-          requestAnimationFrame(() => chatInputRef.current?.focus());
-          abortRef.current = null;
-          setIsGenerating(false);
           const ttEnabled2 = (Array.isArray(graphMetas) ? graphMetas.find(g => g.name === defaultGraph)?.time_travel : false) || false;
-          onUpdateConv({ ...conv, messages: [...updatedMsgs, { ...progressMsg, steps: doneSteps, graphData: finalData, graphName: defaultGraph, timeTravelEnabled: ttEnabled2, timeTravelAt: ttMicros }] });
+          const searchMsg = { ...progressMsg, steps: doneSteps, graphData: finalData, graphName: defaultGraph, timeTravelEnabled: ttEnabled2, timeTravelAt: ttMicros };
+          onUpdateConv({ ...conv, messages: [...updatedMsgs, searchMsg] });
+
+          // ── Call LLM with search results + chat history ──
+          const modelKey = `${activeProvider}/${chatModel || 'default'}`;
+          const searchContext = finalData?.data?.slice(0, 50)
+            .map((item) => `[${item.type}] ${item.name}${item.labels?.length ? ' (' + item.labels.join(', ') + ')' : ''}`)
+            .join('\n') || '(no results)';
+
+          // Build conversation history (same as non-graph mode)
+          const llmMessages = updatedMsgs
+            .filter((m) => m.type === 'user' || (m.type === 'assistant' && m.content))
+            .map((m) => ({
+              role: m.type === 'user' ? 'user' : 'assistant',
+              content: m.content,
+            }));
+
+          // Prepend system message with graph search context
+          llmMessages.unshift({
+            role: 'system',
+            content: `You are a helpful assistant with access to a knowledge graph. Use the following search results to inform your answer.\n\nGraph search results:\n${searchContext}\n\nAnswer the user's question based on these results and the conversation history. If the results don't contain enough information, say so.`,
+          });
+
+          const assistantMsg = { id: uid(), type: 'assistant', content: '' };
+          try {
+            const { response, abort } = chatCompletionProxy(llmMessages, modelKey);
+            abortRef.current = abort;
+            setIsGenerating(true);
+            let fullContent = '';
+            await parseSSEStream(
+              await response,
+              (token) => {
+                fullContent += token;
+                onUpdateConv({
+                  ...conv,
+                  messages: [...updatedMsgs, searchMsg, { ...assistantMsg, content: fullContent }],
+                });
+              },
+            );
+          } catch (e) {
+            if (e.name === 'AbortError') return;
+            onUpdateConv({
+              ...conv,
+              messages: [...updatedMsgs, searchMsg, { ...assistantMsg, content: `**Error**: ${e.message}` }],
+            });
+          }
 
         } catch (e) {
           const failedSteps = (steps || []).map((s) => ({ ...s, status: 'failed' }));

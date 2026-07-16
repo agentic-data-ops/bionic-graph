@@ -118,6 +118,7 @@ pub fn is_write_path(path: &str) -> bool {
         && !path.starts_with("/settings/Search") // search settings are local
         && !path.starts_with("/settings/neural") // neural compat is local
         && !path.starts_with("/settings/llm")    // LLM settings forwarded
+        && !path.starts_with("/settings/tokenizer") // tokenizer is local-per-node
         && !path.starts_with("/maas")            // MaaS proxy requests are not forwarded
         && !path.starts_with("/health")           // health checks are local
 }
