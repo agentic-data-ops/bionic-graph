@@ -734,12 +734,14 @@ fn step_both(
     let inp = step_in(graph, input, depth, labels)?;
     let mut combined: Vec<GremlinResult> = out.into_iter().chain(inp).collect();
     combined.sort_by_key(|r| match r {
-        GremlinResult::Vertex { id, .. } => *id,
-        _ => 0,
+        GremlinResult::Vertex { id, .. } => (0u8, *id),
+        GremlinResult::Edge { id, .. } => (1u8, *id),
+        GremlinResult::Count { .. } => (2u8, 0),
     });
     combined.dedup_by_key(|r| match r {
-        GremlinResult::Vertex { id, .. } => *id,
-        _ => 0,
+        GremlinResult::Vertex { id, .. } => (0u8, *id),
+        GremlinResult::Edge { id, .. } => (1u8, *id),
+        GremlinResult::Count { .. } => (2u8, 0),
     });
     Ok(combined)
 }
@@ -980,13 +982,18 @@ fn step_expand(
         }
     }
 
+    // Sort and dedup: use a compound key (type_priority, id) so that
+    // vertices and edges with the same numeric id never collide.
+    // Priority: vertex=0, edge=1, count=2.
     results.sort_by_key(|r| match r {
-        GremlinResult::Vertex { id, .. } => *id,
-        _ => 0,
+        GremlinResult::Vertex { id, .. } => (0u8, *id),
+        GremlinResult::Edge { id, .. } => (1u8, *id),
+        GremlinResult::Count { .. } => (2u8, 0),
     });
     results.dedup_by_key(|r| match r {
-        GremlinResult::Vertex { id, .. } => *id,
-        _ => 0,
+        GremlinResult::Vertex { id, .. } => (0u8, *id),
+        GremlinResult::Edge { id, .. } => (1u8, *id),
+        GremlinResult::Count { .. } => (2u8, 0),
     });
     Ok(results)
 }

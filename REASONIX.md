@@ -19,7 +19,7 @@
 ```
 src/
 ├── main.rs                  # CLI entry + HTTP server bootstrap
-├── lib.rs                   # Crate root — 11+ pub mod declarations
+├── lib.rs                   # Crate root — 11 pub mod declarations
 ├── config/                  # Settings structs + JSON file loader
 │   ├── mod.rs               # Re-exports
 │   ├── loader.rs            # ~/.config/bionic-graph/settings.json load/save
@@ -45,6 +45,7 @@ src/
 ├── graph/                   # Graph engine: CRUD + Gremlin pipeline + tokenizer
 │   ├── mod.rs               # Re-exports
 │   ├── graph.rs             # Graph struct (facade), GraphConfig, lifecycle
+│   ├── graph_registry.rs    # Graph metadata registry (persistent, multi-graph)
 │   ├── crud.rs              # Vertex/Edge CRUD with WAL + token extraction + rank
 │   ├── gremlin.rs           # Gremlin pipeline step engine (25 steps)
 │   ├── locked.rs            # Lock-safe CRUD wrappers
@@ -53,8 +54,9 @@ src/
 │   ├── rank_decay.rs        # Periodic rank decay background task
 │   └── tests.rs             # #[cfg(test)] integration tests (90+)
 ├── gremlin/                 # REST API routes + handlers (axum)
-│   ├── mod.rs               # AppState, build_router (30+ routes), handlers
-│   └── settings.rs          # GET/PUT /settings/search, /settings/llm
+│   ├── mod.rs               # AppState, build_router (44 routes), handlers
+│   ├── settings.rs          # GET/PUT /settings/search, /settings/llm, /settings/rank, /settings/tokenizer
+│   └── tokenizer_settings.rs # Custom tokenizer dictionary words CRUD
 ├── graph_manager.rs         # Multi-graph manager (HashMap<String, Arc<Graph>>), close_all()
 ├── documents.rs             # Document CRUD (file storage + JSON index)
 ├── extract/                 # LLM-based document extraction pipeline
@@ -160,32 +162,34 @@ App.jsx
 | `repeat` | `steps`, `times` | Loop sub-pipeline |
 | `timeTravel` | `at` | Set query time point |
 | `compact` | `before` | Passthrough stub |
-| `expand` | `depth?` | Add neighbors + edges |
+| `expand` | `depth?`, `label?` | Add neighbors + edges, optionally filtered by edge label |
 | `traverse` | `decay?`, `activate?`, `max_depth?`, `min_score?` | BFS activation spread |
 | `rank` | `limit?`, `min?` | Return top results by rank (source or filter step) |
 
-## REST API Endpoints (31+ routes)
+## REST API Endpoints (44 routes)
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | System health |
-| GET/POST/DELETE | `/graphs`, `/graphs/:name` | Graph lifecycle |
-| GET/PUT | `/graphs/:name/config` | Per-graph config |
+| GET/POST/PUT | `/graphs` | List / create / set-default graph |
+| DELETE/PUT | `/graphs/:name` | Delete / update graph metadata |
+| GET/PUT | `/graphs/:name/config` | Per-graph storage config |
 | POST | `/gremlin` | Gremlin pipeline query |
 | GET | `/search` | Token search shortcut |
 | POST/PUT/DELETE | `/vertices`, `/vertices/:id` | Vertex CRUD |
-| GET/PUT | `/vertices/:id/meta` | Vertex metadata (rank/atime/status/version/timestamps) |
+| GET/PUT | `/vertices/:id/meta` | Vertex metadata (rank/atime/status) |
 | POST/PUT/DELETE | `/edges`, `/edges/:id` | Edge CRUD |
 | GET/PUT | `/edges/:id/meta` | Edge metadata |
-| GET/PUT | `/settings/search` | Search settings |
+| GET/PUT | `/settings/search` | Search settings (greedy/exact) |
+| GET/PUT | `/settings/rank` | Rank decay config |
 | GET/PUT | `/settings/llm` | LLM provider config |
-| GET | `/documents` | List documents |
-| POST | `/documents` | Create document |
-| GET | `/documents/:id` | Get document metadata |
-| PUT | `/documents/:id` | Update document |
-| DELETE | `/documents/:id` | Delete document |
+| GET | `/settings/tokenizer` | Tokenizer custom dictionary config |
+| POST/DELETE | `/settings/tokenizer/words` | Add / remove custom tokenizer words |
+| GET/POST | `/documents` | List / create documents |
+| GET/PUT/DELETE | `/documents/:id` | Get / update / delete document metadata |
 | GET | `/documents/:id/content` | Document body |
-| POST | `/extract` | Submit extraction |
+| POST | `/extract` | Submit extraction task |
+| POST | `/documents/:id/extract` | Extract from document by ID |
 | GET | `/extract/task/:task_id` | Task polling |
 | GET | `/extract/tasks` | List extraction tasks |
 | GET | `/maas/openai/v1/models` | Model listing |
@@ -271,7 +275,6 @@ Decay ←─ spawn_rank_decay (background, every period secs)        │
 - **Properties as JSON strings** inside binary blob (bincode incompatibility).
 - **Token strings**: `[u8; 43]` inline — >43 chars truncated.
 - **`touch src/ui_serve.rs`** needed after frontend changes.
-- **`document_extractor.rs`, `pipeline.rs`**: orphaned dead code (not in mod.rs).
 - **Extraction**: SYSTEM_PROMPT tells LLM to output `name`, `labels`, `keywords`, `properties` for entities; and `source`, `target`, `name`, `labels`, `keywords`, `strength`, `properties` for relations.
 - **WAL batch writer**: `append()` sends via `mpsc::channel` to background thread. Caller blocks on Condvar until durability confirmed.
 - **SIGINT/SIGTERM**: server calls `GraphManager::close_all()` → flushes dirty blocks + checkpoints all WALs.

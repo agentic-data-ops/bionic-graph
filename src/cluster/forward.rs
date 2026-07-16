@@ -115,8 +115,7 @@ pub const WRITE_PATHS: &[&str] = &[
 /// Check if a path is a write operation that should be forwarded.
 pub fn is_write_path(path: &str) -> bool {
     WRITE_PATHS.iter().any(|p| path.starts_with(p))
-        && !path.starts_with("/settings/Search") // search settings are local
-        && !path.starts_with("/settings/neural") // neural compat is local
+        && !path.starts_with("/settings/search") // search settings are local
         && !path.starts_with("/settings/llm")    // LLM settings forwarded
         && !path.starts_with("/maas")            // MaaS proxy requests are not forwarded
         && !path.starts_with("/health")           // health checks are local

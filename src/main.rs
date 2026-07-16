@@ -286,8 +286,7 @@ fn log_info_banner(addr: &SocketAddr) {
     println!("║    GET  /graphs       List graphs                        ║");
     println!("║                                                          ║");
     println!("║  Settings                                                 ║");
-    println!("║    GET/PUT /settings/Search    Search/explore config     ║");
-    println!("║    GET/PUT /settings/neural    Legacy compat              ║");
+    println!("║    GET/PUT /settings/search   Neuron search config       ║");
     println!("║    GET/PUT /settings/llm       LLM provider config        ║");
     println!("╚══════════════════════════════════════════════════════════╝");
     println!();

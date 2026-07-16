@@ -45,8 +45,8 @@ Unlike relational or document databases, Bionic-Graph is optimized for **graph t
 | Layer | Module | What it does |
 |-------|--------|-------------|
 | **Frontend** | `src/ui/` | React 19 + Vite 8 + Tailwind CSS 4. Chat interface, knowledge base management, graph visualization via vis-network (Canvas 2D, no WebGL). All LLM calls go through backend MaaS proxy. |
-| **Graph Engine** | `src/graph/` | `Graph` struct (facade), CRUD operations, Gremlin pipeline (24 steps), jieba-rs tokenizer, bincode serialize. Lock-safe wrappers in `locked.rs`. |
-| **Gremlin API** | `src/gremlin/` | REST routes (29 endpoints) + `/settings/search` config. Auto-injects `match_mode` and `traverse` step from SearchSettings. |
+| **Graph Engine** | `src/graph/` | `Graph` struct (facade), CRUD operations, Gremlin pipeline (25 steps), jieba-rs tokenizer, bincode serialize. Lock-safe wrappers in `locked.rs`. |
+| **Gremlin API** | `src/gremlin/` | REST routes (44 endpoints) + `/settings/search` config. Auto-injects `match_mode` and `traverse` step from SearchSettings. |
 | **Storage** | `src/storage/` | Block-based engine: 16KB data blocks, 64B chunks, bitmap free tracking, LRU block cache (default 64MB), WAL (FIFO queue + background batch writer, size + time rotation, checkpoint, CRC32, replay), on-disk index (64B fixed records), in-memory indexes. |
 | **Locking** | `src/lock/` | Striped `RwLock` pools (parking_lot) with deadlock-free ordering: metadata → block → vertex → edge. |
 | **Documents** | `src/documents.rs` | Markdown file management with JSON index. CRUD via REST API. |
@@ -108,7 +108,7 @@ After frontend changes, `touch src/ui_serve.rs` is required to force Rust recomp
 | Command | Description |
 |---------|-------------|
 | `cargo run` | Start server (API + frontend) |
-| `cargo test` | Rust unit tests (90+) |
+| `cargo test` | Rust unit tests (84+) |
 | `npm --prefix src/ui run dev` | Frontend dev server (standalone Vite, proxies to port 8080) |
 | `npm --prefix src/ui run build` | Build frontend only |
 | `npm --prefix src/ui run test` | Frontend tests (vitest) |
@@ -272,7 +272,10 @@ curl localhost:8080/documents/{id}/content
 |--------|------|-------------|
 | `GET` | `/health` | System health |
 | `GET/PUT` | `/settings/search` | Search settings (greedy/exact config) |
-| `GET/PUT` | `/settings/neural` | Legacy backward-compat |
+| `GET/PUT` | `/settings/rank` | Rank decay config |
+| `GET` | `/settings/tokenizer` | Tokenizer custom dictionary config |
+| `POST/DELETE` | `/settings/tokenizer/words` | Add / remove custom tokenizer words |
+| `POST` | `/documents/:id/extract` | Extract from document by ID |
 | `GET` | `/maas/openai/v1/models` | List models (`provider/model` format) |
 | `POST` | `/maas/openai/v1/chat/completions` | OpenAI-compatible chat proxy (SSE) |
 | `POST` | `/extract` | Submit document extraction (async) |
@@ -304,8 +307,9 @@ curl localhost:8080/documents/{id}/content
 | `repeat` | `steps`, `times` | Execute sub-pipeline `steps` iteratively `times` times. |
 | `timeTravel` | `at` (μs) | Set global query timestamp. Subsequent steps only see data as it existed at `at`. |
 | `compact` | `before` (μs) | Passthrough stub (no-op). |
-| `expand` | `depth?` | From each vertex, add its neighbor vertices + connecting edges to results (both directions). |
+| `expand` | `depth?`, `label?` | From each vertex, add its neighbor vertices + connecting edges to results (both directions). Optional `label` filters by edge label. |
 | `traverse` | `decay?`, `activate?`, `max_depth?`, `min_score?` | BFS activation spread from input vertices. Score = parent_score × `decay` × edge_strength. Stops when score < `activate`. Collects results with score >= `min_score`. Defaults: decay=0.95, activate=0.2, max_depth=16, min_score=0.1. |
+| `rank` | `limit?`, `min?` | Return top results by rank (source or filter step). |
 
 ---
 
@@ -332,15 +336,17 @@ src/
 │   └── lock_manager.rs        # Striped RwLock pools (parking_lot)
 ├── graph/                     # Graph engine
 │   ├── graph.rs               # Graph struct (facade), open/close
+│   ├── graph_registry.rs      # Graph metadata registry
 │   ├── crud.rs                # Vertex/Edge CRUD + WAL + tokenize
-│   ├── gremlin.rs             # Gremlin pipeline (24 steps)
+│   ├── gremlin.rs             # Gremlin pipeline (25 steps)
 │   ├── locked.rs              # Lock-safe CRUD wrappers
 │   ├── serialize.rs           # Bincode + JSON properties
 │   ├── tokenizer.rs           # jieba-rs tokenizer
 │   └── tests.rs               # Integration tests
 ├── gremlin/                   # REST API (axum)
-│   ├── mod.rs                 # 29 route handlers
-│   └── settings.rs            # /settings/search + legacy /settings/neural
+│   ├── mod.rs                 # 44 route handlers
+│   ├── settings.rs            # /settings/search, /settings/llm, /settings/rank
+│   └── tokenizer_settings.rs  # /settings/tokenizer + /settings/tokenizer/words
 ├── extract/                   # Document extraction pipeline
 │   ├── config.rs, document.rs, extraction.rs
 │   ├── llm_client.rs, task_manager.rs
@@ -370,7 +376,7 @@ src/
 4. **CPU inference** — all computation in memory, no GPU
 5. **Token-indexed search** — jieba-rs tokenization replaces old neural network index
 6. **Custom storage engine** — 16KB blocks, 64B chunks, LRU cache, WAL with crash recovery
-7. **Gremlin-compatible** — standard graph query interface with 24 pipeline steps
+7. **Gremlin-compatible** — standard graph query interface with 25 pipeline steps
 8. **Time travel** — per-vertex MVCC via soft-delete, point-in-time queries
 9. **Multi-graph** — multiple named graphs, isolated `data/graphs/<name>/` directories
 10. **Fine-grained concurrency** — striped RwLock pools with deadlock-free ordering

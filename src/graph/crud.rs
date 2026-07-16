@@ -627,10 +627,18 @@ pub fn replay_entry(graph: &Graph, entry: &RedoLogEntry) -> StorageResult<()> {
         }
         OpType::EdgeDelete => {
             if let Some(&ptr) = graph.memory_index.read().unwrap().edges.get(entry.op_id as u32) {
+                // Read the edge record to obtain source/target before deletion.
+                let (source, target) = if let Ok(rec) = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset) {
+                    (rec.source, rec.target)
+                } else {
+                    (0, 0)
+                };
                 let _ = graph.index_file.delete_record(ptr.block_idx, ptr.chunk_offset);
                 let mut mi = graph.memory_index.write().unwrap();
                 mi.edges.remove(entry.op_id as u32);
-                mi.adjacency.remove_edge(entry.op_id as u32, entry.op_id as u32, &ptr);
+                // Use the real source/target vertex IDs, NOT edge_id, to properly
+                // clean up the adjacency index.
+                mi.adjacency.remove_edge(source, target, &ptr);
             }
         }
         OpType::VertexIndexUpdate => {
@@ -689,6 +697,15 @@ pub fn replay_entry(graph: &Graph, entry: &RedoLogEntry) -> StorageResult<()> {
 
 /// Replay helper: recreate a vertex from WAL data during startup recovery.
 fn replay_create_vertex(graph: &Graph, payload: &VertexPayload, wal_data: &[u8]) -> StorageResult<()> {
+    // Skip if this vertex was already re-created from the index file during
+    // build_memory_index. This prevents duplicates after unclean shutdown.
+    {
+        let mi = graph.memory_index.read().unwrap();
+        if mi.vertices.contains(payload.id) {
+            return Ok(());
+        }
+    }
+
     let data_len = wal_data.len();
     let chunks_needed = BlockAllocator::chunks_needed(data_len);
     let padded = BlockAllocator::padded_length(data_len);
@@ -717,6 +734,17 @@ fn replay_create_vertex(graph: &Graph, payload: &VertexPayload, wal_data: &[u8])
 
 /// Replay helper: recreate an edge from WAL data during startup recovery.
 fn replay_create_edge(graph: &Graph, payload: &EdgePayload, wal_data: &[u8]) -> StorageResult<()> {
+    // Skip if this edge was already re-created from the index file during
+    // build_memory_index. This prevents duplicate adjacency entries when
+    // the WAL contains entries that were checkpointed before an unclean
+    // shutdown.
+    {
+        let mi = graph.memory_index.read().unwrap();
+        if mi.edges.contains(payload.id) {
+            return Ok(());
+        }
+    }
+
     let data_len = wal_data.len();
     let chunks_needed = BlockAllocator::chunks_needed(data_len);
     let padded = BlockAllocator::padded_length(data_len);
