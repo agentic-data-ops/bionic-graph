@@ -404,26 +404,40 @@ export async function addVertex(labels, properties = {}, graph = 'default', name
 }
 
 export async function updateVertexProperties(id, labels, properties, graph = 'default', name, keywords) {
-  return api(`/vertices/${id}`, {
+  const res = await fetch(`/vertices/${id}`, {
     method: 'PUT',
-    headers: { 'X-Graph-Name': graph },
+    headers: { 'Content-Type': 'application/json', 'X-Graph-Name': graph },
     body: JSON.stringify({ name, keywords, labels, properties }),
   });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(body);
+  }
+  // PUT /vertices/:id returns empty body (StatusCode)
+  const text = await res.text();
+  return text ? JSON.parse(text) : { success: true };
 }
 
-export async function updateEdgeProperties(id, name, properties, graph = 'default') {
-  return api(`/edges/${id}`, {
+export async function updateEdgeProperties(id, name, properties, graph = 'default', labels, keywords, strength) {
+  const res = await fetch(`/edges/${id}`, {
     method: 'PUT',
-    headers: { 'X-Graph-Name': graph },
-    body: JSON.stringify({ name, properties }),
+    headers: { 'Content-Type': 'application/json', 'X-Graph-Name': graph },
+    body: JSON.stringify({ name, labels, keywords, strength, properties }),
   });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(body);
+  }
+  // PUT /edges/:id returns empty body (StatusCode)
+  const text = await res.text();
+  return text ? JSON.parse(text) : { success: true };
 }
 
-export async function addEdge(name, source, target, properties = {}, graph = 'default') {
+export async function addEdge(name, source, target, properties = {}, graph = 'default', labels, keywords, strength) {
   return api('/edges', {
     method: 'POST',
     headers: { 'X-Graph-Name': graph },
-    body: JSON.stringify({ name, source, target, properties }),
+    body: JSON.stringify({ name, source, target, labels, keywords, strength, properties }),
   });
 }
 

@@ -215,6 +215,7 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onS
   const [editProps, setEditProps] = useState({});
   const [localName, setLocalName] = useState("");
   const [localKeywords, setLocalKeywords] = useState("");
+  const [localStrength, setLocalStrength] = useState("1.0");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [docName, setDocName] = useState('');
@@ -231,20 +232,32 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onS
   }, [item?.document]);
   const [newPropKey, setNewPropKey] = useState('');
   const [newPropVal, setNewPropVal] = useState('');
+  const [sourceDocName, setSourceDocName] = useState('');
+
+  // Fetch source document name from _source_doc_id property
+  useEffect(() => {
+    const docId = item?.properties?._source_doc_id;
+    if (!docId) { setSourceDocName(''); return; }
+    getDocument(docId).then((doc) => {
+      if (doc && doc.title) setSourceDocName(doc.title);
+    }).catch(() => {});
+  }, [item?.properties?._source_doc_id]);
 
   if (!item) return null;
   const props = item.properties || {};
   const labels = item.labels || [];
+  const displayProps = Object.fromEntries(Object.entries(props).filter(([k]) => k !== '_source_doc_id'));
 
   const startEdit = useCallback(() => {
     if (type === 'vertex') {
       setEditLabel(labels.join(', '));
     } else {
-      setEditLabel(item.name || '');
+      setEditLabel((item.labels || item._original?.labels || []).join(', '));
     }
     setLocalName(item.name || '');
     setLocalKeywords((item.keywords || []).join(', '));
-    setEditProps(Object.fromEntries(Object.entries(props).map(([k, v]) => [k, String(v)])));
+    setLocalStrength(String(item.strength ?? (item._original?.strength ?? 1.0)));
+    setEditProps(Object.fromEntries(Object.entries(props).filter(([k]) => k !== '_source_doc_id').map(([k, v]) => [k, String(v)])));
     setError('');
     setEditing(true);
   }, [labels, props, type, item]);
@@ -264,22 +277,25 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onS
       );
       const name = localName || item.name || '';
       const keywords = localKeywords.split(',').map(s => s.trim()).filter(Boolean);
+      const strength = parseFloat(localStrength) || 1.0;
       if (type === 'vertex') {
         await updateVertexProperties(item.id, newLabels, editProps, graphName, name, keywords);
       } else {
         const newLabel = editLabel.trim() || item.name || '';
-        await updateEdgeProperties(item.id, newLabel, editProps, graphName);
+        const newLabels = editLabel.split(',').map((s) => s.trim()).filter(Boolean);
+        await updateEdgeProperties(item.id, newLabel, editProps, graphName, newLabels, keywords, strength);
       }
       item.labels = newLabels;
       item.properties = editProps;
       item.name = name;
       item.keywords = keywords;
+      item.strength = strength;
       setEditing(false);
     } catch (e) {
       setError(e.message || 'Save failed');
     }
     setSaving(false);
-  }, [editLabel, editProps, item, type, graphName, localName, localKeywords]);
+  }, [editLabel, editProps, item, type, graphName, localName, localKeywords, localStrength]);
 
   return (
     <div className="w-72 bg-[var(--bg-secondary)] border-l border-[var(--border)] flex flex-col h-full overflow-y-auto flex-shrink-0 select-text">
@@ -319,14 +335,12 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onS
         </div>
       </div>
       <div className="p-4 space-y-4">
-        {/* Labels (vertex) / Label (edge) */}
+        {/* Labels */}
         <div>
           <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-2">
-            {type === 'edge' ? 'Label' : 'Labels'} {editing && <span className="text-[var(--text-muted)] normal-case font-normal">(comma-separated)</span>}
+            {t('panel.labels')} {editing && <span className="text-[var(--text-muted)] normal-case font-normal">{t('panel.commaSeparated')}</span>}
           </div>
-          {type === 'edge' ? (
-            <div className="text-xs text-[var(--text-primary)] font-medium">{item.name || '—'}</div>
-          ) : editing ? (
+          {editing ? (
             <input
               className="w-full px-2.5 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
               value={editLabel}
@@ -334,14 +348,15 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onS
             />
           ) : (
             <div className="flex flex-wrap gap-1.5">
-              {labels.map((l, i) => <span key={i} className="px-2 py-0.5 rounded-md bg-[var(--accent)]/15 text-[var(--accent)] text-[11px] font-medium">{l}</span>)}
+              {labels.length > 0 ? labels.map((l, i) => (
+                <span key={i} className="px-2 py-0.5 rounded-md bg-[var(--accent)]/15 text-[var(--accent)] text-[11px] font-medium">{l}</span>
+              )) : <span className="text-xs text-[var(--text-muted)] italic">—</span>}
             </div>
           )}
         </div>
-        {/* Name (built-in) — vertices only */}
-        {type === 'vertex' && (
+        {/* Name */}
         <div>
-          <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-2">Name</div>
+          <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-2">{t('panel.name')}</div>
           {editing ? (
             <input
               className="w-full px-2.5 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
@@ -352,17 +367,15 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onS
             <div className="text-xs text-[var(--text-primary)] font-medium">{item.name || '—'}</div>
           )}
         </div>
-        )}
-        {/* Keywords (built-in) — vertices only */}
-        {type === 'vertex' && (
+        {/* Keywords */}
         <div>
-          <div className="text-[10px] font-semibold text-[var(--text-tertiary)]  uppercase tracking-wider mb-2">Keywords</div>
+          <div className="text-[10px] font-semibold text-[var(--text-tertiary)]  uppercase tracking-wider mb-2">{t('panel.keywords')}</div>
           {editing ? (
             <input
               className="w-full px-2.5 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
               value={localKeywords}
               onChange={(e) => setLocalKeywords(e.target.value)}
-              placeholder="comma-separated"
+              placeholder={t('panel.commaSeparated')}
             />
           ) : (
             <div className="flex flex-wrap gap-1.5">
@@ -372,12 +385,27 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onS
             </div>
           )}
         </div>
+        {/* Strength — edge only */}
+        {type === 'edge' && (
+          <div>
+            <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-2">{t('panel.strength')}</div>
+            {editing ? (
+              <input
+                className="w-full px-2.5 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                type="number" step="0.1" min="0" max="1"
+                value={localStrength}
+                onChange={(e) => setLocalStrength(e.target.value)}
+              />
+            ) : (
+              <div className="text-xs text-[var(--text-primary)] font-medium">{item.strength ?? (item._original?.strength ?? 1.0)}</div>
+            )}
+          </div>
         )}
         {/* Edge source/target — clickable vertex links */}
         {type === 'edge' && (
           <div className="space-y-2">
             <div className="flex items-center gap-2 text-xs">
-              <span className="text-[var(--text-tertiary)] font-medium w-14">SOURCE</span>
+              <span className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase w-14">{t('panel.source')}</span>
               <button className="text-[var(--accent)] hover:underline font-mono text-xs text-left"
                 onClick={() => onSelectVertex?.(item.source)}>
                 {(() => {
@@ -392,7 +420,7 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onS
               </button>
             </div>
             <div className="flex items-center gap-2 text-xs">
-              <span className="text-[var(--text-tertiary)] font-medium w-14">TARGET</span>
+              <span className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase w-14">{t('panel.target')}</span>
               <button className="text-[var(--accent)] hover:underline font-mono text-xs text-left"
                 onClick={() => onSelectVertex?.(item.target)}>
                 {(() => {
@@ -411,29 +439,39 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onS
         {/* Document (clickable link) */}
         {item.document && (
           <div>
-            <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-2">Document</div>
+            <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-2">{t('panel.document')}</div>
             <button
               className="text-xs text-[var(--accent)] hover:underline text-left break-all"
               onClick={() => onShowDocument?.(item.document)}
             >{docName || `#${item.document.slice(0,8)}…`}</button>
           </div>
         )}
-        {/* Custom Properties */}
+        {/* Source Document (from _source_doc_id property) */}
+        {props._source_doc_id && (
+          <div>
+            <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-2">{t('panel.sourceDocument')}</div>
+            <button
+              className="text-xs text-[var(--accent)] hover:underline text-left break-all"
+              onClick={() => onShowDocument?.(props._source_doc_id)}
+            >{sourceDocName || `#${props._source_doc_id.slice(0,8)}…`}</button>
+          </div>
+        )}
+        {/* Properties */}
         <div>
-          <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-2">Custom Properties</div>
+          <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-2">{t('panel.properties')}</div>
           {editing ? (
             <div className="space-y-1.5">
               {Object.entries(editProps).map(([k, v], idx) => (
                 <div key={idx} className="flex items-start gap-1 py-1.5 px-2.5 rounded-lg bg-[var(--bg-tertiary)]">
                   <div className="flex-1 flex flex-col gap-1 min-w-0">
                     <input
-                      className="w-full px-2 py-1 rounded-md bg-[var(--bg-secondary)] text-[var(--text-primary)] text-[10px] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] font-mono"
+                      className="w-full px-2 py-1 rounded-md bg-[var(--bg-secondary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
                       value={k}
                       onChange={(e) => {
                         const { [k]: _, ...rest } = editProps;
                         setEditProps({ ...rest, [e.target.value]: v });
                       }}
-                      placeholder="key"
+                      placeholder={t('panel.keyPlaceholder')}
                     />
                     <input
                       className="w-full px-2 py-1 rounded-md bg-[var(--bg-secondary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
@@ -447,7 +485,7 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onS
                   >✕</button>
                 </div>
               ))}
-              {Object.keys(editProps).length === 0 && <div className="text-xs text-[var(--text-muted)] italic">No properties</div>}
+              {Object.keys(editProps).length === 0 && <div className="text-xs text-[var(--text-muted)] italic">{t('panel.noProperties')}</div>}
               <button
                 className="w-full py-1 rounded-lg border border-dashed border-[#3a3a3e] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[#0a84ff] text-xs font-medium transition-all"
                 onClick={() => {
@@ -460,9 +498,9 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onS
             </div>
           ) : (
             <>
-              {Object.keys(props).length === 0 ? <div className="text-xs text-[var(--text-muted)] italic">—</div> : (
+              {Object.keys(displayProps).length === 0 ? <div className="text-xs text-[var(--text-muted)] italic">—</div> : (
                 <div className="space-y-1">
-                  {Object.entries(props).map(([k, v]) => (
+                  {Object.entries(displayProps).map(([k, v]) => (
                     <div key={k} className="flex justify-between items-start py-1.5 px-2.5 rounded-lg bg-[var(--bg-tertiary)]">
                       <span className="text-[11px] text-[var(--text-tertiary)] font-medium mr-3 whitespace-nowrap">{k}</span>
                       <span className="text-[11px] text-[var(--text-primary)] text-right break-all max-w-[160px] font-mono">{String(v)}</span>
@@ -512,6 +550,7 @@ function buildFromData(dataItems) {
 }
 
 const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabled, timeTravelAt }, ref) => {
+  const { t } = useTranslation();
   const containerRef = useRef(null);
   const netRef = useRef(null);
   const nodesRef = useRef(null);
@@ -532,29 +571,103 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
   const [newEdgeSource, setNewEdgeSource] = useState('');
   const [newEdgeTarget, setNewEdgeTarget] = useState('');
   const [newEdgeProps, setNewEdgeProps] = useState([{ k: '', v: '' }]);
+  const [newEdgeKeywords, setNewEdgeKeywords] = useState('');
+  const [newEdgeLabels, setNewEdgeLabels] = useState('');
+  const [newEdgeStrength, setNewEdgeStrength] = useState('1.0');
+  const [labelFilter, setLabelFilter] = useState([]);
+  const [labelFilterOpen, setLabelFilterOpen] = useState(false);
+  const fullNodesRef = useRef(null);
+  const fullEdgesRef = useRef(null);
   const dataRef = useRef(data);
 
   const searchFiltered = useMemo(() => {
     if (!nodesRef.current) return [];
     const q = searchQuery.toLowerCase();
+    const ns = nodesRef.current;
+    const es = edgesRef.current;
+    const allNodes = fullNodesRef.current || [];
+    const allEdges = fullEdgesRef.current || [];
+    // Determine which node IDs are visible based on label filter
+    let visibleNodeIdSet;
+    if (labelFilter.length) {
+      visibleNodeIdSet = new Set(allNodes.filter(n => {
+        const orig = n._original;
+        return orig?.labels?.some(l => labelFilter.includes(l));
+      }).map(n => n.id));
+    } else {
+      visibleNodeIdSet = new Set(allNodes.map(n => n.id));
+    }
     let results = [];
-    for (const n of nodesRef.current.get()) {
+    for (const n of allNodes) {
+      if (!visibleNodeIdSet.has(n.id)) continue;
       if (!q || (n.label && n.label.toLowerCase().includes(q))) {
         results.push({ type: 'vertex', id: n.id, label: n.label });
       }
     }
-    if (edgesRef.current) {
-      const ns = nodesRef.current;
-      for (const e of edgesRef.current.get()) {
-        if (!q || (e.label && e.label.toLowerCase().includes(q))) {
-          const fromLabel = ns.get(e.from)?.label || `#${e.from}`;
-          const toLabel = ns.get(e.to)?.label || `#${e.to}`;
-          results.push({ type: 'edge', id: e.id, label: `[edge] ${e.label}`, fromLabel, toLabel });
-        }
+    for (const e of allEdges) {
+      if (!visibleNodeIdSet.has(e.from) || !visibleNodeIdSet.has(e.to)) continue;
+      const fromLabel = ns.get(e.from)?.label || `#${e.from}`;
+      const toLabel = ns.get(e.to)?.label || `#${e.to}`;
+      if (!q || (e.label && e.label.toLowerCase().includes(q))) {
+        results.push({ type: 'edge', id: e.id, label: `[edge] ${e.label}`, fromLabel, toLabel });
       }
     }
     return results.slice(0, 50);
-  }, [searchQuery]);
+  }, [searchQuery, labelFilter, data]);
+
+  // Collect all unique vertex labels from current data
+  const allLabels = useMemo(() => {
+    if (!data?.data) return [];
+    const labelSet = new Set();
+    for (const item of data.data) {
+      if (item.type === 'vertex' && item.labels?.length) {
+        for (const l of item.labels) labelSet.add(l);
+      }
+    }
+    const sorted = Array.from(labelSet).sort();
+    // Clean up labelFilter — remove labels no longer in data
+    setLabelFilter(prev => prev.filter(l => labelSet.has(l)));
+    return sorted;
+  }, [data]);
+
+  // Apply label filter to the vis-network DataSets
+  useEffect(() => {
+    const ns = nodesRef.current;
+    const es = edgesRef.current;
+    const allNodes = fullNodesRef.current;
+    const allEdges = fullEdgesRef.current;
+    if (!ns || !es || !allNodes) return;
+    if (!labelFilter.length) {
+      // Restore all nodes/edges
+      const curNodeIds = new Set(ns.getIds());
+      const toAdd = allNodes.filter(n => !curNodeIds.has(n.id));
+      const curEdgeIds = new Set(es.getIds());
+      const edgeToAdd = (allEdges || []).filter(e => !curEdgeIds.has(e.id));
+      if (toAdd.length) ns.add(toAdd);
+      if (edgeToAdd.length) es.add(edgeToAdd);
+    } else {
+      const visibleNodeIds = new Set(allNodes.filter(n => {
+        const orig = n._original;
+        return orig?.labels?.some(l => labelFilter.includes(l));
+      }).map(n => n.id));
+      // Remove nodes not matching
+      const toRemoveNodes = ns.getIds().filter(id => !visibleNodeIds.has(id));
+      if (toRemoveNodes.length) ns.remove(toRemoveNodes);
+      // Add back nodes that match but are missing
+      const curNodeIds = new Set(ns.getIds());
+      const toAddNodes = allNodes.filter(n => visibleNodeIds.has(n.id) && !curNodeIds.has(n.id));
+      if (toAddNodes.length) ns.add(toAddNodes);
+      // Keep only edges whose source AND target are visible
+      if (es) {
+        const visibleEdgeIds = new Set((allEdges || []).filter(e => visibleNodeIds.has(e.from) && visibleNodeIds.has(e.to)).map(e => e.id));
+        const toRemoveEdges = es.getIds().filter(id => !visibleEdgeIds.has(id));
+        if (toRemoveEdges.length) es.remove(toRemoveEdges);
+        const curEdgeIds = new Set(es.getIds());
+        const toAddEdges = (allEdges || []).filter(e => visibleEdgeIds.has(e.id) && !curEdgeIds.has(e.id));
+        if (toAddEdges.length) es.add(toAddEdges);
+      }
+    }
+  }, [labelFilter]);
 
   const selectSearchResult = useCallback((result) => {
     const net = netRef.current;
@@ -666,6 +779,8 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
     const edges = new DataSet(eds);
     nodesRef.current = nodes;
     edgesRef.current = edges;
+    fullNodesRef.current = nds;
+    fullEdgesRef.current = eds;
 
     netRef.current?.destroy();
 
@@ -761,8 +876,54 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
   return (
     <div className={`flex-1 flex min-h-0 ${className || ''}`} style={{ height: '100%', width: '100%' }}>
       <div className="relative flex-1 min-h-0">
-        {/* Toolbar: search + add buttons */}
+        {/* Toolbar: label filter + search + add buttons */}
         <div className="absolute top-3 left-3 z-10 flex items-start gap-2">
+          {/* Label filter dropdown */}
+          {allLabels.length > 0 && (
+            <div className="relative">
+              <button
+                className="px-2.5 py-1.5 rounded-lg bg-[var(--bg-secondary)] text-[var(--text-primary)] text-xs font-medium hover:bg-[var(--bg-hover)] transition-all shadow-lg whitespace-nowrap flex items-center gap-1.5"
+                onClick={() => setLabelFilterOpen(!labelFilterOpen)}
+              >
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
+                </svg>
+                {labelFilter.length > 0 ? (
+                  <span className="text-[var(--accent)]">{labelFilter.length}</span>
+                ) : (
+                  <span>{t('search.filterVertexLabel')}</span>
+                )}
+              </button>
+              {labelFilterOpen && (
+                <>
+                  <div className="fixed inset-0 z-30" onClick={() => setLabelFilterOpen(false)} />
+                  <div className="absolute top-full left-0 mt-1 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-2xl max-h-60 overflow-y-auto z-40 min-w-[140px]">
+                    {allLabels.map(label => (
+                      <label key={label} className="flex items-center gap-2 px-3 py-2 text-xs text-[var(--text-primary)] hover:bg-[var(--bg-hover)] cursor-pointer transition-all whitespace-nowrap">
+                        <input
+                          type="checkbox"
+                          className="accent-[var(--accent)]"
+                          checked={labelFilter.includes(label)}
+                          onChange={() => {
+                            setLabelFilter(prev =>
+                              prev.includes(label) ? prev.filter(l => l !== label) : [...prev, label]
+                            );
+                          }}
+                        />
+                        {label}
+                      </label>
+                    ))}
+                    {labelFilter.length > 0 && (
+                      <button
+                        className="w-full text-left px-3 py-2 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] border-t border-[var(--border)] transition-all"
+                        onClick={() => setLabelFilter([])}
+                      >Clear filter</button>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
           <div className="w-48">
             <div className="relative">
               <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-[var(--text-tertiary)] pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
@@ -799,9 +960,9 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
           {!timeTravelAt && (
             <div className="flex gap-1">
               <button className="px-2.5 py-1.5 rounded-lg bg-[var(--bg-secondary)] text-[var(--text-primary)] text-xs font-medium hover:bg-[var(--accent)] hover:text-white transition-all shadow-lg whitespace-nowrap"
-                onClick={() => setShowAddVertex(true)}>+ Vertex</button>
+                onClick={() => setShowAddVertex(true)}>{t('graph.addVertexBtn')}</button>
               <button className="px-2.5 py-1.5 rounded-lg bg-[var(--bg-secondary)] text-[var(--text-primary)] text-xs font-medium hover:bg-[var(--accent)] hover:text-white transition-all shadow-lg whitespace-nowrap"
-                onClick={() => setShowAddEdge(true)}>+ Edge</button>
+                onClick={() => setShowAddEdge(true)}>{t('graph.addEdgeBtn')}</button>
             </div>
           )}
         </div>
@@ -812,37 +973,54 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
             <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
             <div className="relative bg-[var(--bg-secondary)] border border-[var(--border)] rounded-2xl p-5 max-w-sm shadow-2xl w-80"
               onClick={(e) => e.stopPropagation()}>
-              <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">Add Vertex</h3>
+              <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">{t('graph.addVertex')}</h3>
               <div className="space-y-2.5">
-                <input className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
-                  placeholder="Name" value={newVertexName} onChange={(e) => setNewVertexName(e.target.value)} />
-                <input className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
-                  placeholder="Labels (comma-separated)" value={newVertexLabels} onChange={(e) => setNewVertexLabels(e.target.value)} />
-                <input className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
-                  placeholder="Keywords (comma-separated)" value={newVertexKeywords} onChange={(e) => setNewVertexKeywords(e.target.value)} />
                 <div>
-                  <div className="text-[10px] text-[var(--text-tertiary)] mb-1 font-medium">Properties</div>
+                  <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-1">{t('panel.name')}</div>
+                  <input className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                    placeholder={t('graph.vertexName')} value={newVertexName} onChange={(e) => setNewVertexName(e.target.value)} />
+                </div>
+                <div>
+                  <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-1">{t('panel.labels')}</div>
+                  <input className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                    placeholder={t('panel.commaSeparated')} value={newVertexLabels} onChange={(e) => setNewVertexLabels(e.target.value)} />
+                </div>
+                <div>
+                  <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-1">{t('panel.keywords')}</div>
+                  <input className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                    placeholder={t('panel.commaSeparated')} value={newVertexKeywords} onChange={(e) => setNewVertexKeywords(e.target.value)} />
+                </div>
+                <div>
+                  <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-1">{t('panel.properties')}</div>
                   {newVertexProps.map((p, i) => (
-                    <div key={i} className="flex gap-1 mb-1">
-                      <input className="flex-1 px-2 py-1 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-[10px] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] font-mono"
-                        placeholder="key" value={p.k} onChange={(e) => {
-                          const copy = [...newVertexProps]; copy[i] = { ...copy[i], k: e.target.value }; setNewVertexProps(copy);
-                        }} />
-                      <input className="flex-1 px-2 py-1 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-[10px] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
-                        placeholder="value" value={p.v} onChange={(e) => {
-                          const copy = [...newVertexProps]; copy[i] = { ...copy[i], v: e.target.value }; setNewVertexProps(copy);
-                        }} />
-                      {i === newVertexProps.length - 1 && (
-                        <button className="px-1.5 text-[var(--text-tertiary)] hover:text-[var(--accent)] text-xs"
-                          onClick={() => setNewVertexProps([...newVertexProps, { k: '', v: '' }])}>+</button>
-                      )}
+                    <div key={i} className="flex items-start gap-1 py-1.5 px-2.5 rounded-lg bg-[var(--bg-tertiary)] mb-1">
+                      <div className="flex-1 flex flex-col gap-1 min-w-0">
+                        <input className="w-full px-2 py-1 rounded-md bg-[var(--bg-secondary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                          placeholder={t('panel.keyPlaceholder')} value={p.k} onChange={(e) => {
+                            const copy = [...newVertexProps]; copy[i] = { ...copy[i], k: e.target.value }; setNewVertexProps(copy);
+                          }} />
+                        <input className="w-full px-2 py-1 rounded-md bg-[var(--bg-secondary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                          placeholder={t('panel.valuePlaceholder')} value={p.v} onChange={(e) => {
+                            const copy = [...newVertexProps]; copy[i] = { ...copy[i], v: e.target.value }; setNewVertexProps(copy);
+                          }} />
+                      </div>
+                      <button className="flex-shrink-0 w-5 h-5 rounded-md bg-[var(--bg-hover)] hover:bg-[var(--danger)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] text-[10px] mt-1"
+                        onClick={() => {
+                          const copy = newVertexProps.filter((_, idx) => idx !== i);
+                          setNewVertexProps(copy.length ? copy : [{ k: '', v: '' }]);
+                        }}>✕</button>
                     </div>
                   ))}
+                  {newVertexProps.length === 0 && <div className="text-xs text-[var(--text-muted)] italic">—</div>}
+                  <button
+                    className="w-full py-1 rounded-lg border border-dashed border-[#3a3a3e] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[#0a84ff] text-xs font-medium transition-all mt-1"
+                    onClick={() => setNewVertexProps([...newVertexProps, { k: '', v: '' }])}
+                  >+ {t('graph.addProperty')}</button>
                 </div>
               </div>
               <div className="flex gap-2 justify-end mt-4">
                 <button className="px-3 py-1.5 rounded-lg bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs font-medium transition-all"
-                  onClick={() => setShowAddVertex(false)}>Cancel</button>
+                  onClick={() => setShowAddVertex(false)}>{t('graph.cancel')}</button>
                 <button className="px-3 py-1.5 rounded-lg bg-[var(--accent)] text-white text-xs font-medium hover:opacity-80 transition-all shadow-sm"
                   onClick={async () => {
                     if (!newVertexName.trim()) return;
@@ -859,7 +1037,7 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
                     } catch (e) { console.error('Add vertex failed:', e); }
                     setShowAddVertex(false);
                     setNewVertexName(''); setNewVertexKeywords(''); setNewVertexLabels(''); setNewVertexProps([{ k: '', v: '' }]);
-                  }}>Create</button>
+                  }}>{t('graph.create')}</button>
               </div>
             </div>
           </div>
@@ -871,74 +1049,104 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
             <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
             <div className="relative bg-[var(--bg-secondary)] border border-[var(--border)] rounded-2xl p-5 max-w-sm shadow-2xl w-80"
               onClick={(e) => e.stopPropagation()}>
-              <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">Add Edge</h3>
+              <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">{t('graph.addEdge')}</h3>
               <div className="space-y-2.5">
-                <input className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
-                  placeholder="Edge Label" value={newEdgeLabel} onChange={(e) => setNewEdgeLabel(e.target.value)} />
                 <div>
-                  <div className="text-[10px] text-[var(--text-tertiary)] mb-1 font-medium">Source vertex</div>
+                  <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-1">{t('panel.name')}</div>
+                  <input className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                    placeholder={t('graph.edgeName')} value={newEdgeLabel} onChange={(e) => setNewEdgeLabel(e.target.value)} />
+                </div>
+                <div>
+                  <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-1">{t('panel.labels')}</div>
+                  <input className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                    placeholder={t('panel.commaSeparated')} value={newEdgeLabels} onChange={(e) => setNewEdgeLabels(e.target.value)} />
+                </div>
+                <div>
+                  <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-1">{t('panel.keywords')}</div>
+                  <input className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                    placeholder={t('panel.commaSeparated')} value={newEdgeKeywords} onChange={(e) => setNewEdgeKeywords(e.target.value)} />
+                </div>
+                <div>
+                  <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-1">{t('panel.strength')}</div>
+                  <input className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                    placeholder={t('panel.commaSeparated')} type="number" step="0.1" min="0" max="1" value={newEdgeStrength} onChange={(e) => setNewEdgeStrength(e.target.value)} />
+                </div>
+                <div>
+                  <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-1">{t('graph.sourceVertex')}</div>
                   <VertexSearchSelect
                     graph={graph}
                     value={newEdgeSource}
                     onChange={setNewEdgeSource}
-                    placeholder="Search source vertex…"
+                    placeholder={t('graph.sourcePlaceholder')}
                     nodesRef={nodesRef}
                   />
                 </div>
                 <div>
-                  <div className="text-[10px] text-[var(--text-tertiary)] mb-1 font-medium">Target vertex</div>
+                  <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-1">{t('graph.targetVertex')}</div>
                   <VertexSearchSelect
                     graph={graph}
                     value={newEdgeTarget}
                     onChange={setNewEdgeTarget}
-                    placeholder="Search target vertex…"
+                    placeholder={t('graph.targetPlaceholder')}
                     nodesRef={nodesRef}
                   />
                 </div>
                 {/* Properties */}
                 <div>
-                  <div className="text-[10px] text-[var(--text-tertiary)] mb-1 font-medium">Properties</div>
+                  <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-1">{t('panel.properties')}</div>
                   {newEdgeProps.map((p, i) => (
-                    <div key={i} className="flex gap-1 mb-1">
-                      <input className="flex-1 px-2 py-1 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-[10px] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] font-mono"
-                        placeholder="key" value={p.k} onChange={(e) => {
-                          const copy = [...newEdgeProps]; copy[i] = { ...copy[i], k: e.target.value }; setNewEdgeProps(copy);
-                        }} />
-                      <input className="flex-1 px-2 py-1 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-[10px] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
-                        placeholder="value" value={p.v} onChange={(e) => {
-                          const copy = [...newEdgeProps]; copy[i] = { ...copy[i], v: e.target.value }; setNewEdgeProps(copy);
-                        }} />
-                      {i === newEdgeProps.length - 1 && (
-                        <button className="px-1.5 text-[var(--text-tertiary)] hover:text-[var(--accent)] text-xs"
-                          onClick={() => setNewEdgeProps([...newEdgeProps, { k: '', v: '' }])}>+</button>
-                      )}
+                    <div key={i} className="flex items-start gap-1 py-1.5 px-2.5 rounded-lg bg-[var(--bg-tertiary)] mb-1">
+                      <div className="flex-1 flex flex-col gap-1 min-w-0">
+                        <input className="w-full px-2 py-1 rounded-md bg-[var(--bg-secondary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                          placeholder={t('panel.keyPlaceholder')} value={p.k} onChange={(e) => {
+                            const copy = [...newEdgeProps]; copy[i] = { ...copy[i], k: e.target.value }; setNewEdgeProps(copy);
+                          }} />
+                        <input className="w-full px-2 py-1 rounded-md bg-[var(--bg-secondary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                          placeholder={t('panel.valuePlaceholder')} value={p.v} onChange={(e) => {
+                            const copy = [...newEdgeProps]; copy[i] = { ...copy[i], v: e.target.value }; setNewEdgeProps(copy);
+                          }} />
+                      </div>
+                      <button className="flex-shrink-0 w-5 h-5 rounded-md bg-[var(--bg-hover)] hover:bg-[var(--danger)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] text-[10px] mt-1"
+                        onClick={() => {
+                          const copy = newEdgeProps.filter((_, idx) => idx !== i);
+                          setNewEdgeProps(copy.length ? copy : [{ k: '', v: '' }]);
+                        }}>✕</button>
                     </div>
                   ))}
+                  {newEdgeProps.length === 0 && <div className="text-xs text-[var(--text-muted)] italic">—</div>}
+                  <button
+                    className="w-full py-1 rounded-lg border border-dashed border-[#3a3a3e] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[#0a84ff] text-xs font-medium transition-all mt-1"
+                    onClick={() => setNewEdgeProps([...newEdgeProps, { k: '', v: '' }])}
+                  >+ {t('graph.addProperty')}</button>
                 </div>
               </div>
               <div className="flex gap-2 justify-end mt-4">
                 <button className="px-3 py-1.5 rounded-lg bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs font-medium transition-all"
-                  onClick={() => setShowAddEdge(false)}>Cancel</button>
+                  onClick={() => setShowAddEdge(false)}>{t('graph.cancel')}</button>
                 <button className="px-3 py-1.5 rounded-lg bg-[var(--accent)] text-white text-xs font-medium hover:opacity-80 transition-all shadow-sm"
                   onClick={async () => {
                     if (!newEdgeLabel.trim() || !newEdgeSource || !newEdgeTarget) return;
                     try {
                       const src = parseInt(newEdgeSource);
                       const tgt = parseInt(newEdgeTarget);
+                      const strength = parseFloat(newEdgeStrength) || 1.0;
+                      const labels = newEdgeLabels.split(',').map(s => s.trim()).filter(Boolean);
+                      const keywords = newEdgeKeywords.split(',').map(s => s.trim()).filter(Boolean);
                       const props = Object.fromEntries(newEdgeProps.filter(p => p.k.trim()).map(p => [p.k.trim(), p.v.trim()]));
-                      const res = await addEdge(newEdgeLabel.trim(), src, tgt, props, graph);
+                      const res = await addEdge(newEdgeLabel.trim(), src, tgt, props, graph, labels, keywords, strength);
                       if (res.id) {
                         const es = edgesRef.current;
                         if (es) {
                           const exists = es.get({ filter: (e) => e.from === src && e.to === tgt });
-                          if (exists.length === 0) es.add({ id: res.id, from: src, to: tgt, label: newEdgeLabel.trim(), _original: { type: 'edge', id: res.id, name: newEdgeLabel.trim(), source: src, target: tgt, properties: props } });
+                          if (exists.length === 0) es.add({ id: res.id, from: src, to: tgt, label: newEdgeLabel.trim(), _original: { type: 'edge', id: res.id, name: newEdgeLabel.trim(), source: src, target: tgt, labels, keywords, strength, properties: props } });
                         }
                         netRef.current?.fit({ animation: { duration: 300 } });
                       }
                     } catch (e) { console.error('Add edge failed:', e); }
                     setShowAddEdge(false);
                     setNewEdgeLabel(''); setNewEdgeSource(''); setNewEdgeTarget(''); setNewEdgeProps([{ k: '', v: '' }]);
-                  }}>Create</button>
+                    setNewEdgeKeywords(''); setNewEdgeLabels(''); setNewEdgeStrength('1.0');
+                  }}>{t('graph.create')}</button>
               </div>
             </div>
           </div>
