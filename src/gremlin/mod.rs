@@ -274,7 +274,8 @@ pub async fn handle_gremlin(
             let do_touch = settings.rank.auto_inc_rank_when_read;
             drop(settings);
             if has_ids && do_touch {
-                if let Ok(g) = state.gm.get("default") {
+                let default_name = state.gm.get_default_name();
+                if let Ok(g) = state.gm.get(&default_name) {
                     tokio::spawn(async move {
                         crate::cluster::server::process_touch(
                             &g, &vertex_ids, &edge_ids, reg.as_deref(),
@@ -841,7 +842,7 @@ pub async fn create_document(
     Json(body): Json<CreateDocumentBody>,
 ) -> Json<CreateDocumentResponse> {
     let id = uuid::Uuid::new_v4().to_string();
-    let graph_name = body.graph.unwrap_or_else(|| "default".to_string());
+    let graph_name = body.graph.unwrap_or_else(|| state.gm.get_default_name());
     let tags = body.tags.unwrap_or_default();
     state.doc_mgr.add(&id, &body.title, &body.content, &tags, &graph_name);
     Json(CreateDocumentResponse {
@@ -973,7 +974,8 @@ pub async fn submit_extraction(
     State(state): State<AppState>,
     Json(body): Json<SubmitExtractionBody>,
 ) -> Result<Json<SubmitExtractionResponse>, StatusCode> {
-    let graph_name = body.graph.as_deref().unwrap_or("default");
+    let default_name = state.gm.get_default_name();
+    let graph_name = body.graph.as_deref().unwrap_or(&default_name);
     let doc_id = body.document_id.clone();
 
     // Verify document exists
@@ -1313,10 +1315,11 @@ pub async fn extract_document_handler(
     headers: HeaderMap,
 ) -> Result<Json<SubmitExtractionResponse>, StatusCode> {
     // Get graph name from X-Graph-Name header
+    let default_name = state.gm.get_default_name();
     let graph_name = headers
         .get("X-Graph-Name")
         .and_then(|v| v.to_str().ok())
-        .unwrap_or("default");
+        .unwrap_or(&default_name);
 
     // Verify document exists
     let doc = state.doc_mgr.get(&document_id).ok_or(StatusCode::NOT_FOUND)?;

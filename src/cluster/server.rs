@@ -176,7 +176,8 @@ fn build_broadcast_entries(
 ) -> Vec<crate::storage::redo_log::RedoLogEntry> {
     let mut entries = Vec::new();
     let method = req.method.to_uppercase();
-    let graph = match state.gm.get("default") {
+    let default_name = state.gm.get_default_name();
+    let graph = match state.gm.get(&default_name) {
         Ok(g) => g,
         Err(_) => return entries,
     };
@@ -313,7 +314,8 @@ async fn handle_replicate(
     // Write the entry to the default graph's redo log and replay it
     // into the in-memory state so the worker can immediately see changes.
     // redo_log.append() uses synchronous Condvar — defer to spawn_blocking.
-    let graph = match state.gm.get("default") {
+    let default_name = state.gm.get_default_name();
+    let graph = match state.gm.get(&default_name) {
         Ok(g) => g,
         Err(e) => {
             log::error!("replicate: failed to get default graph: {}", e);
@@ -490,7 +492,8 @@ async fn handle_touch(
         return StatusCode::OK;
     }
 
-    let graph = match state.gm.get("default") {
+    let default_name = state.gm.get_default_name();
+    let graph = match state.gm.get(&default_name) {
         Ok(g) => g,
         Err(e) => {
             log::warn!("touch: failed to get default graph: {}", e);

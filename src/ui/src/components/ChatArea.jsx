@@ -20,16 +20,28 @@ function uid() {
   return `m${Date.now()}-${++_idCounter}`;
 }
 
-/** Extract and format graph search context from `search_progress` messages. */
+/** Extract and format graph search context from `search_progress` messages.
+ *  Output uses [Entity] / [Relation] labels in English. */
 function formatGraphContext(items) {
   if (!items?.length) return '';
   return items
-    .slice(0, 50)
+    .slice(0, 80)
     .map((item) => {
       if (item.type === 'vertex') {
-        return `[实体] ${item.name}${item.labels?.length ? ' (' + item.labels.join(', ') + ')' : ''}`;
+        let s = `[Entity] ${item.name}${item.labels?.length ? ' (' + item.labels.join(', ') + ')' : ''}`;
+        if (item.keywords?.length) {
+          s += ` — keywords: ${item.keywords.join(', ')}`;
+        }
+        return s;
       } else if (item.type === 'edge') {
-        return `[关系] ${item.name}: ${item.source} → ${item.target}`;
+        let s = `[Relation] ${item.name}: ${item.source} → ${item.target}`;
+        if (item.strength !== undefined && item.strength !== 1.0) {
+          s += ` (strength: ${item.strength})`;
+        }
+        if (item.keywords?.length) {
+          s += ` — ${item.keywords.join(', ')}`;
+        }
+        return s;
       }
       return '';
     })
@@ -142,13 +154,17 @@ export default function ChatArea({
               content: m.content,
             }));
 
-          // Inject graph search context as neutral data (not restrictive)
-          // Includes both current search results and historical search_progress messages
+          // Inject graph search context — LLM should prioritize this data
           const graphCtx = collectGraphContext(conv.messages, finalData);
           if (graphCtx) {
             llmMessages.unshift({
               role: 'system',
-              content: `以下是从知识图谱中检索到的相关信息：\n${graphCtx}`,
+              content: `The following information was retrieved from the knowledge graph. Prioritize it when answering the user's question.
+If the graph data is sufficient, directly reference its entities and relationships. If not, supplement with your own knowledge.
+Do not mention entity or relationship ID numbers — use their names directly.
+Provide the answer first, then the reasoning process.
+
+${graphCtx}`,
             });
           }
 
@@ -203,7 +219,12 @@ export default function ChatArea({
         if (graphCtx) {
           llmMessages.unshift({
             role: 'system',
-            content: `以下是从知识图谱中检索到的相关信息：\n${graphCtx}`,
+            content: `The following information was retrieved from the knowledge graph. Prioritize it when answering the user's question.
+If the graph data is sufficient, directly reference its entities and relationships. If not, supplement with your own knowledge.
+Do not mention entity or relationship ID numbers — use their names directly.
+Provide the answer first, then the reasoning process.
+
+${graphCtx}`,
           });
         }
 
