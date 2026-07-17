@@ -10,6 +10,78 @@ use bionic_graph::config::NodeRole;
 use bionic_graph::gremlin::build_router as build_new_router;
 use bionic_graph::graph_manager::GraphManager;
 
+/// Check whether a process with the given PID is alive on Unix.
+///
+/// Uses `/proc/<pid>/status` to verify the process exists and is not a zombie.
+#[cfg(unix)]
+fn is_process_running(pid: u32) -> bool {
+    let proc_path = std::path::PathBuf::from(format!("/proc/{}", pid));
+    if !proc_path.exists() {
+        return false;
+    }
+    // Also check it's not a zombie process.
+    if let Ok(status) = std::fs::read_to_string(proc_path.join("status")) {
+        for line in status.lines() {
+            if line.starts_with("State:") && line.contains('Z') {
+                return false; // zombie — treat as dead
+            }
+        }
+    }
+    true
+}
+
+/// Fallback for non-Unix: assume stale (allow startup).
+#[cfg(not(unix))]
+fn is_process_running(_pid: u32) -> bool {
+    false
+}
+
+/// Create a PID file at `<data_dir>/lock.pid` to prevent multiple instances.
+///
+/// If the file already exists and the recorded process is still alive, the
+/// function returns an error and the caller should exit. Otherwise the stale
+/// file is overwritten with the current process ID.
+fn create_pid_file(data_dir: &std::path::Path) -> Result<(), String> {
+    std::fs::create_dir_all(data_dir)
+        .map_err(|e| format!("Failed to create data directory '{}': {}", data_dir.display(), e))?;
+
+    let pid_path = data_dir.join("lock.pid");
+
+    if pid_path.exists() {
+        match std::fs::read_to_string(&pid_path) {
+            Ok(content) => {
+                let trimmed = content.trim();
+                if let Ok(pid) = trimmed.parse::<u32>() {
+                    if is_process_running(pid) {
+                        return Err(format!(
+                            "Another instance (PID {}) is already running. \
+                             Data directory: {}. Exiting.",
+                            pid,
+                            data_dir.display()
+                        ));
+                    }
+                    log::warn!("Found stale lock.pid (PID {}). Overwriting.", pid);
+                } else {
+                    log::warn!(
+                        "Invalid content in lock.pid: '{}'. Overwriting.",
+                        trimmed
+                    );
+                }
+            }
+            Err(e) => {
+                log::warn!("Failed to read lock.pid ({}). Overwriting.", e);
+            }
+        }
+    }
+
+    let pid = std::process::id();
+    std::fs::write(&pid_path, pid.to_string())
+        .map_err(|e| format!("Failed to write lock.pid: {}", e))?;
+
+    log::info!("Lock file created at {} (PID {})", pid_path.display(), pid);
+    Ok(())
+}
+
 /// Bionic-Graph: Block-based knowledge graph with token-indexed search.
 ///
 /// A high-performance graph database with:
@@ -61,6 +133,14 @@ async fn main() {
         settings.server.port = p;
     }
 
+    // Acquire process lock: check for existing instance, write PID file.
+    let data_dir_path = std::path::PathBuf::from(&settings.storage.data_dir);
+    if let Err(msg) = create_pid_file(&data_dir_path) {
+        log::error!("{}", msg);
+        eprintln!("{}", msg);
+        std::process::exit(1);
+    }
+
     // Initialize tokenizer with custom dictionary config.
     let tokenizer_config = args.tokenizer_config.unwrap_or_else(|| {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
@@ -103,8 +183,7 @@ async fn main() {
     );
 
     // Initialize the new block-based graph manager.
-    let data_dir = std::path::PathBuf::from(&settings.storage.data_dir);
-    let gm = Arc::new(GraphManager::new(data_dir));
+    let gm = Arc::new(GraphManager::new(data_dir_path.clone()));
 
     // Ensure the default graph "graph0" exists on first startup.
     if let Err(e) = gm.get("graph0") {
@@ -268,6 +347,16 @@ async fn main() {
     // Flush and checkpoint all graphs before exiting.
     gm.close_all();
     log::info!("All graphs flushed and checkpointed.");
+
+    // Release process lock.
+    let pid_path = data_dir_path.join("lock.pid");
+    if pid_path.exists() {
+        if let Err(e) = std::fs::remove_file(&pid_path) {
+            log::warn!("Failed to remove lock.pid: {}", e);
+        } else {
+            log::info!("Lock file removed.");
+        }
+    }
 }
 
 fn log_info_banner(addr: &SocketAddr) {
