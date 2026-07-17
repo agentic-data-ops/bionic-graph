@@ -29,19 +29,21 @@ pub fn build_memory_index(idx_file: &IndexFile) -> StorageResult<MemoryIndex> {
         match chunk_type {
             ChunkType::Vertex => {
                 let rec = VertexIndexRecord::decode(data);
+                // Keep deleted vertices for time-travel traversal
+                mem.vertices.insert(rec.vertex_id, ptr);
                 if rec.status != DataStatus::Deleted {
-                    mem.vertices.insert(rec.vertex_id, ptr);
                     mem.ranks.insert(rec.rank, ptr);
                     mem.atime_index.insert(rec.atime, ptr);
                 }
             }
             ChunkType::Edge => {
                 let rec = EdgeIndexRecord::decode(data);
+                // Always add to adjacency and edges index (even deleted) for time-travel traversal
+                mem.adjacency.add_edge(rec.edge_id, rec.source, rec.target, ptr);
+                mem.edges.insert(rec.edge_id, ptr);
                 if rec.status != DataStatus::Deleted {
-                    mem.edges.insert(rec.edge_id, ptr);
                     mem.ranks.insert(rec.rank, ptr);
                     mem.atime_index.insert(rec.atime, ptr);
-                    mem.adjacency.add_edge(rec.edge_id, rec.source, rec.target, ptr);
                 }
             }
             ChunkType::Token => {

@@ -208,7 +208,7 @@ function DocViewer({ docId, onClose }) {
   );
 }
 
-function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onShowDocument, onSelectVertex, graphData, nodesRef, readOnly }) {
+function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onShowDocument, onSelectVertex, graphData, nodesRef, readOnly, onDataChange }) {
   const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const [editLabel, setEditLabel] = useState('');
@@ -291,11 +291,13 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onS
       item.keywords = keywords;
       item.strength = strength;
       setEditing(false);
+      setUpdateSuccess(t('graph.updateSuccess'));
+      onDataChange?.();
     } catch (e) {
       setError(e.message || 'Save failed');
     }
     setSaving(false);
-  }, [editLabel, editProps, item, type, graphName, localName, localKeywords, localStrength]);
+  }, [editLabel, editProps, item, type, graphName, localName, localKeywords, localStrength, onDataChange]);
 
   return (
     <div className="w-72 bg-[var(--bg-secondary)] border-l border-[var(--border)] flex flex-col h-full overflow-y-auto flex-shrink-0 select-text">
@@ -549,7 +551,7 @@ function buildFromData(dataItems) {
   return { nodes, edges };
 }
 
-const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabled, timeTravelAt }, ref) => {
+const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabled, timeTravelAt, onDataChange }, ref) => {
   const { t } = useTranslation();
   const containerRef = useRef(null);
   const netRef = useRef(null);
@@ -576,6 +578,9 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
   const [newEdgeStrength, setNewEdgeStrength] = useState('1.0');
   const [labelFilter, setLabelFilter] = useState([]);
   const [labelFilterOpen, setLabelFilterOpen] = useState(false);
+  const [deleteSuccess, setDeleteSuccess] = useState('');
+  const [addSuccess, setAddSuccess] = useState('');
+  const [updateSuccess, setUpdateSuccess] = useState('');
   const fullNodesRef = useRef(null);
   const fullEdgesRef = useRef(null);
   const dataRef = useRef(data);
@@ -669,6 +674,18 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
     }
   }, [labelFilter]);
 
+  // Auto-dismiss success notification
+  useEffect(() => {
+    if (deleteSuccess || addSuccess || updateSuccess) {
+      const timer = setTimeout(() => {
+        setDeleteSuccess('');
+        setAddSuccess('');
+        setUpdateSuccess('');
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [deleteSuccess, addSuccess, updateSuccess]);
+
   const selectSearchResult = useCallback((result) => {
     const net = netRef.current;
     const ns = nodesRef.current;
@@ -730,6 +747,23 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
   }, []); // track latest data for event handlers
 
   useEffect(() => { dataRef.current = data; }, [data]);
+
+  // Collect current state of all nodes/edges from DataSets into data.data format
+  const collectUpdatedData = useCallback(() => {
+    const ns = nodesRef.current;
+    const es = edgesRef.current;
+    if (!ns) return [];
+    const items = [];
+    for (const n of ns.get()) {
+      if (n._original) items.push({ ...n._original });
+    }
+    if (es) {
+      for (const e of es.get()) {
+        if (e._original) items.push({ ...e._original });
+      }
+    }
+    return items;
+  }, []);
 
   useImperativeHandle(ref, () => ({
     getSnapshot: () => {
@@ -823,6 +857,7 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
           }
         }
         net.fit({ animation: { duration: 300, easingFunction: 'easeInOutQuad' } });
+        onDataChange?.(collectUpdatedData());
       } catch (e) { console.error('Expand error:', e); }
     });
 
@@ -849,7 +884,9 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
     ns.remove(vid);
     setSelected(null);
     setConfirmDelete(null);
-  }, [confirmDelete, graph]);
+    setDeleteSuccess(t('graph.deleteSuccess'));
+    onDataChange?.(collectUpdatedData());
+  }, [confirmDelete, graph, t, onDataChange, collectUpdatedData]);
 
   const handleConfirmDeleteEdge = useCallback(async (force) => {
     if (!confirmDeleteEdge) return;
@@ -867,7 +904,9 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
     }
     setSelected(null);
     setConfirmDeleteEdge(null);
-  }, [confirmDeleteEdge, graph]);
+    setDeleteSuccess(t('graph.deleteSuccess'));
+    onDataChange?.(collectUpdatedData());
+  }, [confirmDeleteEdge, graph, t, onDataChange, collectUpdatedData]);
 
   if (!data?.data?.length) {
     return <div className="flex items-center justify-center text-[var(--text-tertiary)] text-sm min-h-[200px]">No graph data</div>;
@@ -967,6 +1006,13 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
           )}
         </div>
 
+        {/* Success toast */}
+        {(deleteSuccess || addSuccess || updateSuccess) && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg bg-[var(--success-bg)] text-[var(--success)] text-xs font-medium shadow-lg">
+            {deleteSuccess || addSuccess || updateSuccess}
+          </div>
+        )}
+
         {/* Add Vertex Modal */}
         {showAddVertex && (
           <div className="fixed inset-0 z-[200] flex items-center justify-center" onClick={() => setShowAddVertex(false)}>
@@ -1033,6 +1079,8 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
                         const ns = nodesRef.current;
                         if (ns) ns.add({ id: res.id, label: newVertexName.trim(), _original: { type: 'vertex', id: res.id, name: newVertexName.trim(), keywords, labels } });
                         netRef.current?.fit({ animation: { duration: 300 } });
+                        setAddSuccess(t('graph.addSuccess'));
+                        onDataChange?.(collectUpdatedData());
                       }
                     } catch (e) { console.error('Add vertex failed:', e); }
                     setShowAddVertex(false);
@@ -1141,6 +1189,8 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
                           if (exists.length === 0) es.add({ id: res.id, from: src, to: tgt, label: newEdgeLabel.trim(), _original: { type: 'edge', id: res.id, name: newEdgeLabel.trim(), source: src, target: tgt, labels, keywords, strength, properties: props } });
                         }
                         netRef.current?.fit({ animation: { duration: 300 } });
+                        setAddSuccess(t('graph.addSuccess'));
+                        onDataChange?.(collectUpdatedData());
                       }
                     } catch (e) { console.error('Add edge failed:', e); }
                     setShowAddEdge(false);
@@ -1167,6 +1217,7 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
           onDelete={(vid, name) => setConfirmDelete({ vid, name })}
           onDeleteEdge={(eid, label) => setConfirmDeleteEdge({ eid, label })}
           readOnly={!!timeTravelAt}
+          onDataChange={() => onDataChange?.(collectUpdatedData())}
         />
       )}
       {showDoc && <DocViewer docId={showDoc} onClose={() => setShowDoc(null)} />}

@@ -547,7 +547,7 @@ pub fn soft_delete_edge(graph: &Graph, eid: u32) -> StorageResult<()> {
     {
         let mut mi = graph.memory_index.write().unwrap();
         mi.ranks.remove(rec.rank, &ptr);
-        mi.adjacency.remove_edge(rec.source, rec.target, &ptr);
+        // Keep edge in adjacency for time-travel traversal
     }
 
     graph.redo_log.append(OpType::EdgeDelete, eid as u64, &[])?;

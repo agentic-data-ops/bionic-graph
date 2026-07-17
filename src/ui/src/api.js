@@ -444,17 +444,29 @@ export async function addEdge(name, source, target, properties = {}, graph = 'de
 export async function deleteVertex(id, graph = 'default', force) {
   let url = `/vertices/${id}`;
   if (force) url += '?force=true';
-  return api(url, {
+  const res = await fetch(url, {
     method: 'DELETE',
-    headers: { 'X-Graph-Name': graph },
+    headers: { 'Content-Type': 'application/json', 'X-Graph-Name': graph },
   });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(body);
+  }
+  const text = await res.text();
+  return text ? JSON.parse(text) : { success: true };
 }
 
 export async function deleteEdge(id, graph = 'default', force) {
   let url = `/edges/${id}`;
   if (force) url += '?force=true';
-  return api(url, {
+  const res = await fetch(url, {
     method: 'DELETE',
-    headers: { 'X-Graph-Name': graph },
+    headers: { 'Content-Type': 'application/json', 'X-Graph-Name': graph },
   });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(body);
+  }
+  const text = await res.text();
+  return text ? JSON.parse(text) : { success: true };
 }

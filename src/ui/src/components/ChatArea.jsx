@@ -302,6 +302,23 @@ ${graphCtx}`,
         <MessageList messages={messages} searchStream={searchStream} theme={theme}
           onEdit={(text) => { chatInputRef.current?.setText(text); requestAnimationFrame(() => chatInputRef.current?.focus()); }}
           onSaveToKB={onSaveToKB}
+          onDataChange={(items) => {
+            const conv = activeConv;
+            if (!conv) return;
+            const itemIds = new Set(items.map(i => i.id));
+            const updatedMsgs = conv.messages.map((m) => {
+              const graphSrc = m.graphData || m.data;
+              if (graphSrc?.data?.length) {
+                const match = graphSrc.data.some(d => itemIds.has(d.id));
+                if (match) {
+                  if (m.graphData) return { ...m, graphData: { ...m.graphData, data: items } };
+                  return { ...m, data: { ...m.data, data: items } };
+                }
+              }
+              return m;
+            });
+            onUpdateConv({ ...conv, messages: updatedMsgs });
+          }}
         />
       </div>
 

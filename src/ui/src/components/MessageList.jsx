@@ -70,7 +70,7 @@ function CopyButton({ text }) {
   );
 }
 
-function ChatMessage({ message, graphRef, onMaximizeRef, theme, onEdit, onSaveToKB }) {
+function ChatMessage({ message, graphRef, onMaximizeRef, theme, onEdit, onSaveToKB, onDataChange }) {
   const { t } = useTranslation();
 
   if (message.type === 'user') {
@@ -141,7 +141,7 @@ function ChatMessage({ message, graphRef, onMaximizeRef, theme, onEdit, onSaveTo
                   </svg>
                 </button>
               </div>
-              <div className="h-[420px] relative"><GraphViewer ref={graphRef} data={message.graphData} graph={message.graphName} theme={theme} timeTravelEnabled={message.timeTravelEnabled || false} timeTravelAt={message.timeTravelAt} /></div>
+               <div className="h-[420px] relative"><GraphViewer ref={graphRef} data={message.graphData} graph={message.graphName} theme={theme} timeTravelEnabled={message.timeTravelEnabled || false} timeTravelAt={message.timeTravelAt} onDataChange={onDataChange} /></div>
             </div>
           )}
         </div>
@@ -161,7 +161,7 @@ function ChatMessage({ message, graphRef, onMaximizeRef, theme, onEdit, onSaveTo
               </svg>
             </button>
           </div>
-          <div className="h-[420px] relative"><GraphViewer ref={graphRef} data={message.data} graph={message.graphName} theme={theme} timeTravelEnabled={message.timeTravelEnabled || false} timeTravelAt={message.timeTravelAt} /></div>
+          <div className="h-[420px] relative"><GraphViewer ref={graphRef} data={message.data} graph={message.graphName} theme={theme} timeTravelEnabled={message.timeTravelEnabled || false} timeTravelAt={message.timeTravelAt} onDataChange={onDataChange} /></div>
         </div>
       </div>
     );
@@ -169,7 +169,7 @@ function ChatMessage({ message, graphRef, onMaximizeRef, theme, onEdit, onSaveTo
   return null;
 }
 
-export default function MessageList({ messages, searchStream, theme, onEdit, onSaveToKB }) {
+export default function MessageList({ messages, searchStream, theme, onEdit, onSaveToKB, onDataChange }) {
   const { t } = useTranslation();
   const bottomRef = useRef(null);
   const inlineRefs = useRef({});
@@ -222,7 +222,7 @@ export default function MessageList({ messages, searchStream, theme, onEdit, onS
           <ChatMessage key={msg.id} message={msg} theme={theme}
             graphRef={(el) => { if (el) inlineRefs.current[msg.id] = el; }}
             onMaximizeRef={(graphName) => handleMaximize(msg.id, graphName)}
-            onEdit={onEdit} onSaveToKB={onSaveToKB}
+            onEdit={onEdit} onSaveToKB={onSaveToKB} onDataChange={onDataChange}
           />
         ))}
         <div ref={bottomRef} />
@@ -246,6 +246,7 @@ export default function MessageList({ messages, searchStream, theme, onEdit, onS
                 ...(maximized.edges || []).map((e) => e._original || { type: 'edge', id: e.id, source: e.from, target: e.to, label: e.label || '', properties: {} }),
               ]}}
               graph={maximized.graphName}
+              onDataChange={onDataChange}
             />
           </div>
         </div>

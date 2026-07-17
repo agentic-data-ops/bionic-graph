@@ -41,6 +41,12 @@ pub struct GraphConfig {
     /// 锁引擎配置
     #[serde(default)]
     pub lock: GraphLockConfig,
+    /// 下一个顶点 ID（单调递增，持久化防止重启后回退）
+    #[serde(default)]
+    pub next_vertex_id: u32,
+    /// 下一个边 ID（单调递增，持久化防止重启后回退）
+    #[serde(default)]
+    pub next_edge_id: u32,
 }
 
 impl Default for GraphConfig {
@@ -48,6 +54,8 @@ impl Default for GraphConfig {
         Self {
             storage: GraphStorageConfig::default(),
             lock: GraphLockConfig::default(),
+            next_vertex_id: 0,
+            next_edge_id: 0,
         }
     }
 }
@@ -202,8 +210,8 @@ impl Graph {
             index_file,
             memory_index,
             locks: LockManager::new(),
-            next_vertex_id: AtomicU32::new(max_vid + 1),
-            next_edge_id: AtomicU32::new(max_eid + 1),
+            next_vertex_id: AtomicU32::new(std::cmp::max(config.next_vertex_id, max_vid + 1)),
+            next_edge_id: AtomicU32::new(std::cmp::max(config.next_edge_id, max_eid + 1)),
             next_token_id: AtomicU32::new(1),
             config,
         });
@@ -253,7 +261,17 @@ impl Graph {
     }
 
     /// Close the graph — flush everything and checkpoint the WAL.
+    /// Close the graph, persisting current state and counters.
     pub fn close(&self) -> StorageResult<()> {
+        // Persist next_id counters to config so they survive restarts
+        let current_nv = self.next_vertex_id.load(std::sync::atomic::Ordering::Relaxed);
+        let current_ne = self.next_edge_id.load(std::sync::atomic::Ordering::Relaxed);
+        if current_nv > self.config.next_vertex_id || current_ne > self.config.next_edge_id {
+            let mut cfg = self.config.clone();
+            cfg.next_vertex_id = current_nv;
+            cfg.next_edge_id = current_ne;
+            cfg.save(&self.dir)?;
+        }
         self.flush()?;
         self.redo_log.sync()?;
         self.redo_log.renew()?;

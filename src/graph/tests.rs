@@ -193,7 +193,7 @@ fn traversal_expand() {
     crud::create_edge(&g, a, b, "e", &[], &[], 0.9, &HashMap::new()).unwrap();
     let r = run_steps(&g, vec![
         GremlinStep::V { ids: Some(vec![a]), at: None },
-        GremlinStep::Expand { depth: None, label: None },
+        GremlinStep::Expand { depth: None, label: None, at: None },
     ]);
     assert!(vids(&r).contains(&a) && vids(&r).contains(&b));
     assert_eq!(eids(&r).len(), 1);
@@ -249,7 +249,7 @@ fn activate_basic() {
     crud::create_edge(&g, a, b, "e", &[], &[], 0.8, &HashMap::new()).unwrap();
     let r = run_steps(&g, vec![
         GremlinStep::V { ids: Some(vec![a]), at: None },
-        GremlinStep::Traverse { decay: Some(1.0), activate: Some(0.0), max_depth: Some(1), min_score: Some(0.0) },
+        GremlinStep::Traverse { decay: Some(1.0), activate: Some(0.0), max_depth: Some(1), min_score: Some(0.0), at: None },
     ]);
     assert_eq!(vids(&r).len(), 2, "A + B");
 }
@@ -264,11 +264,11 @@ fn activate_depth() {
     crud::create_edge(&g, b, c, "e", &[], &[], 0.6, &HashMap::new()).unwrap();
     assert_eq!(vids(&run_steps(&g, vec![
         GremlinStep::V { ids: Some(vec![a]), at: None },
-        GremlinStep::Traverse { decay: Some(1.0), activate: Some(0.0), max_depth: Some(1), min_score: Some(0.0) },
+        GremlinStep::Traverse { decay: Some(1.0), activate: Some(0.0), max_depth: Some(1), min_score: Some(0.0), at: None },
     ])).len(), 2, "depth=1: A+B");
     assert_eq!(vids(&run_steps(&g, vec![
         GremlinStep::V { ids: Some(vec![a]), at: None },
-        GremlinStep::Traverse { decay: Some(1.0), activate: Some(0.0), max_depth: Some(2), min_score: Some(0.0) },
+        GremlinStep::Traverse { decay: Some(1.0), activate: Some(0.0), max_depth: Some(2), min_score: Some(0.0), at: None },
     ])).len(), 3, "depth=2: A+B+C");
 }
 
@@ -280,7 +280,7 @@ fn activate_min_score() {
     crud::create_edge(&g, a, b, "e", &[], &[], 0.5, &HashMap::new()).unwrap();
     let r = run_steps(&g, vec![
         GremlinStep::V { ids: Some(vec![a]), at: None },
-        GremlinStep::Traverse { decay: Some(1.0), activate: Some(0.0), max_depth: Some(1), min_score: Some(0.6) },
+        GremlinStep::Traverse { decay: Some(1.0), activate: Some(0.0), max_depth: Some(1), min_score: Some(0.6), at: None },
     ]);
     assert_eq!(vids(&r).len(), 1, "B score=0.5 should be filtered by min_score=0.6");
 }

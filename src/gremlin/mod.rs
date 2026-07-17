@@ -196,11 +196,18 @@ pub async fn handle_gremlin(
         }
 
         if cfg.traverse {
+            // Propagate time-travel at from search step to traverse step
+            let search_at = query.steps.last().and_then(|s| {
+                if let crate::graph::gremlin::GremlinStep::Search { ref at, .. } = s {
+                    *at
+                } else { None }
+            });
             query.steps.push(crate::graph::gremlin::GremlinStep::Traverse {
                 decay: Some(cfg.decay),
                 activate: Some(cfg.activate),
                 max_depth: Some(cfg.depth),
                 min_score: Some(cfg.score),
+                at: search_at,
             });
         }
     }

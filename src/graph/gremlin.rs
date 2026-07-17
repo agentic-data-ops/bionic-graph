@@ -107,13 +107,15 @@ pub enum GremlinStep {
     #[serde(rename = "compact")]
     Compact { before: u64 },
     #[serde(rename = "expand")]
-    Expand { depth: Option<u8>, label: Option<String> },
+    Expand { depth: Option<u8>, label: Option<String>, #[serde(rename = "at")] at: Option<u64> },
     #[serde(rename = "traverse")]
     Traverse {
         decay: Option<f32>,
         activate: Option<f32>,
         max_depth: Option<u8>,
         min_score: Option<f32>,
+        #[serde(rename = "at")]
+        at: Option<u64>,
     },
     #[serde(rename = "rank")]
     Rank {
@@ -231,10 +233,17 @@ pub fn execute(
     graph: &Arc<Graph>,
     query: &GremlinQuery,
 ) -> GremlinResponse {
+    // Extract timeTravel at from any step (convention: first TimeTravel step sets the query timestamp)
+    let time_travel_at: Option<u64> = query.steps.iter().find_map(|s| {
+        if let GremlinStep::TimeTravel { at } = s {
+            Some(*at)
+        } else { None }
+    });
+
     let mut current: Vec<GremlinResult> = Vec::new();
 
     for step in &query.steps {
-        current = match execute_step(graph, step, current) {
+        current = match execute_step(graph, step, current, time_travel_at) {
             Ok(results) => results,
             Err(e) => return GremlinResponse::error(format!("Step error: {}", e)),
         };
@@ -247,12 +256,15 @@ fn execute_step(
     graph: &Arc<Graph>,
     step: &GremlinStep,
     input: Vec<GremlinResult>,
+    time_travel_at: Option<u64>,
 ) -> StorageResult<Vec<GremlinResult>> {
+    // Inject time_travel_at into steps that support it (if they don't already have at set)
+    let effective_at = |step_at: Option<u64>| step_at.or(time_travel_at);
     match step {
-        GremlinStep::V { ids, at } => step_v(graph, ids.as_deref(), *at),
-        GremlinStep::E { ids, at } => step_e(graph, ids.as_deref(), *at),
+        GremlinStep::V { ids, at } => step_v(graph, ids.as_deref(), effective_at(*at)),
+        GremlinStep::E { ids, at } => step_e(graph, ids.as_deref(), effective_at(*at)),
         GremlinStep::Search { text, mode, match_mode, at, limit, min_rank } => {
-            step_search(graph, text, mode.as_deref(), match_mode.as_deref(), *at, *limit, *min_rank)
+            step_search(graph, text, mode.as_deref(), match_mode.as_deref(), effective_at(*at), *limit, *min_rank)
         }
         GremlinStep::Has { key, value } => step_has(input, key, value),
         GremlinStep::HasNot { key, value } => step_has_not(input, key, value),
@@ -260,12 +272,12 @@ fn execute_step(
         GremlinStep::HasValue { value } => step_has_value(input, value),
         GremlinStep::HasLabel { label } => step_has_label(input, label),
         GremlinStep::HasText { text } => step_has_text(input, text),
-        GremlinStep::Out { depth, labels } => step_out(graph, input, *depth, labels.as_deref()),
-        GremlinStep::In { depth, labels } => step_in(graph, input, *depth, labels.as_deref()),
-        GremlinStep::Both { depth, labels } => step_both(graph, input, *depth, labels.as_deref()),
-        GremlinStep::OutE { labels } => step_oute(graph, input, labels.as_deref()),
-        GremlinStep::InE { labels } => step_ine(graph, input, labels.as_deref()),
-        GremlinStep::BothE { labels } => step_bothe(graph, input, labels.as_deref()),
+        GremlinStep::Out { depth, labels } => step_out(graph, input, *depth, labels.as_deref(), time_travel_at),
+        GremlinStep::In { depth, labels } => step_in(graph, input, *depth, labels.as_deref(), time_travel_at),
+        GremlinStep::Both { depth, labels } => step_both(graph, input, *depth, labels.as_deref(), time_travel_at),
+        GremlinStep::OutE { labels } => step_oute(graph, input, labels.as_deref(), time_travel_at),
+        GremlinStep::InE { labels } => step_ine(graph, input, labels.as_deref(), time_travel_at),
+        GremlinStep::BothE { labels } => step_bothe(graph, input, labels.as_deref(), time_travel_at),
         GremlinStep::Values { keys } => step_values(input, keys.as_deref()),
         GremlinStep::Limit { count } => step_limit(input, *count),
         GremlinStep::Count => step_count(input),
@@ -273,13 +285,14 @@ fn execute_step(
         GremlinStep::Repeat { steps, times } => step_repeat(graph, input, steps, *times),
         GremlinStep::TimeTravel { at } => Ok(input), // handled by children
         GremlinStep::Compact { before: _ } => Ok(input),
-        GremlinStep::Expand { depth, label } => step_expand(graph, input, *depth, label.as_deref()),
+        GremlinStep::Expand { depth, label, at } => step_expand(graph, input, *depth, label.as_deref(), effective_at(*at)),
         GremlinStep::Traverse {
             decay,
             activate,
             max_depth,
             min_score,
-        } => step_traverse(graph, input, *decay, *activate, *max_depth, *min_score),
+            at,
+        } => step_traverse(graph, input, *decay, *activate, *max_depth, *min_score, effective_at(*at)),
         GremlinStep::Rank { limit, min } => step_rank(graph, input, *limit, *min),
     }
 }
@@ -636,6 +649,7 @@ fn step_out(
     input: Vec<GremlinResult>,
     depth: Option<u8>,
     labels: Option<&[String]>,
+    at: Option<u64>,
 ) -> StorageResult<Vec<GremlinResult>> {
     let max_depth = depth.unwrap_or(1) as usize;
     let mi = graph.memory_index.read().unwrap();
@@ -659,7 +673,7 @@ fn step_out(
                 if visited.insert(target_id) {
                     if let Some(ptr) = mi.vertices.get(target_id) {
                         if let Ok(rec) = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset) {
-                            if let Ok(Some(v)) = crud::read_vertex_by_record(graph, &rec, None) {
+                            if let Ok(Some(v)) = crud::read_vertex_by_record(graph, &rec, at) {
                                 // Check label filter.
                                 if let Some(labels) = labels {
                                     if !v.labels.iter().any(|l| labels.contains(l)) {
@@ -683,6 +697,7 @@ fn step_in(
     input: Vec<GremlinResult>,
     depth: Option<u8>,
     labels: Option<&[String]>,
+    at: Option<u64>,
 ) -> StorageResult<Vec<GremlinResult>> {
     let max_depth = depth.unwrap_or(1) as usize;
     let mi = graph.memory_index.read().unwrap();
@@ -706,7 +721,7 @@ fn step_in(
                 if visited.insert(source_id) {
                     if let Some(ptr) = mi.vertices.get(source_id) {
                         if let Ok(rec) = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset) {
-                            if let Ok(Some(v)) = crud::read_vertex_by_record(graph, &rec, None) {
+                            if let Ok(Some(v)) = crud::read_vertex_by_record(graph, &rec, at) {
                                 if let Some(labels) = labels {
                                     if !v.labels.iter().any(|l| labels.contains(l)) {
                                         continue;
@@ -729,9 +744,10 @@ fn step_both(
     input: Vec<GremlinResult>,
     depth: Option<u8>,
     labels: Option<&[String]>,
+    at: Option<u64>,
 ) -> StorageResult<Vec<GremlinResult>> {
-    let out = step_out(graph, input.clone(), depth, labels)?;
-    let inp = step_in(graph, input, depth, labels)?;
+    let out = step_out(graph, input.clone(), depth, labels, at)?;
+    let inp = step_in(graph, input, depth, labels, at)?;
     let mut combined: Vec<GremlinResult> = out.into_iter().chain(inp).collect();
     combined.sort_by_key(|r| match r {
         GremlinResult::Vertex { id, .. } => (0u8, *id),
@@ -752,6 +768,7 @@ fn step_oute(
     graph: &Arc<Graph>,
     input: Vec<GremlinResult>,
     labels: Option<&[String]>,
+    at: Option<u64>,
 ) -> StorageResult<Vec<GremlinResult>> {
     let mi = graph.memory_index.read().unwrap();
     let mut results = Vec::new();
@@ -764,13 +781,13 @@ fn step_oute(
         for (_eid, _target, ptr) in mi.adjacency.out_edges(vid) {
             if let Ok(rec) = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset) {
                 if let Some(labels) = labels {
-                    if let Ok(Some(e)) = crud::read_edge_by_record(graph, &rec, None) {
+                    if let Ok(Some(e)) = crud::read_edge_by_record(graph, &rec, at) {
                         if !labels.iter().any(|l| e.labels.contains(l)) {
                             continue;
                         }
                         results.push(GremlinResult::from_edge(&e, Some(&rec), None));
                     }
-                } else if let Ok(Some(e)) = crud::read_edge_by_record(graph, &rec, None) {
+                } else if let Ok(Some(e)) = crud::read_edge_by_record(graph, &rec, at) {
                     results.push(GremlinResult::from_edge(&e, Some(&rec), None));
                 }
             }
@@ -783,6 +800,7 @@ fn step_ine(
     graph: &Arc<Graph>,
     input: Vec<GremlinResult>,
     labels: Option<&[String]>,
+    at: Option<u64>,
 ) -> StorageResult<Vec<GremlinResult>> {
     let mi = graph.memory_index.read().unwrap();
     let mut results = Vec::new();
@@ -795,13 +813,13 @@ fn step_ine(
         for (_eid, _source, ptr) in mi.adjacency.in_edges(vid) {
             if let Ok(rec) = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset) {
                 if let Some(labels) = labels {
-                    if let Ok(Some(e)) = crud::read_edge_by_record(graph, &rec, None) {
+                    if let Ok(Some(e)) = crud::read_edge_by_record(graph, &rec, at) {
                         if !labels.iter().any(|l| e.labels.contains(l)) {
                             continue;
                         }
                         results.push(GremlinResult::from_edge(&e, Some(&rec), None));
                     }
-                } else if let Ok(Some(e)) = crud::read_edge_by_record(graph, &rec, None) {
+                } else if let Ok(Some(e)) = crud::read_edge_by_record(graph, &rec, at) {
                     results.push(GremlinResult::from_edge(&e, Some(&rec), None));
                 }
             }
@@ -814,9 +832,10 @@ fn step_bothe(
     graph: &Arc<Graph>,
     input: Vec<GremlinResult>,
     labels: Option<&[String]>,
+    at: Option<u64>,
 ) -> StorageResult<Vec<GremlinResult>> {
-    let out = step_oute(graph, input.clone(), labels)?;
-    let inp = step_ine(graph, input, labels)?;
+    let out = step_oute(graph, input.clone(), labels, at)?;
+    let inp = step_ine(graph, input, labels, at)?;
     let mut combined: Vec<GremlinResult> = out.into_iter().chain(inp).collect();
     combined.sort_by_key(|r| match r {
         GremlinResult::Edge { id, .. } => *id,
@@ -924,7 +943,7 @@ fn step_repeat(
         let mut next = Vec::new();
         for item in current {
             let single = vec![item];
-            let result = execute_step_chain(graph, steps, single)?;
+            let result = execute_step_chain(graph, steps, single, None)?;
             next.extend(result);
         }
         current = next;
@@ -939,10 +958,11 @@ fn execute_step_chain(
     graph: &Arc<Graph>,
     steps: &[GremlinStep],
     input: Vec<GremlinResult>,
+    time_travel_at: Option<u64>,
 ) -> StorageResult<Vec<GremlinResult>> {
     let mut current = input;
     for step in steps {
-        current = execute_step(graph, step, current)?;
+        current = execute_step(graph, step, current, time_travel_at)?;
     }
     Ok(current)
 }
@@ -954,6 +974,7 @@ fn step_expand(
     input: Vec<GremlinResult>,
     depth: Option<u8>,
     label: Option<&str>,
+    at: Option<u64>,
 ) -> StorageResult<Vec<GremlinResult>> {
     let d = depth.unwrap_or(1);
 
@@ -965,10 +986,10 @@ fn step_expand(
     let mut results: Vec<GremlinResult> = input.clone();
 
     // Add out/in neighbors AND the connecting edges, filtered by label if given.
-    let out_v = step_out(graph, input.clone(), Some(d), label_filter)?;
-    let out_e = step_oute(graph, input.clone(), label_filter)?;
-    let inp_v = step_in(graph, input.clone(), Some(d), label_filter)?;
-    let inp_e = step_ine(graph, input, label_filter)?;
+    let out_v = step_out(graph, input.clone(), Some(d), label_filter, at)?;
+    let out_e = step_oute(graph, input.clone(), label_filter, at)?;
+    let inp_v = step_in(graph, input.clone(), Some(d), label_filter, at)?;
+    let inp_e = step_ine(graph, input, label_filter, at)?;
 
     for r in out_v.into_iter().chain(inp_v) {
         if matches!(r, GremlinResult::Vertex { .. }) {
@@ -1007,6 +1028,7 @@ fn step_traverse(
     activate_threshold: Option<f32>,
     max_depth: Option<u8>,
     min_score: Option<f32>,
+    at: Option<u64>,
 ) -> StorageResult<Vec<GremlinResult>> {
     let decay = decay.unwrap_or(1.0);
     let activate = activate_threshold.unwrap_or(0.0);
@@ -1052,7 +1074,7 @@ fn step_traverse(
         // Spread to outgoing neighbors via edges.
         for (_eid, target, eptr) in mi.adjacency.out_edges(cur_id) {
             if let Ok(erec) = graph.index_file.read_edge_record(eptr.block_idx, eptr.chunk_offset) {
-                let edge_strength = if let Ok(Some(epay)) = crud::read_edge_by_record(graph, &erec, None) {
+                let edge_strength = if let Ok(Some(epay)) = crud::read_edge_by_record(graph, &erec, at) {
                     epay.strength
                 } else {
                     1.0
@@ -1079,7 +1101,7 @@ fn step_traverse(
         // Spread to incoming neighbors via edges.
         for (_eid, source, eptr) in mi.adjacency.in_edges(cur_id) {
             if let Ok(erec) = graph.index_file.read_edge_record(eptr.block_idx, eptr.chunk_offset) {
-                let edge_strength = if let Ok(Some(epay)) = crud::read_edge_by_record(graph, &erec, None) {
+                let edge_strength = if let Ok(Some(epay)) = crud::read_edge_by_record(graph, &erec, at) {
                     epay.strength
                 } else {
                     1.0
@@ -1116,7 +1138,7 @@ fn step_traverse(
     for (vid, score) in results {
         if let Some(ptr) = mi.vertices.get(vid) {
             if let Ok(rec) = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset) {
-                if let Ok(Some(v)) = crud::read_vertex_by_record(graph, &rec, None) {
+                if let Ok(Some(v)) = crud::read_vertex_by_record(graph, &rec, at) {
                     gremlin_results.push(GremlinResult::from_vertex(&v, Some(&rec), Some(score)));
                 }
             }
@@ -1132,7 +1154,7 @@ fn step_traverse(
         if src_score >= min_score && tgt_score >= min_score {
             if let Some(ptr) = mi.edges.get(*eid) {
                 if let Ok(rec) = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset) {
-                    if let Ok(Some(e)) = crud::read_edge_by_record(graph, &rec, None) {
+                    if let Ok(Some(e)) = crud::read_edge_by_record(graph, &rec, at) {
                         let edge_score = (src_score + tgt_score) / 2.0;
                         gremlin_results.push(GremlinResult::from_edge(&e, Some(&rec), Some(edge_score)));
                     }
