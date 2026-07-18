@@ -229,7 +229,7 @@ curl -X POST localhost:8080/edges \
 #### Token search + traversal
 
 ```bash
-# Search with auto traverse (based on SearchSettings)
+# Search with auto traverse (based on graph search settings)
 curl -X POST localhost:8080/gremlin \
   -H 'Content-Type: application/json' \
   -d '{"steps":[
@@ -265,6 +265,38 @@ curl -X POST localhost:8080/gremlin \
 curl 'localhost:8080/search?text=AI+engineer&mode=greedy&graph=default'
 ```
 
+#### Web Search
+
+```bash
+# Search via backend proxy (no CORS issues)
+curl -X POST localhost:8080/web-search/proxy \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"Game of Thrones characters"}'
+
+# Specify a different provider
+curl -X POST localhost:8080/web-search/proxy \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"winterfell","provider_id":"bing"}'
+```
+
+#### Settings
+
+```bash
+# Graph search config (greedy/exact modes, traversal settings)
+curl localhost:8080/settings/graph/search
+
+# Rank decay config
+curl localhost:8080/settings/graph/rank
+
+# LLM provider config
+curl localhost:8080/settings/llm
+
+# Web search providers
+curl localhost:8080/settings/web-search
+
+# Tokenizer custom dictionary
+curl localhost:8080/settings/tokenizer
+
 #### Document management
 
 ```bash
@@ -287,21 +319,23 @@ curl localhost:8080/documents/{id}/content
 | `GET` | `/health` | System health |
 | `GET/PUT` | `/settings/graph/search` | Search settings (greedy/exact config) |
 | `GET/PUT` | `/settings/graph/rank` | Rank decay config |
+| `GET/PUT` | `/settings/llm` | LLM provider config |
 | `GET` | `/settings/tokenizer` | Tokenizer custom dictionary config |
 | `POST/DELETE` | `/settings/tokenizer/words` | Add / remove custom tokenizer words |
 | `GET/PUT` | `/settings/web-search` | Web search provider config |
 | `POST` | `/web-search/proxy` | Web search proxy (via backend, avoids CORS) |
 | `POST` | `/documents/:id/extract` | Extract from document by ID |
-| `GET` | `/maas/openai/v1/models` | List models (`provider/model` format) |
+| `GET` | `/maas/openai/v1/models` | List models |
 | `POST` | `/maas/openai/v1/chat/completions` | OpenAI-compatible chat proxy (SSE) |
 | `POST` | `/extract` | Submit document extraction (async) |
 | `GET` | `/extract/task/:task_id` | Poll extraction task |
+| `GET` | `/extract/tasks` | List all extraction tasks |
 
 ### Supported Gremlin steps
 
 | Step | Parameters | Description |
 |------|-----------|-------------|
-| `search` | `text`, `mode?`, `match_mode?`, `at?`, `limit?`, `min_rank?` | Token-indexed full-text search. `mode` = `"greedy"` (union of any token match) or `"exact"` (intersection — must match all tokens). `match_mode` = `"prefix"` or `"word"`. Auto-injects `match_mode` from SearchSettings + optional `traverse` step. |
+| `search` | `text`, `mode?`, `match_mode?`, `at?`, `limit?`, `min_rank?` | Token-indexed full-text search. `mode` = `"greedy"` (union of any token match) or `"exact"` (intersection — must match all tokens). `match_mode` = `"prefix"` or `"word"`. Auto-injects `match_mode` from graph search settings + optional `traverse` step. |
 | `V` | `ids?`, `at?` | All vertices or filtered by ID array. `at` enables time-travel. |
 | `E` | `ids?`, `at?` | All edges or filtered by ID array. `at` enables time-travel. |
 | `has` | `key`, `value` | Filter results by exact property key-value match (Vertex and Edge properties). |
