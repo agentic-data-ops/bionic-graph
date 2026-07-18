@@ -104,8 +104,6 @@ pub enum GremlinStep {
     },
     #[serde(rename = "timeTravel")]
     TimeTravel { at: u64 },
-    #[serde(rename = "compact")]
-    Compact { before: u64 },
     #[serde(rename = "expand")]
     Expand { depth: Option<u8>, label: Option<String>, #[serde(rename = "at")] at: Option<u64> },
     #[serde(rename = "traverse")]
@@ -284,7 +282,6 @@ fn execute_step(
         GremlinStep::Dedup => step_dedup(input),
         GremlinStep::Repeat { steps, times } => step_repeat(graph, input, steps, *times),
         GremlinStep::TimeTravel { at } => Ok(input), // handled by children
-        GremlinStep::Compact { before: _ } => Ok(input),
         GremlinStep::Expand { depth, label, at } => step_expand(graph, input, *depth, label.as_deref(), effective_at(*at)),
         GremlinStep::Traverse {
             decay,

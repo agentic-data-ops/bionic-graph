@@ -47,7 +47,7 @@ src/
 │   ├── graph.rs             # Graph struct (facade), GraphConfig, lifecycle
 │   ├── graph_registry.rs    # Graph metadata registry (persistent, multi-graph)
 │   ├── crud.rs              # Vertex/Edge CRUD with WAL + token extraction + rank
-│   ├── gremlin.rs           # Gremlin pipeline step engine (25 steps)
+│   ├── gremlin.rs           # Gremlin pipeline step engine (24 steps)
 │   ├── locked.rs            # Lock-safe CRUD wrappers
 │   ├── serialize.rs         # Bincode serialization with JSON properties
 │   ├── tokenizer.rs         # jieba-rs tokenizer, stop-words, min length 2
@@ -180,7 +180,6 @@ App.jsx
 | `values` / `limit` / `count` / `dedup` | — | Result processing |
 | `repeat` | `steps`, `times` | Loop sub-pipeline |
 | `timeTravel` | `at` | Set query time point |
-| `compact` | `before` | Passthrough stub |
 | `expand` | `depth?`, `label?` | Add neighbors + edges, optionally filtered by edge label |
 | `traverse` | `decay?`, `activate?`, `max_depth?`, `min_score?` | BFS activation spread |
 | `rank` | `limit?`, `min?` | Return top results by rank (source or filter step) |
