@@ -47,8 +47,7 @@ Unlike relational or document databases, Bionic-Graph is optimized for **graph t
 |-------|--------|-------------|
 | **Frontend** | `src/ui/` | React 19 + Vite 8 + Tailwind CSS 4. Chat interface, knowledge base management, graph visualization via vis-network (Canvas 2D, no WebGL). All LLM calls go through backend MaaS proxy. |
 | **Graph Engine** | `src/graph/` | `Graph` struct (facade), CRUD operations, Gremlin pipeline (25 steps), jieba-rs tokenizer, bincode serialize. Lock-safe wrappers in `locked.rs`. |
-| **Gremlin API** | `src/gremlin/` | REST routes (44+ endpoints). Auto-injects `match_mode` and `traverse` step from graph search config. |
-| **Web Search** | `src/gremlin/settings.rs` | Backend proxy for web search (`/web-search/proxy`, `POST`). Configurable providers (Bing, Baidu, etc.) with custom URL, method, headers, body template. |
+| **Gremlin API** | `src/gremlin/` | REST routes (44+ endpoints) including graph search, rank, LLM, web search, and tokenizer settings. Web search proxy (`/web-search/proxy`) with configurable providers (Bing, Baidu API, etc.). Auto-injects `match_mode` and `traverse` step from graph search config. |
 | **Python SDK** | `sdk/python/` | Full REST API client library (`pip install git+...`). CLI tool `bgcli` with interactive chat mode supporting web + graph search. |
 
 ### How it works — a search flow
