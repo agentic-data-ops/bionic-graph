@@ -23,7 +23,8 @@ Unlike relational or document databases, Bionic-Graph is optimized for **graph t
 │                   REST API + MaaS Proxy (axum, embedded)      │
 │  /gremlin  |  /vertices  |  /edges  |  /documents  |  /search │
 │  /maas/openai/v1/models | /maas/openai/v1/chat/completions   │
-│  /settings | /extract  | /graphs                             │
+│  /settings/graph/search | /settings/graph/rank | /settings/llm | /settings/web-search | /web-search/proxy
+│  /settings/tokenizer | /extract  | /graphs                             │
 ├──────────────────────────────────────────────────────────────┤
 │              Graph Engine (token-indexed query)                │
 │  Gremlin pipeline (25 steps)  |  BFS+DFS traversal            │
@@ -46,8 +47,7 @@ Unlike relational or document databases, Bionic-Graph is optimized for **graph t
 |-------|--------|-------------|
 | **Frontend** | `src/ui/` | React 19 + Vite 8 + Tailwind CSS 4. Chat interface, knowledge base management, graph visualization via vis-network (Canvas 2D, no WebGL). All LLM calls go through backend MaaS proxy. |
 | **Graph Engine** | `src/graph/` | `Graph` struct (facade), CRUD operations, Gremlin pipeline (25 steps), jieba-rs tokenizer, bincode serialize. Lock-safe wrappers in `locked.rs`. |
-| **Gremlin API** | `src/gremlin/` | REST routes (44+ endpoints). Auto-injects `match_mode` and `traverse` step from graph search config. |
-| **Web Search** | `src/gremlin/settings.rs` | Backend proxy for web search (`/web-search/proxy`, `POST`). Configurable providers (Bing, Baidu, etc.) with custom URL, method, headers, body template. |
+| **Gremlin API** | `src/gremlin/` | REST routes (44+ endpoints) including graph search, rank, LLM, web search, and tokenizer settings. Web search proxy (`/web-search/proxy`) with configurable providers (Bing, Baidu API, etc.). Auto-injects `match_mode` and `traverse` step from graph search config. |
 | **Python SDK** | `sdk/python/` | Full REST API client library (`pip install git+...`). CLI tool `bgcli` with interactive chat mode supporting web + graph search. |
 
 ### How it works — a search flow
@@ -135,7 +135,6 @@ Auto-created at `~/.config/bionic-graph/settings.json` if not present. Full refe
     "max_output_tokens": 16384,
     "max_retries": 3
   },
-  "storage": { "data_dir": "data" },
   "cluster": {
     "enabled": false,
     "bind_addr": "0.0.0.0:9090",
@@ -229,7 +228,7 @@ curl -X POST localhost:8080/edges \
 #### Token search + traversal
 
 ```bash
-# Search with auto traverse (based on SearchSettings)
+# Search with auto traverse (based on graph search settings)
 curl -X POST localhost:8080/gremlin \
   -H 'Content-Type: application/json' \
   -d '{"steps":[
@@ -265,6 +264,38 @@ curl -X POST localhost:8080/gremlin \
 curl 'localhost:8080/search?text=AI+engineer&mode=greedy&graph=default'
 ```
 
+#### Web Search
+
+```bash
+# Search via backend proxy (no CORS issues)
+curl -X POST localhost:8080/web-search/proxy \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"Game of Thrones characters"}'
+
+# Specify a different provider
+curl -X POST localhost:8080/web-search/proxy \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"winterfell","provider_id":"bing"}'
+```
+
+#### Settings
+
+```bash
+# Graph search config (greedy/exact modes, traversal settings)
+curl localhost:8080/settings/graph/search
+
+# Rank decay config
+curl localhost:8080/settings/graph/rank
+
+# LLM provider config
+curl localhost:8080/settings/llm
+
+# Web search providers
+curl localhost:8080/settings/web-search
+
+# Tokenizer custom dictionary
+curl localhost:8080/settings/tokenizer
+
 #### Document management
 
 ```bash
@@ -285,27 +316,31 @@ curl localhost:8080/documents/{id}/content
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/health` | System health |
-| `GET/PUT` | `/settings/search` | Search settings (greedy/exact config) |
-| `GET/PUT` | `/settings/rank` | Rank decay config |
+| `GET/PUT` | `/settings/graph/search` | Search settings (greedy/exact config) |
+| `GET/PUT` | `/settings/graph/rank` | Rank decay config |
+| `GET/PUT` | `/settings/llm` | LLM provider config |
 | `GET` | `/settings/tokenizer` | Tokenizer custom dictionary config |
 | `POST/DELETE` | `/settings/tokenizer/words` | Add / remove custom tokenizer words |
+| `GET/PUT` | `/settings/web-search` | Web search provider config |
+| `POST` | `/web-search/proxy` | Web search proxy (via backend, avoids CORS) |
 | `POST` | `/documents/:id/extract` | Extract from document by ID |
-| `GET` | `/maas/openai/v1/models` | List models (`provider/model` format) |
+| `GET` | `/maas/openai/v1/models` | List models |
 | `POST` | `/maas/openai/v1/chat/completions` | OpenAI-compatible chat proxy (SSE) |
 | `POST` | `/extract` | Submit document extraction (async) |
 | `GET` | `/extract/task/:task_id` | Poll extraction task |
+| `GET` | `/extract/tasks` | List all extraction tasks |
 
 ### Supported Gremlin steps
 
 | Step | Parameters | Description |
 |------|-----------|-------------|
-| `search` | `text`, `mode?`, `match_mode?`, `at?`, `limit?`, `min_rank?` | Token-indexed full-text search. `mode` = `"greedy"` (union of any token match) or `"exact"` (intersection — must match all tokens). `match_mode` = `"prefix"` or `"word"`. Auto-injects `match_mode` from SearchSettings + optional `traverse` step. |
+| `search` | `text`, `mode?`, `match_mode?`, `at?`, `limit?`, `min_rank?` | Token-indexed full-text search. `mode` = `"greedy"` (union of any token match) or `"exact"` (intersection — must match all tokens). `match_mode` = `"prefix"` or `"word"`. Auto-injects `match_mode` from graph search settings + optional `traverse` step. `at` enables time-travel filtering. |
 | `V` | `ids?`, `at?` | All vertices or filtered by ID array. `at` enables time-travel. |
 | `E` | `ids?`, `at?` | All edges or filtered by ID array. `at` enables time-travel. |
-| `has` | `key`, `value` | Filter results by exact property key-value match (Vertex and Edge properties). |
-| `hasNot` | `key`, `value` | Negated property filter — exclude if property matches. |
+| `has` | `key`, `value` | Filter results by exact property key-value match. `value` supports any JSON type (string, number, boolean, array, object). |
+| `hasNot` | `key`, `value` | Negated property filter — exclude if property matches. `value` supports any JSON type. |
 | `hasKey` | `key` | Filter by property key existence. |
-| `hasValue` | `value` | Filter by any property value match. |
+| `hasValue` | `value` | Filter by any property value match (supports any JSON type). |
 | `hasLabel` | `label` | Filter by labels array (checks both Vertex.labels and Edge.labels). |
 | `hasText` | `text` | Case-insensitive substring match against name, labels, keywords, and string properties. |
 | `out` | `depth?`, `labels?` | BFS traversal to outgoing neighbor vertices. `labels` filters by target vertex labels. `depth` controls BFS depth (default 1). |
@@ -320,10 +355,9 @@ curl localhost:8080/documents/{id}/content
 | `dedup` | — | Deduplicate results by ID (removes duplicate vertices/edges). |
 | `repeat` | `steps`, `times` | Execute sub-pipeline `steps` iteratively `times` times. |
 | `timeTravel` | `at` (μs) | Set global query timestamp. Subsequent steps only see data as it existed at `at`. |
-| `compact` | `before` (μs) | Passthrough stub (no-op). |
-| `expand` | `depth?`, `label?` | From each vertex, add its neighbor vertices + connecting edges to results (both directions). Optional `label` filters by edge label. |
-| `traverse` | `decay?`, `activate?`, `max_depth?`, `min_score?` | BFS activation spread from input vertices. Score = parent_score × `decay` × edge_strength. Stops when score < `activate`. Collects results with score >= `min_score`. Defaults: decay=0.95, activate=0.2, max_depth=16, min_score=0.1. |
-| `rank` | `limit?`, `min?` | Return top results by rank (source or filter step). |
+| `expand` | `depth?`, `label?`, `at?` | From each vertex, add its neighbor vertices + connecting edges to results (both directions). Optional `label` filters by edge label. `at` enables time-travel filtering. |
+| `traverse` | `decay?`, `activate?`, `max_depth?`, `min_score?`, `at?` | BFS activation spread from input vertices. Score = parent_score × `decay` × edge_strength. Stops when score < `activate`. Collects results with score >= `min_score`. Defaults: decay=0.95, activate=0.2, max_depth=16, min_score=0.1. `at` enables time-travel filtering. Both endpoints of each traversed edge must meet min_score threshold (edge score = average of its endpoints). |
+| `rank` | `limit?`, `min?` | Return top results by rank. As source step: iterate rank index descending. As filter step: sort existing results by rank. `min` sets minimum rank threshold (inclusive). |
 
 ---
 
@@ -335,7 +369,7 @@ src/
 ├── lib.rs                     # Library exports
 ├── config/                    # File-based configuration
 │   ├── loader.rs              # JSON load/save with env overrides
-│   └── settings.rs            # Settings structs (server, llm, storage, cluster, search)
+│   └── settings.rs            # Settings structs (server, llm, cluster, web_search, graph)
 ├── storage/                   # Block-based storage engine
 │   ├── types.rs               # Constants, enums, binary layouts
 │   ├── data_file.rs           # 16KB block I/O

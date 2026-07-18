@@ -57,9 +57,6 @@ export async function graphSearch(text, graph = 'default', mode) {
   return gremlin([{ step: 'search', text, mode }], graph);
 }
 
-export async function compact(beforeTs, graph = 'default') {
-  return gremlin([{ step: 'compact', before: beforeTs }], graph);
-}
 
 // ─── Sync extraction (legacy, still works) ───────────────────────
 
