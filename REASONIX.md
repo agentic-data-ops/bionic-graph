@@ -79,6 +79,23 @@ src/
 └── ui_serve.rs              # Embedded static file serving (rust-embed)
 ```
 
+### Python SDK
+
+```
+sdk/python/
+├── pyproject.toml          # Build config (setuptools)
+├── SKILL.md               # CLI usage guide
+├── bionic_graph/
+│   ├── __init__.py         # Client + type exports
+│   ├── client.py           # Full REST API client (httpx, pydantic)
+│   ├── cli.py              # CLI entry point: bgcli (click)
+│   ├── models.py           # 17 Pydantic data models
+│   └── exceptions.py       # Error classes
+└── tests/
+    ├── test_client.py      # 43 SDK tests
+    └── test_cli.py         # 21 CLI tests
+```
+
 ### Frontend (React)
 
 ```
@@ -111,6 +128,8 @@ src/ui/
 - **frontend build**: `npm --prefix src/ui run build`
 - **frontend test**: `npm --prefix src/ui run test`
 - **frontend e2e**: `node src/ui/test/e2e/<name>.mjs`
+- **SDK install**: `pip install bionic-graph-sdk` (or `cd sdk/python && pip install .`)
+- **SDK test**: `cd sdk/python && python3 -m pytest tests/`
 
 ## Data Directory Structure
 
@@ -196,6 +215,49 @@ App.jsx
 | POST | `/maas/openai/v1/chat/completions` | Chat proxy (SSE) |
 
 > Default graph: `"graph0"` when `?graph=` omitted. DELETE supports `?force=true`.
+
+## WebSearchConfig
+
+Settings under `"web_search"` key in settings.json:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `default_provider` | string | `"baidu"` | Default search provider ID |
+| `providers` | array | — | List of search providers |
+
+### WebSearchProvider
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `id` | string | — | Unique provider identifier |
+| `name` | string | — | Display name |
+| `search_url` | string | — | URL template with `{text}` for query |
+| `method` | string | `"GET"` | HTTP method (GET/POST) |
+| `body_template` | string? | null | JSON body for POST, `{text}` replaced |
+| `params` | object | `{}` | Query parameters |
+| `headers` | object | `{}` | HTTP headers (e.g. Authorization) |
+
+## Python SDK & CLI
+
+```bash
+# Install
+pip install bionic-graph-sdk
+
+# CLI: bgcli <topic> <action> [options]
+bgcli health check
+bgcli vertex create --name "Eddard Stark" --labels '["person"]'
+
+# Interactive chat with web + graph search
+bgcli chat --model "DeepSeek/deepseek-v4-flash" \
+           --web-search --graph-search
+```
+
+```python
+from bionic_graph import Client
+client = Client()
+health = client.health()
+print(health.status)
+```
 
 ## RankConfig
 

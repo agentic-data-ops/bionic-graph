@@ -46,15 +46,9 @@ Unlike relational or document databases, Bionic-Graph is optimized for **graph t
 |-------|--------|-------------|
 | **Frontend** | `src/ui/` | React 19 + Vite 8 + Tailwind CSS 4. Chat interface, knowledge base management, graph visualization via vis-network (Canvas 2D, no WebGL). All LLM calls go through backend MaaS proxy. |
 | **Graph Engine** | `src/graph/` | `Graph` struct (facade), CRUD operations, Gremlin pipeline (25 steps), jieba-rs tokenizer, bincode serialize. Lock-safe wrappers in `locked.rs`. |
-| **Gremlin API** | `src/gremlin/` | REST routes (44 endpoints) + `/settings/search` config. Auto-injects `match_mode` and `traverse` step from SearchSettings. |
-| **Storage** | `src/storage/` | Block-based engine: 16KB data blocks, 64B chunks, bitmap free tracking, LRU block cache (default 64MB), WAL (FIFO queue + background batch writer, size + time rotation, checkpoint, CRC32, replay), on-disk index (64B fixed records), in-memory indexes. |
-| **Locking** | `src/lock/` | Striped `RwLock` pools (parking_lot) with deadlock-free ordering: metadata → block → vertex → edge. |
-| **Documents** | `src/documents.rs` | Markdown file management with JSON index. CRUD via REST API. |
-| **Extraction** | `src/extract/` | Async extraction pipeline: Markdown → LLM → entities/relations. Task lifecycle management with progress. |
-| **Graph Manager** | `src/graph_manager.rs` | Multiple named graphs, each persisted to `data/graphs/<name>/`. Lazy open on first access. |
-| **MaaS Proxy** | `src/maas/` | OpenAI-compatible proxy: model listing + chat completions (SSE streaming). Forwards to configured providers. |
-| **Cluster** | `src/cluster/` | Master-worker replication via redo log replay. Write forwarding, heartbeat, config. |
-| **Config** | `src/config/` | `~/.config/bionic-graph/settings.json` with env var overrides. Auto-generates defaults. |
+| **Gremlin API** | `src/gremlin/` | REST routes (44+ endpoints). Auto-injects `match_mode` and `traverse` step from graph search config. |
+| **Web Search** | `src/gremlin/settings.rs` | Backend proxy for web search (`/web-search/proxy`, `POST`). Configurable providers (Bing, Baidu, etc.) with custom URL, method, headers, body template. |
+| **Python SDK** | `sdk/python/` | Full REST API client library (`pip install bionic-graph-sdk`). CLI tool `bgcli` with interactive chat mode supporting web + graph search. |
 
 ### How it works — a search flow
 
@@ -149,14 +143,34 @@ Auto-created at `~/.config/bionic-graph/settings.json` if not present. Full refe
     "worker_timeout_secs": 30,
     "forward_writes": true
   },
-  "search": {
-    "greedy": {
-      "traverse": true, "match_mode": "prefix",
-      "activate": 0.2, "decay": 0.95, "depth": 16, "score": 0.1
+  "web_search": {
+    "default_provider": "baidu",
+    "providers": [{
+      "id": "baidu",
+      "name": "\u767e\u5ea6\u641c\u7d22",
+      "search_url": "https://qianfan.baidubce.com/v2/ai_search/web_search",
+      "method": "POST",
+      "body_template": "{\"messages\":[{\"content\":\"{text}\",\"role\":\"user\"}],\"search_source\":\"baidu_search_v2\",\"resource_type_filter\":[{\"type\":\"web\",\"top_k\":5}],\"search_recency_filter\":\"year\"}"
+    }]
+  },
+  "graph": {
+    "storage": { "data_dir": "data" },
+    "search": {
+      "greedy": {
+        "traverse": true, "match_mode": "prefix",
+        "activate": 0.2, "decay": 0.95, "depth": 16, "score": 0.1
+      },
+      "exact": {
+        "traverse": true, "match_mode": "word",
+        "activate": 0.6, "decay": 0.8, "depth": 4, "score": 0.2
+      }
     },
-    "exact": {
-      "traverse": true, "match_mode": "word",
-      "activate": 0.6, "decay": 0.8, "depth": 4, "score": 0.2
+    "rank": {
+      "auto_inc_rank_when_update": true,
+      "auto_inc_rank_when_read": true,
+      "auto_dec_rank_when_inactive": true,
+      "inactive_after_accessed_secs": 1296000,
+      "inactive_rank_update_period": 86400
     }
   }
 }
@@ -344,8 +358,8 @@ src/
 │   ├── tokenizer.rs           # jieba-rs tokenizer
 │   └── tests.rs               # Integration tests
 ├── gremlin/                   # REST API (axum)
-│   ├── mod.rs                 # 44 route handlers
-│   ├── settings.rs            # /settings/search, /settings/llm, /settings/rank
+│   ├── mod.rs                 # 45+ route handlers
+│   ├── settings.rs            # /settings/graph/search, /settings/llm, /settings/graph/rank, /settings/web-search, /web-search/proxy
 │   └── tokenizer_settings.rs  # /settings/tokenizer + /settings/tokenizer/words
 ├── extract/                   # Document extraction pipeline
 │   ├── config.rs, document.rs, extraction.rs
@@ -380,6 +394,33 @@ src/
 8. **Time travel** — per-vertex MVCC via soft-delete, point-in-time queries
 9. **Multi-graph** — multiple named graphs, isolated `data/graphs/<name>/` directories
 10. **Fine-grained concurrency** — striped RwLock pools with deadlock-free ordering
+11. **Web Search** — backend proxy for web search, configurable providers (Bing, Baidu API). LLM extracts keywords before searching for better results.
+12. **Python SDK** — `pip install bionic-graph-sdk`, full REST API client with CLI tool `bgcli` and interactive chat mode.
+
+## Python SDK & CLI
+
+A complete Python client library and CLI tool are available in `sdk/python/`:
+
+```bash
+# Install
+pip install bionic-graph-sdk
+
+# CLI usage
+bgcli --base-url http://127.0.0.1:8080 health check
+bgcli vertex create --name "Eddard Stark" --labels '["person"]' --graph got
+bgcli gremlin search --text "Stark" --graph got
+
+# Interactive chat with web + graph search
+bgcli chat --model "DeepSeek/deepseek-v4-flash"
+
+# From Python code
+from bionic_graph import Client
+client = Client()
+resp = client.create_vertex("Jon Snow", labels=["person", "stark"])
+print(f"Created vertex {resp.id}")
+```
+
+See `sdk/python/SKILL.md` for full documentation.
 
 ---
 
