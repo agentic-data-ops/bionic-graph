@@ -1,147 +1,199 @@
 # Bionic-Graph CLI — `bgcli`
 
-Python 命令行工具，通过 REST API 与 Bionic-Graph 后端交互。
+A Python command-line tool to interact with a Bionic-Graph knowledge graph server via REST API.
 
-## 安装
+## Installation
 
 ```bash
-# 从 PyPI 安装（发布后）
+# From PyPI (once published)
 pip install bionic-graph-sdk
 
-# 或从源码安装
+# Or install from source
 cd sdk/python
 pip install .
 ```
 
-## 快速开始
+## Quick Start
 
 ```bash
-# 设置后端地址（默认 http://127.0.0.1:8080）
+# Set backend URL (default: http://127.0.0.1:8080)
 export BIONIC_GRAPH_BASE_URL=http://127.0.0.1:8080
 
-# 检查服务状态
+# Check server health
 bgcli health check
 
-# 列出图谱
+# List all graphs
 bgcli graph list
 
-# 创建顶点
-bgcli vertex create --name "王耀辉" --labels '["person"]'
+# Create vertices (characters from Game of Thrones)
+bgcli vertex create --name "Eddard Stark" --labels '["person","stark"]' --properties '{"title":"Lord of Winterfell"}'
+bgcli vertex create --name "Catelyn Stark" --labels '["person","stark","tully"]'
+bgcli vertex create --name "Jon Snow" --labels '["person","stark","bastard"]'
 
-# 创建边
-bgcli edge create --source 1 --target 2 --name "宠物" --strength 0.9
+# Create relationships (edges)
+bgcli edge create --source 1 --target 2 --name "married_to" --strength 0.9
+bgcli edge create --source 1 --target 3 --name "father_of" --strength 0.8
 
-# 搜索
-bgcli gremlin search --text "王耀辉"
+# Search the graph
+bgcli gremlin search --text "Stark"
 
-# 执行 Gremlin 查询
+# Execute a Gremlin query
 bgcli gremlin execute --steps '[{"step":"V","ids":[1]},{"step":"expand"}]'
 ```
 
-## 命令结构
+## Command Structure
 
 ```
-bgcli [全局选项] <主题> <动作> [参数]
+bgcli [global options] <topic> <action> [arguments]
 ```
 
-### 全局选项
+### Global Options
 
-| 选项 | 环境变量 | 默认值 | 说明 |
-|------|---------|--------|------|
-| `--base-url` | `BIONIC_GRAPH_BASE_URL` | `http://127.0.0.1:8080` | 后端地址 |
-| `--api-key` | `BIONIC_GRAPH_API_KEY` | — | API 密钥 |
-| `--timeout` | — | `30.0` | 请求超时（秒） |
-| `--output` | — | `text` | 输出格式：`text` 或 `json` |
+| Option | Env Variable | Default | Description |
+|--------|-------------|---------|-------------|
+| `--base-url` | `BIONIC_GRAPH_BASE_URL` | `http://127.0.0.1:8080` | Backend server URL |
+| `--api-key` | `BIONIC_GRAPH_API_KEY` | — | API key |
+| `--timeout` | — | `30.0` | Request timeout (seconds) |
+| `--output` | — | `text` | Output format: `text` or `json` |
 
-### 主题和动作
+### Topics and Actions
 
-| 主题 | 动作 | 说明 |
-|------|------|------|
-| `health` | `check` | 检查服务健康状态 |
-| `graph` | `list`, `create`, `set-default`, `delete`, `update-meta`, `get-config`, `set-config` | 图谱生命周期管理 |
-| `vertex` | `create`, `update`, `delete`, `get-meta`, `update-meta` | 顶点增删改查 |
-| `edge` | `create`, `update`, `delete`, `get-meta`, `update-meta` | 边增删改查 |
-| `gremlin` | `execute`, `search` | Gremlin 查询和搜索 |
-| `document` | `list`, `create`, `get`, `update`, `delete`, `get-content` | 文档管理 |
-| `extract` | `submit`, `get-task`, `list-tasks`, `wait` | 知识提取任务 |
-| `settings` | `get-search`, `set-search`, `get-llm`, `set-llm`, `get-rank`, `set-rank`, `get-web-search`, `set-web-search`, `proxy`, `get-tokenizer`, `add-tokenizer-words`, `remove-tokenizer-words` | 全部设置管理 |
-| `maas` | `list-models`, `chat` | MaaS 代理 |
-| **`chat`** | — | **交互式聊天会话** |
+| Topic | Actions | Description |
+|-------|---------|-------------|
+| `health` | `check` | Check server health |
+| `graph` | `list`, `create`, `set-default`, `delete`, `update-meta`, `get-config`, `set-config` | Graph lifecycle |
+| `vertex` | `create`, `update`, `delete`, `get-meta`, `update-meta` | Vertex CRUD |
+| `edge` | `create`, `update`, `delete`, `get-meta`, `update-meta` | Edge CRUD |
+| `gremlin` | `execute`, `search` | Gremlin queries & search |
+| `document` | `list`, `create`, `get`, `update`, `delete`, `get-content` | Document management |
+| `extract` | `submit`, `get-task`, `list-tasks`, `wait` | Knowledge extraction |
+| `settings` | `get-search`, `set-search`, `get-llm`, `set-llm`, `get-rank`, `set-rank`, `get-web-search`, `set-web-search`, `proxy`, `get-tokenizer`, `add-tokenizer-words`, `remove-tokenizer-words` | All settings |
+| `maas` | `list-models`, `chat` | MaaS proxy |
+| **`chat`** | — | **Interactive chat session** |
 
-## 交互式聊天
+## Interactive Chat
 
 ```bash
-# 启动聊天（默认开启联网搜索和图谱搜索）
+# Start chat (web search and graph search enabled by default)
 bgcli chat
 
-# 指定选项
+# With custom options
 bgcli chat --model "DeepSeek/deepseek-v4-flash" \
            --web-search --graph-search \
            --extract-keywords --graph graph0 \
            --search-mode greedy
 
-# 禁用联网搜索
+# Disable web search
 bgcli chat --no-web-search
 ```
 
-聊天会话中的内部命令：
+Chat session internal commands:
 
-| 命令 | 说明 |
-|------|------|
-| `/exit` 或 `/quit` | 退出聊天 |
-| `/clear` | 清除对话历史 |
-| `/graph <name>` | 切换当前图谱 |
-| `/help` | 显示帮助 |
+| Command | Description |
+|---------|-------------|
+| `/exit` or `/quit` | Exit chat |
+| `/clear` | Clear conversation history |
+| `/graph <name>` | Switch active graph |
+| `/help` | Show help |
 
-### 聊天工作流程
+### Chat Workflow
 
 ```
-用户输入 → LLM 提取关键词（可选）→ 联网搜索（可选）
-→ 图谱搜索（可选）→ 合并上下文 → LLM 回答
+User input → LLM extracts keywords (optional) → Web search (optional)
+→ Graph search (optional) → Merge context → LLM responds
 ```
 
-## 输出格式
+## Output Format
 
-默认输出可读文本，支持 `--output json` 输出原始 JSON：
+Default output is human-readable text. Use `--output json` for raw JSON:
 
 ```bash
 bgcli --output json health check
 bgcli --output json vertex get-meta 1
 ```
 
-## 完整示例
+## Complete Example: A Song of Ice and Fire
 
 ```bash
-# 1. 创建图谱
-bgcli graph create my-graph --description "测试图谱"
+# 1. Create a dedicated graph
+bgcli graph create got --description "A Song of Ice and Fire characters and relationships"
 
-# 2. 添加顶点
-bgcli vertex create --name "Alice" --labels '["person"]' --graph my-graph
-bgcli vertex create --name "Bob" --labels '["person"]' --graph my-graph
+# 2. Add major characters (vertices)
+bgcli vertex create --name "Eddard Stark" --labels '["person","stark"]' --properties '{"title":"Lord of Winterfell","status":"deceased"}' --graph got
+bgcli vertex create --name "Catelyn Stark" --labels '["person","stark","tully"]' --properties '{"title":"Lady of Winterfell"}' --graph got
+bgcli vertex create --name "Robb Stark" --labels '["person","stark"]' --properties '{"title":"King in the North"}' --graph got
+bgcli vertex create --name "Sansa Stark" --labels '["person","stark"]' --properties '{"title":"Lady of Winterfell"}' --graph got
+bgcli vertex create --name "Arya Stark" --labels '["person","stark","faceless man"]' --graph got
+bgcli vertex create --name "Bran Stark" --labels '["person","stark","greenseer","three-eyed raven"]' --graph got
+bgcli vertex create --name "Jon Snow" --labels '["person","stark","targaryen","lord commander"]' --properties '{"title":"King in the North"}' --graph got
+bgcli vertex create --name "Daenerys Targaryen" --labels '["person","targaryen"]' --properties '{"title":"Mother of Dragons","status":"deceased"}' --graph got
+bgcli vertex create --name "Tyrion Lannister" --labels '["person","lannister"]' --properties '{"title":"Hand of the King"}' --graph got
+bgcli vertex create --name "Jaime Lannister" --labels '["person","lannister","kingsguard"]' --graph got
+bgcli vertex create --name "Cersei Lannister" --labels '["person","lannister"]' --properties '{"title":"Queen of the Seven Kingdoms"}' --graph got
+bgcli vertex create --name "Winterfell" --labels '["location","castle"]'
+bgcli vertex create --name "King's Landing" --labels '["location","city"]'
 
-# 3. 添加关系
-bgcli edge create --source 1 --target 2 --name "朋友" --graph my-graph
+# 3. Create family relationships (edges)
+# Stark family
+bgcli edge create --source 1 --target 2 --name "married_to" --strength 0.9 --graph got       # Ned ←→ Catelyn
+bgcli edge create --source 1 --target 3 --name "father_of" --strength 0.8 --graph got       # Ned → Robb
+bgcli edge create --source 1 --target 4 --name "father_of" --strength 0.8 --graph got       # Ned → Sansa
+bgcli edge create --source 1 --target 5 --name "father_of" --strength 0.8 --graph got       # Ned → Arya
+bgcli edge create --source 1 --target 6 --name "father_of" --strength 0.8 --graph got       # Ned → Bran
+bgcli edge create --source 1 --target 7 --name "uncle_of" --strength 0.6 --graph got         # Ned → Jon (uncle, later revealed as aunt's son)
 
-# 4. 搜索
-bgcli gremlin search --text "Alice" --graph my-graph
+# Lannister family
+bgcli edge create --source 9 --target 10 --name "brother_of" --strength 0.7 --graph got      # Tyrion → Jaime
+bgcli edge create --source 9 --target 11 --name "brother_of" --strength 0.3 --graph got      # Tyrion → Cersei (estranged)
+bgcli edge create --source 10 --target 11 --name "lovers" --strength 0.95 --graph got        # Jaime ←→ Cersei (secret)
+
+# Locations
+bgcli edge create --source 1 --target 12 --name "rules" --strength 0.7 --graph got          # Ned → Winterfell
+bgcli edge create --source 11 --target 13 --name "rules" --strength 0.6 --graph got         # Cersei → King's Landing
+
+# Plot relationships
+bgcli edge create --source 7 --target 8 --name "allied_with" --strength 0.5 --graph got     # Jon ←→ Daenerys
+bgcli edge create --source 9 --target 8 --name "served" --strength 0.6 --graph got          # Tyrion → Daenerys
+
+# 4. Search for all Stark family
+bgcli gremlin search --text "Stark" --graph got
+
+# 5. Expand a character's relationships
+bgcli gremlin execute --steps '[{"step":"V","ids":[1]},{"step":"expand"}]' --graph got
 ```
 
-## Python SDK 编程接口
+## Python SDK Programming Interface
 
 ```python
 from bionic_graph import Client
 
 client = Client(base_url="http://127.0.0.1:8080")
 
-# 健康检查
+# Health check
 print(client.health().status)
 
-# 创建顶点
-resp = client.create_vertex("王耀辉", labels=["person"], properties={"age": "40"})
-print(f"Vertex ID: {resp.id}")
+# Create characters from A Song of Ice and Fire
+ned = client.create_vertex(
+    "Eddard Stark",
+    labels=["person", "stark"],
+    properties={"title": "Lord of Winterfell"},
+)
+print(f"Vertex ID: {ned.id}")
 
-# Gremlin 查询
-result = client.execute_gremlin([{"step": "V", "ids": [1]}, {"step": "expand"}])
+jon = client.create_vertex(
+    "Jon Snow",
+    labels=["person", "stark", "bastard"],
+    properties={"title": "Lord Commander"},
+)
+
+# Create relationship
+client.create_edge(ned.id, jon.id, name="guardian_of", strength=0.7)
+
+# Run a Gremlin query to explore
+result = client.execute_gremlin([
+    {"step": "V", "ids": [ned.id]},
+    {"step": "expand"},
+])
 for item in result.data:
-    print(item)
+    print(f"  {item}")
 ```
