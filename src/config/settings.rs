@@ -235,6 +235,75 @@ impl Default for RankConfig {
     }
 }
 
+// ─── Web Search ──────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebSearchProvider {
+    pub id: String,
+    pub name: String,
+    /// URL template with {text} placeholder, e.g. "https://cn.bing.com/search?q={text}"
+    pub search_url: String,
+    /// HTTP method: GET or POST (default "GET")
+    #[serde(default)]
+    pub method: String,
+    /// JSON body template for POST, with {text} placeholder
+    #[serde(default)]
+    pub body_template: Option<String>,
+    #[serde(default)]
+    pub params: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub headers: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebSearchConfig {
+    pub providers: Vec<WebSearchProvider>,
+    pub default_provider: String,
+}
+
+impl Default for WebSearchConfig {
+    fn default() -> Self {
+        let mut headers = std::collections::HashMap::new();
+        headers.insert(
+            "Content-Type".to_string(),
+            "application/json".to_string(),
+        );
+        Self {
+            providers: vec![WebSearchProvider {
+                id: "baidu".to_string(),
+                name: "百度搜索".to_string(),
+                search_url: "https://qianfan.baidubce.com/v2/ai_search/web_search".to_string(),
+                method: "POST".to_string(),
+                body_template: Some(r#"{"messages":[{"content":"{text}","role":"user"}],"search_source":"baidu_search_v2","resource_type_filter":[{"type":"web","top_k":5}],"search_recency_filter":"year"}"#.to_string()),
+                params: std::collections::HashMap::new(),
+                headers,
+            }],
+            default_provider: "baidu".to_string(),
+        }
+    }
+}
+
+// ─── Graph (storage, search, rank) ────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GraphConfig {
+    pub storage: StorageConfig,
+    pub search: SearchSettings,
+    pub rank: RankConfig,
+}
+
+impl Default for GraphConfig {
+    fn default() -> Self {
+        Self {
+            storage: StorageConfig::default(),
+            search: SearchSettings::default(),
+            rank: RankConfig::default(),
+        }
+    }
+}
+
 // ─── Top-level Settings ──────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -242,10 +311,9 @@ impl Default for RankConfig {
 pub struct Settings {
     pub server: ServerConfig,
     pub llm: LlmConfig,
-    pub storage: StorageConfig,
     pub cluster: ClusterConfig,
-    pub search: SearchSettings,
-    pub rank: RankConfig,
+    pub web_search: WebSearchConfig,
+    pub graph: GraphConfig,
 }
 
 impl Default for Settings {
@@ -253,10 +321,9 @@ impl Default for Settings {
         Self {
             server: ServerConfig::default(),
             llm: LlmConfig::default(),
-            storage: StorageConfig::default(),
             cluster: ClusterConfig::default(),
-            search: SearchSettings::default(),
-            rank: RankConfig::default(),
+            web_search: WebSearchConfig::default(),
+            graph: GraphConfig::default(),
         }
     }
 }

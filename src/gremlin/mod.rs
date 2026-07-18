@@ -47,7 +47,7 @@ pub fn build_router(
     cluster_registry: Option<Arc<NodeRegistry>>,
     master_api_addr: Option<String>,
 ) -> axum::Router {
-    let doc_mgr = DocumentManager::new(&settings.storage.data_dir);
+    let doc_mgr = DocumentManager::new(&settings.graph.storage.data_dir);
     let state = AppState {
         gm,
         settings: Arc::new(Mutex::new(settings)),
@@ -88,12 +88,15 @@ pub fn build_router(
         .route("/edges/:id/meta", get(handle_get_edge_meta))
         .route("/edges/:id/meta", put(handle_update_edge_meta))
         // Settings
-        .route("/settings/search", get(settings::get_search_settings))
-        .route("/settings/search", put(settings::update_search_settings))
+        .route("/settings/graph/search", get(settings::get_search_settings))
+        .route("/settings/graph/search", put(settings::update_search_settings))
         .route("/settings/llm", get(settings::get_llm_settings))
         .route("/settings/llm", put(settings::update_llm_settings))
-        .route("/settings/rank", get(settings::get_rank_settings))
-        .route("/settings/rank", put(settings::update_rank_settings))
+        .route("/settings/graph/rank", get(settings::get_rank_settings))
+        .route("/settings/graph/rank", put(settings::update_rank_settings))
+        .route("/settings/web-search", get(settings::get_web_search_settings))
+        .route("/settings/web-search", put(settings::update_web_search_settings))
+        .route("/web-search/proxy", post(settings::web_search_proxy))
         .route("/settings/tokenizer", get(tokenizer_settings::get_tokenizer_settings))
         .route("/settings/tokenizer/words", post(tokenizer_settings::add_tokenizer_words))
         .route("/settings/tokenizer/words", delete(tokenizer_settings::remove_tokenizer_words))
@@ -186,7 +189,7 @@ pub async fn handle_gremlin(
         }).unwrap_or("greedy");
 
         let settings = state.settings.lock().unwrap();
-        let cfg = if mode == "exact" { &settings.search.exact } else { &settings.search.greedy };
+        let cfg = if mode == "exact" { &settings.graph.search.exact } else { &settings.graph.search.greedy };
 
         // Inject match_mode into the search step if not already set.
         if let Some(crate::graph::gremlin::GremlinStep::Search { ref mut match_mode, .. }) = query.steps.last_mut() {
@@ -278,7 +281,7 @@ pub async fn handle_gremlin(
             }
             let has_ids = !vertex_ids.is_empty() || !edge_ids.is_empty();
             let reg = state.cluster_registry.clone();
-            let do_touch = settings.rank.auto_inc_rank_when_read;
+            let do_touch = settings.graph.rank.auto_inc_rank_when_read;
             drop(settings);
             if has_ids && do_touch {
                 let default_name = state.gm.get_default_name();

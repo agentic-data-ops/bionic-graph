@@ -97,6 +97,7 @@
   "chat.welcomeHint": "Select a model and start chatting, or enable graph search to explore your knowledge graph",
   "chat.inputPlaceholder": "Type a message... (Shift+Enter for new line)",
   "chat.useGraph": "Graph Search",
+  "chat.webSearch": "Web Search",
   "chat.semanticMode": "🔍 Semantic Search Mode",
   "chat.timeTravel": "Time Travel",
   "chat.attachFile": "Attach .md file to extract into graph",

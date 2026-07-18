@@ -5,3 +5,5 @@ target
 **/mutants.out*/
 data/
 /.reasonix/truncated-results/
+__pycache__
+.venv

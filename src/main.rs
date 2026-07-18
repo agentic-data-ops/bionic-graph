@@ -124,7 +124,7 @@ async fn main() {
     let mut settings = load_or_create_settings_from(args.config.map(std::path::PathBuf::from));
 
     if let Some(dir) = &args.data_dir {
-        settings.storage.data_dir = dir.clone();
+        settings.graph.storage.data_dir = dir.clone();
     }
     if let Some(h) = &args.host {
         settings.server.host = h.clone();
@@ -134,7 +134,7 @@ async fn main() {
     }
 
     // Acquire process lock: check for existing instance, write PID file.
-    let data_dir_path = std::path::PathBuf::from(&settings.storage.data_dir);
+    let data_dir_path = std::path::PathBuf::from(&settings.graph.storage.data_dir);
     if let Err(msg) = create_pid_file(&data_dir_path) {
         log::error!("{}", msg);
         eprintln!("{}", msg);
@@ -177,7 +177,7 @@ async fn main() {
 
     log::info!(
         "Starting Bionic-Graph (new engine) — data: {}, listen: {}:{}",
-        settings.storage.data_dir,
+        settings.graph.storage.data_dir,
         settings.server.host,
         settings.server.port,
     );
@@ -333,9 +333,9 @@ async fn main() {
     if let Ok(default_graph) = gm.get("graph0") {
         bionic_graph::graph::rank_decay::spawn_rank_decay(
             default_graph,
-            settings.rank.auto_dec_rank_when_inactive,
-            settings.rank.inactive_after_accessed_secs,
-            settings.rank.inactive_rank_update_period,
+            settings.graph.rank.auto_dec_rank_when_inactive,
+            settings.graph.rank.inactive_after_accessed_secs,
+            settings.graph.rank.inactive_rank_update_period,
         );
     }
 

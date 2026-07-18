@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { fetchSearchConfig, updateSearchConfig, fetchRankConfig, updateRankConfig } from '../api';
+import { fetchSearchConfig, updateSearchConfig, fetchRankConfig, updateRankConfig, fetchWebSearchConfig, updateWebSearchConfig } from '../api';
 
 function Modal({ title, children, onClose }) {
   return (
@@ -80,8 +80,13 @@ export default function SettingsDialog({
   const [rankThreshold, setRankThreshold] = useState({ value: 15, unit: 86400 });
   const [rankPeriod, setRankPeriod] = useState({ value: 1, unit: 86400 });
   const [defaultModelOpen, setDefaultModelOpen] = useState(false);
+  const [defaultWebProviderOpen, setDefaultWebProviderOpen] = useState(false);
   const [timeUnitOpen, setTimeUnitOpen] = useState(false);
   const [periodUnitOpen, setPeriodUnitOpen] = useState(false);
+  const [webSearchConfig, setWebSearchConfig] = useState(null);
+  const [editingWebProvider, setEditingWebProvider] = useState(null);
+  const [webSearchSaving, setWebSearchSaving] = useState(false);
+  const [webSearchMessage, setWebSearchMessage] = useState('');
   const f3 = (v) => v !== undefined && v !== null ? Number(v).toFixed(3) : '';
   useEffect(() => {
     if (open) {
@@ -100,8 +105,12 @@ export default function SettingsDialog({
         setRankThreshold(secondsToDisplay(d.inactive_after_accessed_secs));
         setRankPeriod(secondsToDisplay(d.inactive_rank_update_period));
       }).catch(() => {});
+      fetchWebSearchConfig().then((d) => {
+        setWebSearchConfig(d);
+      }).catch(() => {});
       setSearchMessage('');
       setRankMessage('');
+      setWebSearchMessage('');
     }
   }, [open]);
 
@@ -171,8 +180,9 @@ export default function SettingsDialog({
       {/* Tabs */}
       <div className="flex gap-1.5 mb-5">
         <button className={tabCls(tab === 'providers')} onClick={() => setTab('providers')}>{t('settings.model')}</button>
-        <button className={tabCls(tab === 'search')} onClick={() => setTab('search')}>搜索</button>
+        <button className={tabCls(tab === 'search')} onClick={() => setTab('search')}>图谱搜索</button>
         <button className={tabCls(tab === 'rank')} onClick={() => setTab('rank')}>排序</button>
+        <button className={tabCls(tab === 'websearch')} onClick={() => setTab('websearch')}>联网搜索</button>
       </div>
 
       {/* ─── Providers ─── */}
@@ -300,6 +310,7 @@ export default function SettingsDialog({
         <div>
           {searchConfig ? (
             <div className="space-y-4">
+
 
               { /* ── Greedy ── */ }
               <div className="p-3 rounded-xl bg-[var(--bg-tertiary)]/50">
@@ -548,6 +559,191 @@ export default function SettingsDialog({
             </>
           ) : (
             <p className="text-[var(--text-tertiary)] text-sm text-center py-8">加载配置中...</p>
+          )}
+        </div>
+      )}
+
+      {/* ─── Web Search ─── */}
+      {tab === 'websearch' && (
+        <div>
+          {editingWebProvider ? (
+            <div className="space-y-3.5">
+              <div>
+                <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">名称</label>
+                <input className="w-full px-3.5 py-2 rounded-xl bg-transparent border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-[var(--text-primary)] text-sm"
+                  type="text" value={editingWebProvider.name}
+                  onChange={(e) => setEditingWebProvider({ ...editingWebProvider, name: e.target.value })} />
+              </div>
+              <div>
+                <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">Search URL <span className="text-[var(--text-muted)]">(用 <code>{'{text}'}</code> 表示搜索词位置)</span></label>
+                <input className="w-full px-3.5 py-2 rounded-xl bg-transparent border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-[var(--text-primary)] text-sm"
+                  type="text" value={editingWebProvider.search_url}
+                  onChange={(e) => setEditingWebProvider({ ...editingWebProvider, search_url: e.target.value })} />
+              </div>
+              <div>
+                <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">请求方法 <span className="text-[var(--text-muted)]">(GET 或 POST)</span></label>
+                <input className="w-full px-3.5 py-2 rounded-xl bg-transparent border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-[var(--text-primary)] text-sm"
+                  type="text" value={editingWebProvider.method || 'GET'}
+                  onChange={(e) => setEditingWebProvider({ ...editingWebProvider, method: e.target.value })} />
+              </div>
+              <div>
+                <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">请求体模板 <span className="text-[var(--text-muted)]">(POST 时使用，用 <code>{'{text}'}</code> 表示搜索词)</span></label>
+                <textarea className="w-full h-24 px-3 py-2 rounded-xl bg-transparent border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-[var(--text-primary)] text-xs font-mono resize-none"
+                  value={editingWebProvider.body_template || ''}
+                  onChange={(e) => setEditingWebProvider({ ...editingWebProvider, body_template: e.target.value || null })} />
+              </div>
+              <div>
+                <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">请求参数</label>
+                <div className="space-y-1">
+                  {Object.entries(editingWebProvider.params || {}).length === 0 && <div className="text-xs text-[var(--text-muted)] italic">—</div>}
+                  {Object.entries(editingWebProvider.params || {}).map(([k, v], idx) => (
+                    <div key={idx} className="flex items-start gap-1 py-1 px-2 rounded-lg bg-[var(--accent-bg)]">
+                      <input className="flex-1 px-2 py-1 rounded-md bg-transparent text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                        value={k} placeholder="key"
+                        onChange={(e) => {
+                          const { [k]: _, ...rest } = editingWebProvider.params;
+                          setEditingWebProvider({ ...editingWebProvider, params: { ...rest, [e.target.value]: v } });
+                        }} />
+                      <input className="flex-1 px-2 py-1 rounded-md bg-transparent text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                        value={v} placeholder="value"
+                        onChange={(e) => setEditingWebProvider({ ...editingWebProvider, params: { ...editingWebProvider.params, [k]: e.target.value } })} />
+                      <button className="flex-shrink-0 w-5 h-5 rounded-md bg-[var(--bg-hover)] hover:bg-[var(--danger)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-white text-[10px]"
+                        onClick={() => {
+                          const { [k]: _, ...rest } = editingWebProvider.params;
+                          setEditingWebProvider({ ...editingWebProvider, params: rest });
+                        }}>✕</button>
+                    </div>
+                  ))}
+                  <button className="w-full py-1 rounded-lg border border-dashed border-[var(--border)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--accent)] text-xs font-medium transition-all"
+                    onClick={() => setEditingWebProvider({ ...editingWebProvider, params: { ...editingWebProvider.params, '': '' } })}>+ 添加参数</button>
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">请求头</label>
+                <div className="space-y-1">
+                  {Object.entries(editingWebProvider.headers || {}).length === 0 && <div className="text-xs text-[var(--text-muted)] italic">—</div>}
+                  {Object.entries(editingWebProvider.headers || {}).map(([k, v], idx) => (
+                    <div key={idx} className="flex items-start gap-1 py-1 px-2 rounded-lg bg-[var(--accent-bg)]">
+                      <input className="flex-1 px-2 py-1 rounded-md bg-transparent text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                        value={k} placeholder="key"
+                        onChange={(e) => {
+                          const { [k]: _, ...rest } = editingWebProvider.headers;
+                          setEditingWebProvider({ ...editingWebProvider, headers: { ...rest, [e.target.value]: v } });
+                        }} />
+                      <input className="flex-1 px-2 py-1 rounded-md bg-transparent text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                        value={v} placeholder="value"
+                        onChange={(e) => setEditingWebProvider({ ...editingWebProvider, headers: { ...editingWebProvider.headers, [k]: e.target.value } })} />
+                      <button className="flex-shrink-0 w-5 h-5 rounded-md bg-[var(--bg-hover)] hover:bg-[var(--danger)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-white text-[10px]"
+                        onClick={() => {
+                          const { [k]: _, ...rest } = editingWebProvider.headers;
+                          setEditingWebProvider({ ...editingWebProvider, headers: rest });
+                        }}>✕</button>
+                    </div>
+                  ))}
+                  <button className="w-full py-1 rounded-lg border border-dashed border-[var(--border)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--accent)] text-xs font-medium transition-all"
+                    onClick={() => setEditingWebProvider({ ...editingWebProvider, headers: { ...editingWebProvider.headers, '': '' } })}>+ 添加请求头</button>
+                </div>
+              </div>
+              <div className="flex gap-2 justify-end pt-1">
+                <button className="px-4 py-2 rounded-xl bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-sm font-medium transition-all" onClick={() => setEditingWebProvider(null)}>取消</button>
+                <button className="px-4 py-2 rounded-xl bg-[var(--accent)] text-white text-sm font-medium hover:bg-[color-mix(in srgb, var(--accent), black 10%)] transition-all shadow-sm" onClick={() => {
+                  if (!editingWebProvider.name || !editingWebProvider.search_url) return;
+                  const existing = webSearchConfig.providers.findIndex((p) => p.id === editingWebProvider.id);
+                  const updated = existing >= 0
+                    ? [...webSearchConfig.providers.slice(0, existing), editingWebProvider, ...webSearchConfig.providers.slice(existing + 1)]
+                    : [...webSearchConfig.providers, editingWebProvider];
+                  setWebSearchConfig({ ...webSearchConfig, providers: updated });
+                  setEditingWebProvider(null);
+                }}>保存</button>
+              </div>
+            </div>
+          ) : (
+            <div>
+              <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-2 tracking-tight">默认供应商</label>
+              <div className="relative">
+                <button
+                  className="w-full px-3 py-2 rounded-xl bg-transparent text-[var(--text-primary)] text-sm border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] transition-all font-medium flex items-center gap-1 text-left"
+                  onClick={(e) => { e.stopPropagation(); setDefaultWebProviderOpen(!defaultWebProviderOpen); }}
+                >
+                  <span className="flex-1 truncate">{webSearchConfig?.providers?.find(p => p.id === webSearchConfig?.default_provider)?.name || '(无)'}</span>
+                  <svg className={`w-3 h-3 flex-shrink-0 transition-transform ${defaultWebProviderOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
+                </button>
+                {defaultWebProviderOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setDefaultWebProviderOpen(false)} />
+                    <div className="absolute left-0 top-full mt-1 z-50 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-lg overflow-hidden w-full max-h-[300px] overflow-y-auto">
+                      <button
+                        className={`w-full text-left px-2.5 py-2 text-xs font-medium whitespace-nowrap truncate transition-all ${!webSearchConfig?.default_provider ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
+                        onClick={() => { setWebSearchConfig({ ...webSearchConfig, default_provider: '' }); setDefaultWebProviderOpen(false); }}
+                      >(无)</button>
+                      {(webSearchConfig?.providers || []).map((p) => (
+                        <button
+                          key={p.id}
+                          className={`w-full text-left px-2.5 py-2 text-xs font-medium whitespace-nowrap truncate transition-all ${p.id === webSearchConfig?.default_provider ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
+                          onClick={() => { setWebSearchConfig({ ...webSearchConfig, default_provider: p.id }); setDefaultWebProviderOpen(false); }}
+                        >{p.name}</button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+
+              <label className="block text-xs text-[var(--text-tertiary)] font-medium mt-4 mb-2 tracking-tight">供应商列表</label>
+              {(!webSearchConfig?.providers || webSearchConfig.providers.length === 0) && (
+                <p className="text-[var(--text-tertiary)] text-sm text-center py-8 tracking-tight">暂无供应商</p>
+              )}
+              <div className="space-y-1 max-h-48 overflow-y-auto mb-3">
+                {(webSearchConfig?.providers || []).map((p) => (
+                  <div key={p.id} className="flex items-center justify-between py-2.5 px-3 rounded-xl hover:bg-[var(--bg-tertiary)] transition-all group">
+                    <div>
+                      <div className="text-sm text-[var(--text-primary)] font-medium">{p.name}</div>
+                      <div className="text-xs text-[var(--text-tertiary)] mt-0.5 truncate max-w-[300px]">{p.search_url}</div>
+                    </div>
+                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button className="px-2.5 py-1 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] rounded-lg transition-all" onClick={() => setEditingWebProvider({ ...p })}>编辑</button>
+                      <button className="px-2.5 py-1 text-xs text-[var(--danger)] hover:bg-[color-mix(in srgb, var(--bg-hover), var(--danger) 30%)] rounded-lg transition-all" onClick={() => {
+                        setWebSearchConfig({ ...webSearchConfig, providers: webSearchConfig.providers.filter((x) => x.id !== p.id) });
+                      }}>删除</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <button className="w-full py-2.5 rounded-xl bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] text-sm font-medium transition-all" onClick={() => {
+                setEditingWebProvider({
+                  id: Date.now().toString(),
+                  name: '',
+                  search_url: '',
+                  method: 'GET',
+                  body_template: null,
+                  params: {},
+                  headers: {},
+                });
+              }}>+ 添加供应商</button>
+
+              <div className="flex items-center gap-3 pt-3">
+                <button className="px-4 py-2 rounded-xl bg-[var(--accent)] text-white text-sm font-medium hover:bg-[color-mix(in srgb, var(--accent), black 10%)] transition-all shadow-sm disabled:opacity-40"
+                  disabled={webSearchSaving}
+                  onClick={async () => {
+                    if (!webSearchConfig) return;
+                    setWebSearchSaving(true);
+                    setWebSearchMessage('');
+                    try {
+                      await updateWebSearchConfig(webSearchConfig);
+                      setWebSearchMessage('✅ 保存成功');
+                    } catch (e) {
+                      setWebSearchMessage('❌ 保存失败: ' + e.message);
+                    } finally {
+                      setWebSearchSaving(false);
+                      setTimeout(() => setWebSearchMessage(''), 2000);
+                    }
+                  }}>
+                  {webSearchSaving ? '保存中...' : '保存配置'}
+                </button>
+                {webSearchMessage && (
+                  <span className="text-xs text-[var(--text-secondary)]">{webSearchMessage}</span>
+                )}
+              </div>
+            </div>
           )}
         </div>
       )}

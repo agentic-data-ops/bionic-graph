@@ -96,7 +96,7 @@ function ChatMessage({ message, graphRef, onMaximizeRef, theme, onEdit, onSaveTo
     const hasContent = message.content?.length > 0;
     return (
       <div className="flex justify-start mb-3 message-enter">
-        <div className="max-w-[72%]">
+        <div className="max-w-[90%]">
           <div className="bg-[var(--bg-tertiary)] text-[var(--text-primary)] rounded-2xl rounded-bl-md px-4 py-2.5 text-sm leading-relaxed shadow-sm select-text">
             {hasContent ? <SimpleMarkdown text={message.content} /> : (
               <span className="inline-flex gap-1">
@@ -166,6 +166,26 @@ function ChatMessage({ message, graphRef, onMaximizeRef, theme, onEdit, onSaveTo
       </div>
     );
   }
+  if (message.type === 'web_search_progress') {
+    return (
+      <div className="flex justify-start mb-3 message-enter">
+        <div className="w-full max-w-[90%] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-2xl overflow-hidden shadow-sm">
+          <div className="px-4 py-3.5">
+            <div className="text-xs text-[var(--accent)] font-semibold mb-2 tracking-tight">🌐 Web Search · <span className="text-[var(--text-tertiary)] font-normal">{message.title}</span></div>
+            <div className="space-y-0">{(message.steps || []).map((step, i) => <SearchStep key={i} step={step} />)}</div>
+            {message.webDetail && (
+              <div className="mt-2 text-xs text-[var(--text-tertiary)] leading-relaxed border-t border-[var(--border)] pt-2">
+                <div className="font-medium text-[var(--text-primary)] mb-1">Selected results:</div>
+                <div className="space-y-0.5">{message.webDetail.split('\n').map((line, i) => (
+                  <div key={i} className="truncate">{line}</div>
+                ))}</div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
   return null;
 }
 
@@ -198,10 +218,12 @@ export default function MessageList({ messages, searchStream, theme, onEdit, onS
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [messages, searchStream]);
 
   const allMessages = searchStream ? [...messages, {
-    id: '__search_progress__', type: 'search_progress',
+    id: '__search_progress__',
+    type: searchStream.type || 'search_progress',
     title: searchStream.title || searchStream.query || 'Graph Search',
     steps: searchStream.steps || [], graphData: searchStream.graphData, graphName: searchStream.graphName,
     timeTravelEnabled: searchStream.timeTravelEnabled || false, timeTravelAt: searchStream.timeTravelAt,
+    webResults: searchStream.webResults, webDetail: searchStream.webDetail,
   }] : messages;
 
   return (

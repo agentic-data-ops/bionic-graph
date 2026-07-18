@@ -7,6 +7,8 @@ import {
   chatCompletionProxy,
   parseSSEStream,
   gremlin,
+  searchWeb,
+  fetchWebSearchConfig,
 } from '../api';
 
 /** Convert HTML datetime-local value (local time, "YYYY-MM-DDTHH:MM") to UTC microseconds. */
@@ -97,7 +99,9 @@ export default function ChatArea({
   const [langOpen, setLangOpen] = useState(false);
 
   const chatInputRef = useRef(null);
-  const [kwSearchMode, setKwSearchMode] = useState("greedy");
+  const [kwSearchMode, setKwSearchMode] = useState(() => localStorage.getItem('bgraph-kw-search-mode') || "greedy");
+  const [useWebSearch, setUseWebSearch] = useState(() => localStorage.getItem('bgraph-web-search') === 'true');
+  const [extractKeywords, setExtractKeywords] = useState(() => localStorage.getItem('bgraph-extract-keywords') !== 'false');
   const [searchStream, setSearchStream] = useState(null);
   const abortRef = useRef(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -106,6 +110,21 @@ export default function ChatArea({
   useEffect(() => {
     setSearchStream(null);
   }, [activeConv?.id]);
+
+  // Sync extractKeywords to localStorage
+  useEffect(() => {
+    localStorage.setItem('bgraph-extract-keywords', extractKeywords);
+  }, [extractKeywords]);
+
+  // Sync useWebSearch to localStorage
+  useEffect(() => {
+    localStorage.setItem('bgraph-web-search', useWebSearch);
+  }, [useWebSearch]);
+
+  // Sync kwSearchMode to localStorage
+  useEffect(() => {
+    localStorage.setItem('bgraph-kw-search-mode', kwSearchMode);
+  }, [kwSearchMode]);
 
   // ── Handle sending a message ──
   const handleSend = useCallback(
@@ -117,6 +136,75 @@ export default function ChatArea({
       const updatedMsgs = [...(conv.messages || []), userMsg];
       onUpdateConv({ ...conv, messages: updatedMsgs });
 
+      let allSearchMsgs = []; // all progress messages to append before assistant
+      let graphData = null; // final graph search data
+      let webSearchContext = ''; // accumulated web search text for LLM
+      let webSearchDetail = ''; // details about what was found
+      const modelKey = `${activeProvider}/${chatModel || 'default'}`;
+
+      // ── 1. Web search ──
+      if (useWebSearch) {
+        try {
+          const wsConfig = await fetchWebSearchConfig();
+          const provider = (wsConfig?.providers || []).find(p => p.id === wsConfig.default_provider) || wsConfig?.providers?.[0];
+          if (provider) {
+            const wsSteps = [];
+            const wsProgressId = uid();
+            const wsProgressMsg = { id: wsProgressId, type: 'web_search_progress', title: text, steps: wsSteps, graphName: defaultGraph };
+            setSearchStream(wsProgressMsg);
+            setIsGenerating(true);
+
+            let searchQuery = text;
+
+            // Step 0: Extract search keywords (if enabled)
+            if (extractKeywords) {
+              wsSteps.push({ icon: '🔑', name: 'Extracting search keywords...', status: 'running', llmOutput: '' });
+              setSearchStream({ ...wsProgressMsg, steps: [...wsSteps] });
+
+              try {
+                const recentMsgs = (conv.messages || []).slice(-6).filter(m => m.type === 'user' || m.type === 'assistant');
+                const kwContextMsgs = recentMsgs.map(m => ({
+                  role: m.type === 'user' ? 'user' : 'assistant',
+                  content: m.content || '',
+                }));
+                const kwMessages = [
+                  { role: 'system', content: 'You are a search query optimizer. Based on the conversation history and the latest question, extract 2-5 concise search keywords. Return ONLY the keywords separated by spaces, no punctuation or extra text. Focus on core entities and omit generic words like "介绍", "什么是", "怎么样", "how", "what", "explain".' },
+                  ...kwContextMsgs,
+                ];
+                const kwRes = await chatCompletionProxy(kwMessages, modelKey, false);
+                const kwData = await kwRes.response;
+                const kwBody = await kwData.json();
+                const kwContent = (kwBody?.choices?.[0]?.message?.content || '').trim();
+                if (kwContent && kwContent.split(' ').length <= 8) searchQuery = kwContent;
+              } catch (e) { /* use original text as fallback */ }
+
+              wsSteps[wsSteps.length - 1] = { ...wsSteps[wsSteps.length - 1], status: 'done', llmOutput: searchQuery };
+              setSearchStream({ ...wsProgressMsg, steps: [...wsSteps] });
+            }
+
+            // Step 1: Search web
+            wsSteps.push({ icon: '🌐', name: 'Searching web...', status: 'running', llmOutput: '' });
+            setSearchStream({ ...wsProgressMsg, steps: [...wsSteps] });
+
+            const rawHtml = await searchWeb(provider, searchQuery);
+            wsSteps[wsSteps.length - 1] = { ...wsSteps[wsSteps.length - 1], status: 'done', llmOutput: `Received ${rawHtml.length} chars from ${provider.name}` };
+
+            // Step 2: Pass raw search results to LLM as reference
+            webSearchContext = rawHtml.slice(0, 32000);
+            webSearchDetail = '';
+            let webResults = [];
+
+            const finalWsMsg = { ...wsProgressMsg, steps: [...wsSteps], webResults, webDetail: webSearchDetail };
+            allSearchMsgs.push(finalWsMsg);
+          }
+        } catch (e) {
+          console.error('Web search error:', e);
+          setSearchStream(null);
+          allSearchMsgs.push({ id: uid(), type: 'web_search_progress', title: text, steps: [{ icon: '❌', name: `Web search failed: ${e.message}`, status: 'failed' }], graphName: defaultGraph });
+        }
+      }
+
+      // ── 2. Graph search ──
       if (useGraph) {
         const searchStep = { icon: '🔍', name: 'Searching knowledge graph', status: 'running', llmOutput: '' };
         const steps = [searchStep];
@@ -125,140 +213,137 @@ export default function ChatArea({
         const progressMsgId = uid();
         const ttEnabled = (Array.isArray(graphMetas) ? graphMetas.find(g => g.name === defaultGraph)?.time_travel : false) || false;
         const progressMsg = { id: progressMsgId, type: 'search_progress', title: text, steps, timeTravelEnabled: ttEnabled, timeTravelAt: ttMicros };
-        setSearchStream(progressMsg);
+        if (allSearchMsgs.length === 0) {
+          setSearchStream(progressMsg);
+        }
         setIsGenerating(true);
 
+        let graphQuery = text;
+
         try {
-          const gremlinSteps = [{ step: 'search', text, mode: kwSearchMode, at: ttMicros }];
+          // Check keyword extraction setting
+          if (extractKeywords) {
+            steps.push({ icon: '🔑', name: 'Extracting search keywords...', status: 'running', llmOutput: '' });
+            setSearchStream({ ...progressMsg, steps: [...steps] });
+
+            try {
+              const recentMsgs = (conv.messages || []).slice(-6).filter(m => m.type === 'user' || m.type === 'assistant');
+              const kwContextMsgs = recentMsgs.map(m => ({
+                role: m.type === 'user' ? 'user' : 'assistant',
+                content: m.content || '',
+              }));
+              const kwMessages = [
+                { role: 'system', content: 'You are a search query optimizer. Based on the conversation history and the latest question, extract 2-5 concise search keywords. Return ONLY the keywords separated by spaces, no punctuation or extra text. Focus on core entities and omit generic words.' },
+                ...kwContextMsgs,
+              ];
+              const kwRes = await chatCompletionProxy(kwMessages, modelKey, false);
+              const kwData = await kwRes.response;
+              const kwBody = await kwData.json();
+              const kwContent = (kwBody?.choices?.[0]?.message?.content || '').trim();
+              if (kwContent && kwContent.split(' ').length <= 8) graphQuery = kwContent;
+            } catch (e) { /* use original text as fallback */ }
+
+            steps[steps.length - 1] = { ...steps[steps.length - 1], status: 'done', llmOutput: graphQuery };
+            setSearchStream({ ...progressMsg, steps: [...steps] });
+          }
+
+          const gremlinSteps = [{ step: 'search', text: graphQuery, mode: kwSearchMode, at: ttMicros }];
           if (ttMicros) gremlinSteps.push({ step: 'timeTravel', at: ttMicros });
 
           const res = await gremlin(gremlinSteps, defaultGraph);
+          graphData = res;
 
-          let finalData = res;
-
-          // Show search progress message
           const doneSteps = [{ icon: '✅', name: 'Graph search completed', status: 'done', llmOutput: '' }];
-          setSearchStream(null);
           const ttEnabled2 = (Array.isArray(graphMetas) ? graphMetas.find(g => g.name === defaultGraph)?.time_travel : false) || false;
-          const searchMsg = { ...progressMsg, steps: doneSteps, graphData: finalData, graphName: defaultGraph, timeTravelEnabled: ttEnabled2, timeTravelAt: ttMicros };
-          onUpdateConv({ ...conv, messages: [...updatedMsgs, searchMsg] });
-
-          // ── Call LLM with graph context (informational, no restrictive prompt) ──
-          const modelKey = `${activeProvider}/${chatModel || 'default'}`;
-
-          // Build conversation history (same as non-graph mode)
-          const llmMessages = updatedMsgs
-            .filter((m) => m.type === 'user' || (m.type === 'assistant' && m.content))
-            .map((m) => ({
-              role: m.type === 'user' ? 'user' : 'assistant',
-              content: m.content,
-            }));
-
-          // Inject graph search context — LLM should prioritize this data
-          const graphCtx = collectGraphContext(conv.messages, finalData);
-          if (graphCtx) {
-            llmMessages.unshift({
-              role: 'system',
-              content: `The following information was retrieved from the knowledge graph. Prioritize it when answering the user's question.
-If the graph data is sufficient, directly reference its entities and relationships. If not, supplement with your own knowledge.
-Do not mention entity or relationship ID numbers — use their names directly.
-Provide the answer first, then the reasoning process.
-
-${graphCtx}`,
-            });
-          }
-
-          const assistantMsg = { id: uid(), type: 'assistant', content: '' };
-          try {
-            const { response, abort } = chatCompletionProxy(llmMessages, modelKey);
-            abortRef.current = abort;
-            setIsGenerating(true);
-            let fullContent = '';
-            await parseSSEStream(
-              await response,
-              (token) => {
-                fullContent += token;
-                onUpdateConv({
-                  ...conv,
-                  messages: [...updatedMsgs, searchMsg, { ...assistantMsg, content: fullContent }],
-                });
-              },
-            );
-          } catch (e) {
-            if (e.name === 'AbortError') return;
-            onUpdateConv({
-              ...conv,
-              messages: [...updatedMsgs, searchMsg, { ...assistantMsg, content: `**Error**: ${e.message}` }],
-            });
-          }
-
+          const searchMsg = { ...progressMsg, steps: doneSteps, graphData: res, graphName: defaultGraph, timeTravelEnabled: ttEnabled2, timeTravelAt: ttMicros };
+          setSearchStream(null);
+          allSearchMsgs.push(searchMsg);
         } catch (e) {
           const failedSteps = (steps || []).map((s) => ({ ...s, status: 'failed' }));
           setSearchStream(null);
-          onUpdateConv({ ...conv, messages: [...updatedMsgs, { ...progressMsg, steps: failedSteps }] });
+          allSearchMsgs.push({ ...progressMsg, steps: failedSteps });
           requestAnimationFrame(() => chatInputRef.current?.focus());
-        } finally {
-          abortRef.current = null;
           setIsGenerating(false);
+          abortRef.current = null;
+          return;
         }
+      }
+
+      // ── 3. Build combined context & call LLM ──
+      setIsGenerating(true);
+
+      // Commit search messages to conversation BEFORE clearing search stream
+      let allUpdatedMsgs;
+      if (allSearchMsgs.length > 0) {
+        allUpdatedMsgs = [...updatedMsgs, ...allSearchMsgs];
+        onUpdateConv({ ...conv, messages: allUpdatedMsgs });
       } else {
-        // ── LLM mode: streaming chat ──
-        const modelKey = `${activeProvider}/${chatModel || 'default'}`;
+        allUpdatedMsgs = updatedMsgs;
+      }
+      setSearchStream(null);
 
-        // Build message list for LLM — skip assistant placeholders with empty content
-        // Only send user/assistant messages with content to the LLM
-        const llmMessages = updatedMsgs
-          .filter((m) => m.type === 'user' || (m.type === 'assistant' && m.content))
-          .map((m) => ({
-            role: m.type === 'user' ? 'user' : 'assistant',
-            content: m.content,
-          }));
+      // Build LLM conversation history
+      const llmMessages = updatedMsgs
+        .filter((m) => m.type === 'user' || (m.type === 'assistant' && m.content))
+        .map((m) => ({
+          role: m.type === 'user' ? 'user' : 'assistant',
+          content: m.content,
+        }));
 
-        // Even in non-graph mode, inject historical graph context from previous turns
-        const graphCtx = collectGraphContext(conv.messages, null);
-        if (graphCtx) {
-          llmMessages.unshift({
-            role: 'system',
-            content: `The following information was retrieved from the knowledge graph. Prioritize it when answering the user's question.
+      // Inject web search context
+      if (webSearchContext) {
+        llmMessages.unshift({
+          role: 'system',
+          content: `The following information was retrieved from the web search. Prioritize it when answering the user's question.
+If the web data is sufficient, directly reference it. If not, supplement with your own knowledge.
+
+${webSearchContext}`,
+        });
+      }
+
+      // Inject graph search context
+      const graphCtx = collectGraphContext(conv.messages, graphData);
+      if (graphCtx) {
+        llmMessages.unshift({
+          role: 'system',
+          content: `The following information was retrieved from the knowledge graph. Prioritize it when answering the user's question.
 If the graph data is sufficient, directly reference its entities and relationships. If not, supplement with your own knowledge.
 Do not mention entity or relationship ID numbers — use their names directly.
 Provide the answer first, then the reasoning process.
 
 ${graphCtx}`,
-          });
-        }
+        });
+      }
 
-        const assistantMsg = { id: uid(), type: 'assistant', content: '' };
+      const assistantMsg = { id: uid(), type: 'assistant', content: '' };
 
-        try {
-          const { response, abort } = chatCompletionProxy(llmMessages, modelKey);
-          abortRef.current = abort;
-          setIsGenerating(true);
-          let fullContent = '';
-          await parseSSEStream(
-            await response,
-            (token) => {
-              fullContent += token;
-              onUpdateConv({
-                ...conv,
-                messages: [...updatedMsgs, { ...assistantMsg, content: fullContent }],
-              });
-            },
-          );
-          requestAnimationFrame(() => chatInputRef.current?.focus());
-        } catch (e) {
-          if (e.name === 'AbortError') return;
-          onUpdateConv({
-            ...conv,
-            messages: [...updatedMsgs, { ...assistantMsg, content: `**Error**: ${e.message}` }],
-          });
-        } finally {
-          abortRef.current = null;
-          setIsGenerating(false);
-        }
+      try {
+        const { response, abort } = chatCompletionProxy(llmMessages, modelKey);
+        abortRef.current = abort;
+        let fullContent = '';
+        await parseSSEStream(
+          await response,
+          (token) => {
+            fullContent += token;
+            onUpdateConv({
+              ...conv,
+              messages: [...allUpdatedMsgs, { ...assistantMsg, content: fullContent }],
+            });
+          },
+        );
+        requestAnimationFrame(() => chatInputRef.current?.focus());
+      } catch (e) {
+        if (e.name === 'AbortError') return;
+        onUpdateConv({
+          ...conv,
+          messages: [...allUpdatedMsgs, { ...assistantMsg, content: `**Error**: ${e.message}` }],
+        });
+      } finally {
+        abortRef.current = null;
+        setIsGenerating(false);
       }
     },
-    [activeConv, useGraph, defaultGraph, providers, activeProvider, onUpdateConv, chatModel, kwSearchMode, timeTravel, timeTravelPoint, timeTravelGraphs, graphMetas]
+    [activeConv, useGraph, useWebSearch, extractKeywords, defaultGraph, providers, activeProvider, onUpdateConv, chatModel, kwSearchMode, timeTravel, timeTravelPoint, timeTravelGraphs, graphMetas]
   );
 
   const messages = activeConv?.messages || [];
@@ -333,6 +418,10 @@ ${graphCtx}`,
         onProviderChange={onProviderChange}
         useGraph={useGraph}
         onGraphToggle={onGraphToggle}
+        useWebSearch={useWebSearch}
+        onWebSearchToggle={setUseWebSearch}
+        extractKeywords={extractKeywords}
+        onExtractKeywordsToggle={setExtractKeywords}
         timeTravel={timeTravel}
         onTimeTravelToggle={onTimeTravelToggle}
         timeTravelPoint={timeTravelPoint}

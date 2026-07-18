@@ -105,6 +105,10 @@ const ChatInput = forwardRef(function ChatInput({
   onProviderChange,
   useGraph,
   onGraphToggle,
+  useWebSearch,
+  onWebSearchToggle,
+  extractKeywords,
+  onExtractKeywordsToggle,
   kwSearchMode,
   onkwSearchModeChange,
   enableSemanticFilter,
@@ -171,6 +175,14 @@ const ChatInput = forwardRef(function ChatInput({
           onProviderChange={onProviderChange}
           onChatModelChange={onChatModelChange}
         />
+
+        {/* Web search toggle */}
+        <label className="flex items-center gap-1.5 cursor-pointer select-none flex-shrink-0" onClick={(e) => { e.preventDefault(); onWebSearchToggle(!useWebSearch); }}>
+          <div className={`relative w-8 h-4.5 rounded-full transition-all duration-200 ${useWebSearch ? 'bg-[var(--accent)]' : 'bg-[var(--bg-hover)]'}`} style={{ height: '18px', width: '32px' }}>
+            <div className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white shadow-sm transition-all duration-200 ${useWebSearch ? 'left-[14px]' : 'left-[1px]'}`} style={{ width: '14px', height: '14px', top: '2px' }} />
+          </div>
+          <span className="text-xs text-[var(--text-secondary)] font-medium">{t('chat.webSearch')}</span>
+        </label>
 
         {/* Graph toggle */}
         <label className="flex items-center gap-1.5 cursor-pointer select-none flex-shrink-0" onClick={(e) => { e.preventDefault(); onGraphToggle(!useGraph); }}>
@@ -245,6 +257,16 @@ const ChatInput = forwardRef(function ChatInput({
             )}
             </>)}
           </>
+        )}
+
+        {/* Extract keywords toggle — shown when any search is active */}
+        {(useWebSearch || useGraph) && (
+          <label className="flex items-center gap-1.5 cursor-pointer select-none flex-shrink-0" onClick={(e) => { e.preventDefault(); onExtractKeywordsToggle(!extractKeywords); }}>
+            <div className={`relative w-8 h-4.5 rounded-full transition-all duration-200 ${extractKeywords ? 'bg-[var(--accent)]' : 'bg-[var(--bg-hover)]'}`} style={{ height: '18px', width: '32px' }}>
+              <div className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white shadow-sm transition-all duration-200 ${extractKeywords ? 'left-[14px]' : 'left-[1px]'}`} style={{ width: '14px', height: '14px', top: '2px' }} />
+            </div>
+            <span className="text-xs text-[var(--text-secondary)] font-medium">提取关键字</span>
+          </label>
         )}
 
       </div>

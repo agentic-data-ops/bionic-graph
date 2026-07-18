@@ -97,6 +97,7 @@
   "chat.welcomeHint": "选择模型开始聊天，或开启图谱搜索探索知识图谱",
   "chat.inputPlaceholder": "输入消息... (Shift+Enter 换行)",
   "chat.useGraph": "图谱搜索",
+  "chat.webSearch": "联网搜索",
   "chat.semanticMode": "🔍 语义搜索模式",
   "chat.timeTravel": "时间旅行",
   "chat.attachFile": "上传 .md 文件到图库",

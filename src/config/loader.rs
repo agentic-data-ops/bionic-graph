@@ -130,7 +130,7 @@ fn apply_env_overrides(settings: &mut Settings) {
 
     // Storage
     if let Ok(val) = std::env::var("BGRAPH_DATA_DIR") {
-        settings.storage.data_dir = val;
+        settings.graph.storage.data_dir = val;
     }
 }
 

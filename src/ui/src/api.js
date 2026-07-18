@@ -324,7 +324,7 @@ export async function updateLlmSettings(providers, defaultModel) {
  * Returns: { greedy: {traverse,activate,decay,depth,score}, exact: {...} }
  */
 export async function fetchSearchConfig() {
-  const res = await fetch('/settings/search');
+  const res = await fetch('/settings/graph/search');
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -334,7 +334,7 @@ export async function fetchSearchConfig() {
  * @param {Object} config - { greedy: {...}, exact: {...} }
  */
 export async function updateSearchConfig(config) {
-  const res = await fetch('/settings/search', {
+  const res = await fetch('/settings/graph/search', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(config),
@@ -347,14 +347,14 @@ export async function updateSearchConfig(config) {
 
 /** Fetch rank configuration from the backend. */
 export async function fetchRankConfig() {
-  const res = await fetch('/settings/rank');
+  const res = await fetch('/settings/graph/rank');
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
 /** Update rank configuration on the backend. */
 export async function updateRankConfig(config) {
-  const res = await fetch('/settings/rank', {
+  const res = await fetch('/settings/graph/rank', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(config),
@@ -470,3 +470,34 @@ export async function deleteEdge(id, graph = 'default', force) {
   const text = await res.text();
   return text ? JSON.parse(text) : { success: true };
 }
+
+// ─── Web Search ────────────────────────────────────────────────
+
+export async function fetchWebSearchConfig() {
+  const res = await fetch('/settings/web-search');
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function updateWebSearchConfig(config) {
+  const res = await fetch('/settings/web-search', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+/** Search the web via the backend proxy (avoids CORS). Returns the raw response text. */
+export async function searchWeb(provider, query) {
+  const res = await fetch('/web-search/proxy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, provider_id: provider?.id }),
+  });
+  const data = await res.json();
+  if (!data.success) throw new Error(data.error || 'search failed');
+  return data.data;
+}
+
