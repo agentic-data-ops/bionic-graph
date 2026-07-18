@@ -22,26 +22,25 @@
 }
 
 .light {
-  --bg-primary: #f7f2ec;
+  --bg-primary: #ffffff;
   --bg-secondary: #ffffff;
-  --bg-tertiary: #ede6df;
-  --bg-hover: #e0d8cf;
-  --text-primary: #2c221a;
-  --text-secondary: #6b5f53;
-  --text-tertiary: #94887d;
-  --text-muted: #b8ada3;
-  --border: #ded5cb;
-  --accent: #7ac4e0;
-  --danger: #ff8a7a;
-  --success: #7bcf8c;
-  --danger-bg: rgba(255, 138, 122, 0.12);
-  --accent-bg: rgba(122, 196, 224, 0.15);
-  --success-bg: rgba(123, 207, 140, 0.12);
-  --scrollbar-thumb: rgba(0, 0, 0, 0.12);
-  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.20);
+  --bg-tertiary: #eef4fa;
+  --bg-hover: #dee9f3;
+  --text-primary: #1a2332;
+  --text-secondary: #5a6b7d;
+  --text-tertiary: #8a9aa8;
+  --text-muted: #b0bec5;
+  --border: #d5dde6;
+  --accent: #5b9bd5;
+  --danger: #e57373;
+  --success: #81c784;
+  --danger-bg: rgba(229, 115, 115, 0.12);
+  --accent-bg: rgba(91, 155, 213, 0.12);
+  --success-bg: rgba(129, 199, 132, 0.12);
+  --scrollbar-thumb: rgba(0, 0, 0, 0.08);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.14);
 }
 
-/* ─── Mac-style base ─── */
 :root {
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
     "Helvetica Neue", Helvetica, Arial, sans-serif;

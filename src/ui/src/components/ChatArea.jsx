@@ -282,13 +282,13 @@ ${graphCtx}`,
             {langOpen && (
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setLangOpen(false)} />
-                <div className="absolute right-0 top-full mt-1 z-50 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-lg overflow-hidden min-w-[120px]">
+                <div className="absolute right-0 bottom-full mb-1 z-50 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-lg overflow-hidden w-max">
                   <button
-                    className={`w-full text-left px-3 py-2 text-xs font-medium transition-all ${language === 'zh' ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
+                    className={`w-full text-left px-2.5 py-2 text-xs font-medium whitespace-nowrap transition-all ${language === 'zh' ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
                     onClick={() => { onLanguageToggle('zh'); setLangOpen(false); }}
                   >中文</button>
                   <button
-                    className={`w-full text-left px-3 py-2 text-xs font-medium transition-all ${language === 'en' ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
+                    className={`w-full text-left px-2.5 py-2 text-xs font-medium whitespace-nowrap transition-all ${language === 'en' ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
                     onClick={() => { onLanguageToggle('en'); setLangOpen(false); }}
                   >English</button>
                 </div>

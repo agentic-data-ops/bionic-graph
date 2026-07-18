@@ -246,6 +246,8 @@ export default function MessageList({ messages, searchStream, theme, onEdit, onS
                 ...(maximized.edges || []).map((e) => e._original || { type: 'edge', id: e.id, source: e.from, target: e.to, label: e.label || '', properties: {} }),
               ]}}
               graph={maximized.graphName}
+              timeTravelEnabled={maximized.timeTravelEnabled || false}
+              timeTravelAt={maximized.timeTravelAt}
               onDataChange={onDataChange}
             />
           </div>

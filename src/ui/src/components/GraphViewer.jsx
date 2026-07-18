@@ -13,8 +13,8 @@ const DARK_OPTS = {
   layout: { randomSeed: 42 },
 };
 const LIGHT_OPTS = {
-  nodes: { shape: 'dot', size: 18, font: { face: '-apple-system, BlinkMacSystemFont, "SF Pro Text", Helvetica, Arial, sans-serif', size: 13, color: '#1d1d1f', strokeWidth: 0, strokeColor: '#ffffff' }, color: { background: '#e8e8ed', border: '#d1d1d6', highlight: { background: '#0a84ff', border: '#0a84ff' }, hover: { background: '#d1d1d6', border: '#aeaeb2' } }, borderWidth: 1.5, borderWidthSelected: 2, shadow: { enabled: false, color: 'rgba(0,0,0,0.08)', size: 3, x: 0, y: 1 } },
-  edges: { width: 1.2, color: { color: '#aeaeb2', highlight: '#0a84ff', hover: '#8e8e93' }, font: { face: '-apple-system, BlinkMacSystemFont, "SF Pro Text", Helvetica, Arial, sans-serif', size: 10, color: '#636366', strokeWidth: 3, strokeColor: '#ffffff', align: 'middle' }, smooth: { type: 'curvedCW', roundness: 0.15 }, arrows: { to: { enabled: true, scaleFactor: 0.6 } } },
+  nodes: { shape: 'dot', size: 18, font: { face: '-apple-system, BlinkMacSystemFont, "SF Pro Text", Helvetica, Arial, sans-serif', size: 13, color: '#1d1d1f', strokeWidth: 0, strokeColor: '#ffffff' }, color: { background: '#dce8f5', border: '#b8cfe0', highlight: { background: '#5b9bd5', border: '#5b9bd5' }, hover: { background: '#b8d4ed', border: '#8ab5d4' } }, borderWidth: 1.5, borderWidthSelected: 2, shadow: { enabled: false, color: 'rgba(0,0,0,0.08)', size: 3, x: 0, y: 1 } },
+  edges: { width: 1.2, color: { color: '#b0c4d8', highlight: '#5b9bd5', hover: '#8aaed0' }, font: { face: '-apple-system, BlinkMacSystemFont, "SF Pro Text", Helvetica, Arial, sans-serif', size: 10, color: '#636366', strokeWidth: 3, strokeColor: '#ffffff', align: 'middle' }, smooth: { type: 'curvedCW', roundness: 0.15 }, arrows: { to: { enabled: true, scaleFactor: 0.6 } } },
   physics: { solver: 'forceAtlas2Based', forceAtlas2Based: { gravitationalConstant: -40, centralGravity: 0.005, springLength: 180, springConstant: 0.02 }, stabilization: { iterations: 100 } },
   interaction: { hover: true, tooltipDelay: 200, zoomView: true, dragView: true },
   layout: { randomSeed: 42 },
@@ -127,7 +127,7 @@ function VertexSearchSelect({ graph, value, onChange, placeholder, disabled, nod
             </svg>
             <input
               ref={inputRef}
-              className="w-full pl-7 pr-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+              className="w-full pl-7 pr-3 py-1.5 rounded-lg bg-transparent text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
               placeholder={placeholder || 'Search or select vertex…'}
               value={query}
               onChange={handleInput}
@@ -174,7 +174,7 @@ function DocViewer({ docId, onClose }) {
   }, [docId]);
 
   return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center" onClick={onClose}>
+    <div className="fixed inset-0 z-[200] flex items-center justify-center">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
       <div className="relative bg-[var(--bg-secondary)] border border-[var(--border)] rounded-2xl p-6 max-w-2xl max-h-[80vh] overflow-y-auto shadow-2xl min-w-[500px]"
         onClick={(e) => e.stopPropagation()}
@@ -344,7 +344,7 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onS
           </div>
           {editing ? (
             <input
-              className="w-full px-2.5 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+              className="w-full px-2.5 py-1.5 rounded-lg bg-transparent text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
               value={editLabel}
               onChange={(e) => setEditLabel(e.target.value)}
             />
@@ -361,7 +361,7 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onS
           <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-2">{t('panel.name')}</div>
           {editing ? (
             <input
-              className="w-full px-2.5 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+              className="w-full px-2.5 py-1.5 rounded-lg bg-transparent text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
               value={localName}
               onChange={(e) => setLocalName(e.target.value)}
             />
@@ -374,7 +374,7 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onS
           <div className="text-[10px] font-semibold text-[var(--text-tertiary)]  uppercase tracking-wider mb-2">{t('panel.keywords')}</div>
           {editing ? (
             <input
-              className="w-full px-2.5 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+              className="w-full px-2.5 py-1.5 rounded-lg bg-transparent text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
               value={localKeywords}
               onChange={(e) => setLocalKeywords(e.target.value)}
               placeholder={t('panel.commaSeparated')}
@@ -503,7 +503,7 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onS
               {Object.keys(displayProps).length === 0 ? <div className="text-xs text-[var(--text-muted)] italic">—</div> : (
                 <div className="space-y-1">
                   {Object.entries(displayProps).map(([k, v]) => (
-                    <div key={k} className="flex justify-between items-start py-1.5 px-2.5 rounded-lg bg-[var(--bg-tertiary)]">
+                    <div key={k} className="flex justify-between items-start py-1.5 px-2.5 rounded-lg bg-[var(--accent-bg)]">
                       <span className="text-[11px] text-[var(--text-tertiary)] font-medium mr-3 whitespace-nowrap">{k}</span>
                       <span className="text-[11px] text-[var(--text-primary)] text-right break-all max-w-[160px] font-mono">{String(v)}</span>
                     </div>
@@ -557,6 +557,8 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
   const netRef = useRef(null);
   const nodesRef = useRef(null);
   const edgesRef = useRef(null);
+  const timeTravelAtRef = useRef(timeTravelAt);
+  const timeTravelEnabledRef = useRef(timeTravelEnabled);
   const [selected, setSelected] = useState(null);
   const [showDoc, setShowDoc] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null); // { vid, name }
@@ -771,6 +773,8 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
       return {
         nodes: nodesRef.current.get().map((n) => ({ id: n.id, label: n.label, _original: n._original })),
         edges: edgesRef.current?.get().map((e) => ({ id: e.id, from: e.from, to: e.to, label: e.label, _original: e._original })) || [],
+        timeTravelAt: timeTravelAtRef.current,
+        timeTravelEnabled: timeTravelEnabledRef.current,
       };
     },
     /** Merge snapshot data into current DataSet (add missing, skip existing). */
@@ -804,6 +808,10 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
 
     const container = containerRef.current;
     if (!container) return;
+
+    // Sync timeTravel refs for getSnapshot
+    timeTravelAtRef.current = timeTravelAt;
+    timeTravelEnabledRef.current = timeTravelEnabled;
 
     // Ensure container has dimensions before network creation
     // The parent h-[420px] in MessageList provides the height constraint
@@ -1015,7 +1023,7 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
 
         {/* Add Vertex Modal */}
         {showAddVertex && (
-          <div className="fixed inset-0 z-[200] flex items-center justify-center" onClick={() => setShowAddVertex(false)}>
+          <div className="fixed inset-0 z-[200] flex items-center justify-center">
             <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
             <div className="relative bg-[var(--bg-secondary)] border border-[var(--border)] rounded-2xl p-5 max-w-sm shadow-2xl w-80"
               onClick={(e) => e.stopPropagation()}>
@@ -1023,17 +1031,17 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
               <div className="space-y-2.5">
                 <div>
                   <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-1">{t('panel.name')}</div>
-                  <input className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                  <input className="w-full px-3 py-1.5 rounded-lg bg-transparent text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
                     placeholder={t('graph.vertexName')} value={newVertexName} onChange={(e) => setNewVertexName(e.target.value)} />
                 </div>
                 <div>
                   <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-1">{t('panel.labels')}</div>
-                  <input className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                  <input className="w-full px-3 py-1.5 rounded-lg bg-transparent text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
                     placeholder={t('panel.commaSeparated')} value={newVertexLabels} onChange={(e) => setNewVertexLabels(e.target.value)} />
                 </div>
                 <div>
                   <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-1">{t('panel.keywords')}</div>
-                  <input className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                  <input className="w-full px-3 py-1.5 rounded-lg bg-transparent text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
                     placeholder={t('panel.commaSeparated')} value={newVertexKeywords} onChange={(e) => setNewVertexKeywords(e.target.value)} />
                 </div>
                 <div>
@@ -1093,7 +1101,7 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
 
         {/* Add Edge Modal */}
         {showAddEdge && (
-          <div className="fixed inset-0 z-[200] flex items-center justify-center" onClick={() => setShowAddEdge(false)}>
+          <div className="fixed inset-0 z-[200] flex items-center justify-center">
             <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
             <div className="relative bg-[var(--bg-secondary)] border border-[var(--border)] rounded-2xl p-5 max-w-sm shadow-2xl w-80"
               onClick={(e) => e.stopPropagation()}>
@@ -1101,22 +1109,22 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
               <div className="space-y-2.5">
                 <div>
                   <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-1">{t('panel.name')}</div>
-                  <input className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                  <input className="w-full px-3 py-1.5 rounded-lg bg-transparent text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
                     placeholder={t('graph.edgeName')} value={newEdgeLabel} onChange={(e) => setNewEdgeLabel(e.target.value)} />
                 </div>
                 <div>
                   <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-1">{t('panel.labels')}</div>
-                  <input className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                  <input className="w-full px-3 py-1.5 rounded-lg bg-transparent text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
                     placeholder={t('panel.commaSeparated')} value={newEdgeLabels} onChange={(e) => setNewEdgeLabels(e.target.value)} />
                 </div>
                 <div>
                   <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-1">{t('panel.keywords')}</div>
-                  <input className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                  <input className="w-full px-3 py-1.5 rounded-lg bg-transparent text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
                     placeholder={t('panel.commaSeparated')} value={newEdgeKeywords} onChange={(e) => setNewEdgeKeywords(e.target.value)} />
                 </div>
                 <div>
                   <div className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-1">{t('panel.strength')}</div>
-                  <input className="w-full px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                  <input className="w-full px-3 py-1.5 rounded-lg bg-transparent text-[var(--text-primary)] text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
                     placeholder={t('panel.commaSeparated')} type="number" step="0.1" min="0" max="1" value={newEdgeStrength} onChange={(e) => setNewEdgeStrength(e.target.value)} />
                 </div>
                 <div>
@@ -1254,7 +1262,7 @@ function DeleteConfirmModal({ vid, name, timeTravelEnabled, onConfirm, onCancel,
   const [hardDelete, setHardDelete] = useState(false);
 
   return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center" onClick={onCancel}>
+    <div className="fixed inset-0 z-[200] flex items-center justify-center">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
       <div className="relative bg-[var(--bg-secondary)] border border-[var(--border)] rounded-2xl p-6 max-w-sm shadow-2xl"
         onClick={(e) => e.stopPropagation()}

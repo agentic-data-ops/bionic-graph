@@ -8,7 +8,7 @@ import {
 
 function Modal({ title, children, onClose }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
       <div className="relative bg-[var(--bg-secondary)] border border-[var(--border)] rounded-2xl p-6 min-w-[640px] max-w-2xl max-h-[85vh] overflow-y-auto shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="text-base font-semibold text-[var(--text-primary)] mb-5 flex items-center justify-between tracking-tight">
@@ -32,6 +32,7 @@ function ModelSelector({ value, onChange }) {
   const { t } = useTranslation();
   const [models, setModels] = useState(null);
   const [defaultModel, setDefaultModel] = useState('');
+  const [modelOpen, setModelOpen] = useState(false);
   const initialised = useRef(false);
 
   useEffect(() => {
@@ -60,17 +61,32 @@ function ModelSelector({ value, onChange }) {
   }));
 
   return (
-    <select className="w-full px-3 py-2 rounded-xl bg-[var(--bg-secondary)] text-[var(--text-primary)] text-sm border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] appearance-none cursor-pointer"
-      style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23636366' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px center', paddingRight: '32px' }}
-      value={value || ''}
-      onChange={(e) => onChange(e.target.value)}
-    >
-      {options.map((opt) => (
-        <option key={opt.key} value={opt.key}>
-          {opt.key}{opt.isDefault ? ` ${t('chat.default')}` : ''}
-        </option>
-      ))}
-    </select>
+    <div className="relative">
+      <button
+        className="w-full px-3 py-2 rounded-xl bg-transparent text-[var(--text-primary)] text-sm border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] transition-all font-medium flex items-center gap-1 text-left"
+        onClick={(e) => { e.stopPropagation(); setModelOpen(!modelOpen); }}
+      >
+        <span className="flex-1 truncate">{value || t('chat.selectModel')}</span>
+        <svg className={`w-3 h-3 flex-shrink-0 transition-transform ${modelOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
+      </button>
+      {modelOpen && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setModelOpen(false)} />
+          <div className="absolute left-0 top-full mt-1 z-50 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-lg overflow-hidden w-full max-h-[300px] overflow-y-auto">
+            {options.map((opt) => (
+              <button
+                key={opt.key}
+                className={`w-full text-left px-2.5 py-2 text-xs font-medium whitespace-nowrap truncate transition-all ${opt.key === value ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
+                onClick={() => { onChange(opt.key); setModelOpen(false); }}
+              >
+                <span>{opt.key}</span>
+                {opt.isDefault && <span className="ml-1.5 text-[var(--text-muted)]">({t('chat.default')})</span>}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -116,6 +132,7 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
   const [importModelKey, setImportModelKey] = useState('');
   const [importSteps, setImportSteps] = useState([]);
   const [importing, setImporting] = useState(false);
+  const [importGraphOpen, setImportGraphOpen] = useState(false);
   const [showEdit, setShowEdit] = useState(null);
   const [editContent, setEditContent] = useState('');
   const [editTitle, setEditTitle] = useState('');
@@ -313,11 +330,29 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
           <div className="space-y-4">
           <div>
             <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.graph')}</label>
-            <select className="w-full px-3 py-2 rounded-xl bg-[var(--bg-secondary)] text-[var(--text-primary)] text-sm border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] appearance-none cursor-pointer"
-              style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23636366' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px center', paddingRight: '32px' }}
-              value={importGraph} onChange={(e) => setImportGraph(e.target.value)}>
-              {graphs.map((g) => <option key={g.name || g} value={g.name || g}>{g.name || g}</option>)}
-            </select>
+            <div className="relative">
+              <button
+                className="w-full px-3 py-2 rounded-xl bg-transparent text-[var(--text-primary)] text-sm border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] transition-all font-medium flex items-center gap-1 text-left"
+                onClick={(e) => { e.stopPropagation(); setImportGraphOpen(!importGraphOpen); }}
+              >
+                <span className="flex-1 truncate">{importGraph}</span>
+                <svg className={`w-3 h-3 flex-shrink-0 transition-transform ${importGraphOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
+              </button>
+              {importGraphOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setImportGraphOpen(false)} />
+                  <div className="absolute left-0 top-full mt-1 z-50 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-lg overflow-hidden w-full">
+                    {graphs.map((g) => (
+                      <button
+                        key={g.name || g}
+                        className={`w-full text-left px-2.5 py-2 text-xs font-medium whitespace-nowrap truncate transition-all ${(g.name || g) === importGraph ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
+                        onClick={() => { setImportGraph(g.name || g); setImportGraphOpen(false); }}
+                      >{g.name || g}</button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
           </div>
           <div>
             <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.model')}</label>

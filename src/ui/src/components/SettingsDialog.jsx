@@ -4,7 +4,7 @@ import { fetchSearchConfig, updateSearchConfig, fetchRankConfig, updateRankConfi
 
 function Modal({ title, children, onClose }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
       <div
         className="relative bg-[var(--bg-secondary)] border border-[var(--border)] rounded-2xl p-6 min-w-[520px] max-w-lg max-h-[80vh] overflow-y-auto shadow-2xl"
@@ -27,7 +27,7 @@ function Modal({ title, children, onClose }) {
 const tabCls = (active) =>
   `px-4 py-2 text-sm font-medium rounded-xl transition-all duration-200 ${
     active
-      ? 'bg-[var(--bg-hover)] text-white shadow-sm'
+      ? 'bg-[var(--accent-bg)] text-[var(--accent)] shadow-sm'
       : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
   }`;
 
@@ -79,6 +79,9 @@ export default function SettingsDialog({
   const [rankMessage, setRankMessage] = useState('');
   const [rankThreshold, setRankThreshold] = useState({ value: 15, unit: 86400 });
   const [rankPeriod, setRankPeriod] = useState({ value: 1, unit: 86400 });
+  const [defaultModelOpen, setDefaultModelOpen] = useState(false);
+  const [timeUnitOpen, setTimeUnitOpen] = useState(false);
+  const [periodUnitOpen, setPeriodUnitOpen] = useState(false);
   const f3 = (v) => v !== undefined && v !== null ? Number(v).toFixed(3) : '';
   useEffect(() => {
     if (open) {
@@ -155,6 +158,14 @@ export default function SettingsDialog({
 
   if (!open) return null;
 
+  // Compute default model options for the custom dropdown.
+  const modelOptions = providers.flatMap((p) => {
+    const models = p.models || [p.model];
+    return models.map((m) => ({ key: p.name + '/' + m, label: p.name + '/' + m, provName: p.name, modelName: m, provId: p.id }));
+  });
+  const ap = providers.find(p => p.id === activeProvider);
+  const currentModelVal = ap ? ap.name + '/' + (ap.defaultModel || ap.model || '') : '';
+
   return (
     <Modal title={t('settings.title')} onClose={onClose}>
       {/* Tabs */}
@@ -172,7 +183,7 @@ export default function SettingsDialog({
               {/* Provider name */}
               <div>
                 <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">{t('settings.providerName')}</label>
-                <input className="w-full px-3.5 py-2 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-[var(--text-primary)] text-sm placeholder-[var(--text-muted)]"
+                <input className="w-full px-3.5 py-2 rounded-xl bg-transparent border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-[var(--text-primary)] text-sm placeholder-[var(--text-muted)]"
                   type="text" value={editingProvider.name}
                   onChange={(e) => setEditingProvider({ ...editingProvider, name: e.target.value })} />
               </div>
@@ -180,7 +191,7 @@ export default function SettingsDialog({
               {/* API Base URL */}
               <div>
                 <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">API Base URL</label>
-                <input className="w-full px-3.5 py-2 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-[var(--text-primary)] text-sm placeholder-[var(--text-muted)]"
+                <input className="w-full px-3.5 py-2 rounded-xl bg-transparent border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-[var(--text-primary)] text-sm placeholder-[var(--text-muted)]"
                   type="text" value={editingProvider.apiBase}
                   onChange={(e) => setEditingProvider({ ...editingProvider, apiBase: e.target.value })} />
               </div>
@@ -188,7 +199,7 @@ export default function SettingsDialog({
               {/* API Key */}
               <div>
                 <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">API Key</label>
-                <input className="w-full px-3.5 py-2 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-[var(--text-primary)] text-sm placeholder-[var(--text-muted)]"
+                <input className="w-full px-3.5 py-2 rounded-xl bg-transparent border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-[var(--text-primary)] text-sm placeholder-[var(--text-muted)]"
                   type="password" value={editingProvider.apiKey}
                   onChange={(e) => setEditingProvider({ ...editingProvider, apiKey: e.target.value })} />
               </div>
@@ -206,7 +217,7 @@ export default function SettingsDialog({
                 </div>
                 {/* Add model input */}
                 <div className="flex gap-2">
-                  <input className="flex-1 px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-[var(--text-primary)] text-xs placeholder-[var(--text-muted)]"
+                  <input className="flex-1 px-3 py-1.5 rounded-xl bg-transparent border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-[var(--text-primary)] text-xs placeholder-[var(--text-muted)]"
                     type="text" placeholder="Model name..." value={editingProvider.newModelInput || ''}
                     onChange={(e) => setEditingProvider({ ...editingProvider, newModelInput: e.target.value })}
                     onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddModel(); } }} />
@@ -224,35 +235,33 @@ export default function SettingsDialog({
               {/* Default model selector */}
               <div className="mb-4">
                 <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">{t('settings.defaultModel')}</label>
-                <select className="w-full px-3 py-2 rounded-xl bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-sm border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] appearance-none cursor-pointer"
-                  style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23636366' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px center', paddingRight: '32px' }}
-                  value={(() => {
-                    const ap = providers.find(p => p.id === activeProvider);
-                    return ap ? ap.name + '/' + (ap.defaultModel || ap.model || '') : '';
-                  })()}
-                  onChange={(e) => {
-                    const parts = e.target.value.split('/');
-                    const provName = parts[0];
-                    const modelName = parts.slice(1).join('/');
-                    const idx = providers.findIndex((p) => p.name === provName);
-                    if (idx >= 0) {
-                      const provId = providers[idx].id;
-                      onUpdateProviders(providers.map((p) => p.id === provId ? { ...p, defaultModel: modelName, model: modelName } : p));
-                      if (provId !== activeProvider) {
-                        onProviderChange(provId);
-                      }
-                    }
-                  }}>
-                  {providers.flatMap((p) => {
-                    const models = p.models || [p.model];
-                    return models.map((m) => ({
-                      key: p.name + '/' + m,
-                      label: p.name + '/' + m,
-                    }));
-                  }).map((opt) => (
-                    <option key={opt.key} value={opt.key}>{opt.label}</option>
-                  ))}
-                </select>
+                <div className="relative">
+                  <button
+                    className="w-full px-3 py-2 rounded-xl bg-transparent text-[var(--text-primary)] text-sm border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] transition-all font-medium flex items-center gap-1 text-left"
+                    onClick={(e) => { e.stopPropagation(); setDefaultModelOpen(!defaultModelOpen); }}
+                  >
+                    <span className="flex-1 truncate">{currentModelVal || t('chat.selectModel')}</span>
+                    <svg className={`w-3 h-3 flex-shrink-0 transition-transform ${defaultModelOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
+                  </button>
+                  {defaultModelOpen && (
+                    <>
+                      <div className="fixed inset-0 z-40" onClick={() => setDefaultModelOpen(false)} />
+                      <div className="absolute left-0 top-full mt-1 z-50 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-lg overflow-hidden w-full max-h-[300px] overflow-y-auto">
+                        {modelOptions.map((opt) => (
+                          <button
+                            key={opt.key}
+                            className={`w-full text-left px-2.5 py-2 text-xs font-medium whitespace-nowrap truncate transition-all ${opt.key === currentModelVal ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
+                            onClick={() => {
+                              onUpdateProviders(providers.map((p) => p.id === opt.provId ? { ...p, defaultModel: opt.modelName, model: opt.modelName } : p));
+                              if (opt.provId !== activeProvider) onProviderChange(opt.provId);
+                              setDefaultModelOpen(false);
+                            }}
+                          >{opt.label}</button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
               </div>
 
               <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-2 tracking-tight">{t('settings.providers')}</label>
@@ -324,7 +333,7 @@ export default function SettingsDialog({
                   </div>
                   <div>
                     <label className="text-[11px] text-[var(--text-muted)]">探索深度</label>
-                    <input className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
+                    <input className="w-full px-3 py-1.5 rounded-xl bg-transparent border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
                       type="number" min="1" max="255" value={searchConfig.greedy.depth}
                       onChange={(e) => setSearchConfig({ ...searchConfig, greedy: { ...searchConfig.greedy, depth: parseInt(e.target.value) || 1 } })} />
                   </div>
@@ -372,7 +381,7 @@ export default function SettingsDialog({
                   </div>
                   <div>
                     <label className="text-[11px] text-[var(--text-muted)]">探索深度</label>
-                    <input className="w-full px-3 py-1.5 rounded-xl bg-[var(--bg-tertiary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
+                    <input className="w-full px-3 py-1.5 rounded-xl bg-transparent border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
                       type="number" min="1" max="255" value={searchConfig.exact.depth}
                       onChange={(e) => setSearchConfig({ ...searchConfig, exact: { ...searchConfig.exact, depth: parseInt(e.target.value) || 1 } })} />
                   </div>
@@ -448,30 +457,66 @@ export default function SettingsDialog({
                 </label>
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <div>
+                <div className="min-w-0">
                   <label className="block text-xs text-[var(--text-tertiary)] mb-1">不活跃阈值</label>
                   <div className="flex gap-1">
                     <input type="number" min="1" value={rankThreshold.value}
                       onChange={(e) => setRankThreshold({ ...rankThreshold, value: Number(e.target.value) })}
-                      className="flex-1 px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border)] text-xs text-[var(--text-primary)]" />
-                    <select value={rankThreshold.unit}
-                      onChange={(e) => setRankThreshold({ ...rankThreshold, unit: Number(e.target.value) })}
-                      className="px-2 py-1.5 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border)] text-xs text-[var(--text-primary)] appearance-none cursor-pointer">
-                      {TIME_UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
-                    </select>
+                      className="w-0 flex-1 px-3 py-1.5 rounded-lg bg-transparent border border-[var(--border)] text-xs text-[var(--text-primary)]" />
+                    <div className="relative flex-shrink-0">
+                      <button
+                        className="px-2 py-1.5 text-xs rounded-lg bg-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] transition-all font-medium flex items-center gap-1 w-14"
+                        onClick={(e) => { e.stopPropagation(); setTimeUnitOpen(!timeUnitOpen); }}
+                      >
+                        <span className="flex-1 text-center">{TIME_UNITS.find(u => u.value === rankThreshold.unit)?.label}</span>
+                        <svg className={`w-2.5 h-2.5 flex-shrink-0 transition-transform ${timeUnitOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
+                      </button>
+                      {timeUnitOpen && (
+                        <>
+                          <div className="fixed inset-0 z-40" onClick={() => setTimeUnitOpen(false)} />
+                          <div className="absolute right-0 bottom-full mb-1 z-50 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-lg overflow-hidden w-full">
+                            {TIME_UNITS.map((u) => (
+                              <button
+                                key={u.value}
+                                className={`w-full text-left px-2.5 py-2 text-xs font-medium whitespace-nowrap truncate transition-all ${u.value === rankThreshold.unit ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
+                                onClick={() => { setRankThreshold({ ...rankThreshold, unit: u.value }); setTimeUnitOpen(false); }}
+                              >{u.label}</button>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
-                <div>
+                <div className="min-w-0">
                   <label className="block text-xs text-[var(--text-tertiary)] mb-1">扫描间隔</label>
                   <div className="flex gap-1">
                     <input type="number" min="1" value={rankPeriod.value}
                       onChange={(e) => setRankPeriod({ ...rankPeriod, value: Number(e.target.value) })}
-                      className="flex-1 px-3 py-1.5 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border)] text-xs text-[var(--text-primary)]" />
-                    <select value={rankPeriod.unit}
-                      onChange={(e) => setRankPeriod({ ...rankPeriod, unit: Number(e.target.value) })}
-                      className="px-2 py-1.5 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border)] text-xs text-[var(--text-primary)] appearance-none cursor-pointer">
-                      {TIME_UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
-                    </select>
+                      className="w-0 flex-1 px-3 py-1.5 rounded-lg bg-transparent border border-[var(--border)] text-xs text-[var(--text-primary)]" />
+                    <div className="relative flex-shrink-0">
+                      <button
+                        className="px-2 py-1.5 text-xs rounded-lg bg-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] transition-all font-medium flex items-center gap-1 w-14"
+                        onClick={(e) => { e.stopPropagation(); setPeriodUnitOpen(!periodUnitOpen); }}
+                      >
+                        <span className="flex-1 text-center">{TIME_UNITS.find(u => u.value === rankPeriod.unit)?.label}</span>
+                        <svg className={`w-2.5 h-2.5 flex-shrink-0 transition-transform ${periodUnitOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
+                      </button>
+                      {periodUnitOpen && (
+                        <>
+                          <div className="fixed inset-0 z-40" onClick={() => setPeriodUnitOpen(false)} />
+                          <div className="absolute right-0 bottom-full mb-1 z-50 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-lg overflow-hidden w-full">
+                            {TIME_UNITS.map((u) => (
+                              <button
+                                key={u.value}
+                                className={`w-full text-left px-2.5 py-2 text-xs font-medium whitespace-nowrap truncate transition-all ${u.value === rankPeriod.unit ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
+                                onClick={() => { setRankPeriod({ ...rankPeriod, unit: u.value }); setPeriodUnitOpen(false); }}
+                              >{u.label}</button>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>

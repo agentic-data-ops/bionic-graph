@@ -15,6 +15,7 @@ function ChatModelSelector({
   const [modelList, setModelList] = useState(null);
   const [defaultModel, setDefaultModel] = useState('');
   const [fetching, setFetching] = useState(false);
+  const [modelOpen, setModelOpen] = useState(false);
   const initialised = useRef(false);
 
   // Fetch model list + default model from backend.
@@ -63,24 +64,38 @@ function ChatModelSelector({
   }));
 
   return (
-    <select
-      className="bg-[var(--bg-tertiary)] text-[var(--text-primary)] rounded-lg px-2.5 py-1 text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] cursor-pointer appearance-none flex-shrink-0"
-      style={{ maxWidth: '220px', backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath fill='%2386868b' d='M0 0l4 5 4-5z'/%3E%3Csvg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 6px center', paddingRight: '22px' }}
-      value={currentKey}
-      onChange={(e) => {
-        const selected = options.find(o => o.key === e.target.value);
-        if (!selected) return;
-        localStorage.setItem('bgraph-last-model', selected.key);
-        onProviderChange(selected.providerName);
-        onChatModelChange(selected.model);
-      }}
-    >
-      {options.map((opt) => (
-        <option key={opt.key} value={opt.key}>
-          {opt.key}{opt.isDefault ? ` ${t('chat.default')}` : ''}
-        </option>
-      ))}
-    </select>
+    <div className="relative">
+      <button
+        className="px-2 py-1 text-xs rounded-lg bg-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] transition-all font-medium flex items-center gap-1 flex-shrink-0"
+        onClick={(e) => { e.stopPropagation(); setModelOpen(!modelOpen); }}
+        style={{ maxWidth: '220px' }}
+      >
+        <span className="truncate max-w-[160px]">{currentKey || t('chat.selectModel')}</span>
+        <svg className={`w-2.5 h-2.5 flex-shrink-0 transition-transform ${modelOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
+      </button>
+      {modelOpen && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setModelOpen(false)} />
+          <div className="absolute left-0 bottom-full mb-1 z-50 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-lg overflow-hidden min-w-full w-max max-h-[300px] overflow-y-auto max-w-[260px]">
+            {options.map((opt) => (
+              <button
+                key={opt.key}
+                className={`w-full text-left px-2.5 py-2 text-xs font-medium whitespace-nowrap truncate transition-all ${opt.key === currentKey ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
+                onClick={() => {
+                  localStorage.setItem('bgraph-last-model', opt.key);
+                  onProviderChange(opt.providerName);
+                  onChatModelChange(opt.model);
+                  setModelOpen(false);
+                }}
+              >
+                <span>{opt.key}</span>
+                {opt.isDefault && <span className="ml-1.5 text-[var(--text-muted)]">({t('chat.default')})</span>}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -114,6 +129,7 @@ const ChatInput = forwardRef(function ChatInput({
   const { t } = useTranslation();
   const [text, setText] = useState('');
   const [kwModeOpen, setKwModeOpen] = useState(false);
+  const [graphOpen, setGraphOpen] = useState(false);
   const textareaRef = useRef(null);
   useImperativeHandle(ref, () => ({
     focus: () => textareaRef.current?.focus(),
@@ -167,19 +183,34 @@ const ChatInput = forwardRef(function ChatInput({
         {useGraph && (
           <>
             {/* Graph selector */}
-            <select
-              className="bg-[var(--bg-tertiary)] text-[var(--text-primary)] rounded-lg px-2.5 py-1 text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] cursor-pointer appearance-none"
-              style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath fill='%2386868b' d='M0 0l4 5 4-5z'/%3E%3C/svg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 6px center', paddingRight: '22px' }}
-              value={graphName}
-              onChange={(e) => onGraphNameChange(e.target.value)}
-            >
-              {graphs.map((g) => <option key={g} value={g}>{g}</option>)}
-            </select>
+            <div className="relative">
+              <button
+                className="px-2 py-1 text-xs rounded-lg bg-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] transition-all font-medium flex items-center gap-1"
+                onClick={(e) => { e.stopPropagation(); setGraphOpen(!graphOpen); }}
+              >
+                {graphName}
+                <svg className={`w-2.5 h-2.5 transition-transform ${graphOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
+              </button>
+              {graphOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setGraphOpen(false)} />
+                  <div className="absolute right-0 bottom-full mb-1 z-50 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-lg overflow-hidden min-w-full w-max max-w-[200px]">
+                    {graphs.map((g) => (
+                      <button
+                        key={g}
+                        className={`w-full text-left px-2.5 py-2 text-xs font-medium whitespace-nowrap truncate transition-all ${g === graphName ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
+                        onClick={() => { onGraphNameChange(g); setGraphOpen(false); }}
+                      >{g}</button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
 
             {/* Match mode dropdown */}
             <div className="relative">
               <button
-                className="px-2 py-1 text-[10px] rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-all font-medium flex items-center gap-1"
+                className="px-2 py-1 text-xs rounded-lg bg-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] transition-all font-medium flex items-center gap-1"
                 onClick={(e) => { e.stopPropagation(); setKwModeOpen(!kwModeOpen); }}
               >
                 {kwSearchMode === 'exact' ? t('chat.exactSearch') : t('chat.greedySearch')}
@@ -188,10 +219,10 @@ const ChatInput = forwardRef(function ChatInput({
               {kwModeOpen && (
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => setKwModeOpen(false)} />
-                  <div className="absolute right-0 top-full mt-1 z-50 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-lg overflow-hidden min-w-[150px]">
-                    <button className={`w-full text-left px-3 py-2 text-xs font-medium transition-all ${kwSearchMode === 'greedy' ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
+                  <div className="absolute left-0 bottom-full mb-1 z-50 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-lg overflow-hidden w-full">
+                    <button className={`w-full text-left px-2.5 py-2 text-xs font-medium whitespace-nowrap transition-all ${kwSearchMode === 'greedy' ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
                       onClick={() => { onkwSearchModeChange('greedy'); setKwModeOpen(false); }}>{t('chat.greedySearch')}</button>
-                    <button className={`w-full text-left px-3 py-2 text-xs font-medium transition-all ${kwSearchMode === 'exact' ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
+                    <button className={`w-full text-left px-2.5 py-2 text-xs font-medium whitespace-nowrap transition-all ${kwSearchMode === 'exact' ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
                       onClick={() => { onkwSearchModeChange('exact'); setKwModeOpen(false); }}>{t('chat.exactSearch')}</button>
                   </div>
                 </>
@@ -207,7 +238,7 @@ const ChatInput = forwardRef(function ChatInput({
             </label>
             {timeTravel && (
               <input type="datetime-local"
-                className="bg-[var(--bg-tertiary)] text-[var(--text-primary)] rounded-lg px-2 py-1 text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
+                className="bg-transparent text-[var(--text-primary)] rounded-lg px-2 py-1 text-xs border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)]"
                 value={timeTravelPoint || ''}
                 onChange={(e) => onTimeTravelPointChange?.(e.target.value)}
               />
@@ -222,7 +253,7 @@ const ChatInput = forwardRef(function ChatInput({
       <div className="flex items-end gap-2">
         <textarea
           ref={textareaRef}
-          className="flex-1 resize-none bg-[var(--bg-tertiary)] text-[var(--text-primary)] rounded-2xl px-4 py-2.5 text-sm border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] placeholder-[var(--text-tertiary)] max-h-[160px] leading-relaxed transition-all duration-200"
+          className="flex-1 resize-none bg-transparent text-[var(--text-primary)] rounded-2xl px-4 py-2.5 text-sm border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] placeholder-[var(--text-tertiary)] max-h-[160px] leading-relaxed transition-all duration-200"
           placeholder={t('chat.inputPlaceholder')}
           rows={1}
           value={text}

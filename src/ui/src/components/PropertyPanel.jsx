@@ -22,7 +22,7 @@ function DocViewer({ docId, onClose }) {
   }, [docId]);
 
   return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center" onClick={onClose}>
+    <div className="fixed inset-0 z-[200] flex items-center justify-center">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
       <div className="relative bg-[var(--bg-secondary)] border border-[var(--border)] rounded-2xl max-w-2xl max-h-[80vh] overflow-y-auto shadow-2xl min-w-[500px]"
         onClick={(e) => e.stopPropagation()}>
@@ -143,7 +143,7 @@ export default function PropertyPanel({ item, type, onClose }) {
           {Object.keys(displayProps).length === 0 ? (
             <span className="text-xs text-[var(--text-muted)] italic">—</span>
           ) : (
-            <div className="space-y-0.5 bg-[var(--bg-tertiary)] rounded-xl p-2.5">
+            <div className="space-y-0.5 bg-[var(--accent-bg)] rounded-xl p-2.5">
               {Object.entries(displayProps).map(([k, v]) => (
                 <div key={k} className="flex justify-between items-center py-1 px-1.5 rounded-lg hover:bg-[var(--bg-hover)] transition-all">
                   <span className="text-xs text-[var(--text-tertiary)] font-medium mr-3">{k}</span>

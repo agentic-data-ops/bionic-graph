@@ -40,7 +40,7 @@ export default function Sidebar({
         <>
           {/* New chat button */}
           <div className="px-3 py-2">
-            <button className="w-full py-2 px-3.5 rounded-xl bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] text-sm font-medium flex items-center justify-center gap-2 transition-all duration-200" onClick={onNewChat}>
+            <button className="w-full py-2 px-3.5 rounded-xl bg-[var(--accent)] text-white hover:bg-[color-mix(in srgb, var(--accent), black 10%)] text-sm font-medium flex items-center justify-center gap-2 transition-all duration-200 shadow-sm" onClick={onNewChat}>
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
               </svg>
@@ -55,7 +55,7 @@ export default function Sidebar({
                 <button
                   className={`w-full text-left px-3 py-2.5 rounded-xl text-sm transition-all duration-200 ${
                     conv.id === activeConvId
-                      ? 'bg-[var(--bg-hover)] text-[var(--text-primary)] shadow-sm'
+                      ? 'bg-[var(--accent-bg)] text-[var(--accent)] shadow-sm'
                       : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]'
                   }`}
                   onClick={() => onSwitchConv(conv.id)}
