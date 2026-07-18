@@ -23,7 +23,8 @@ Unlike relational or document databases, Bionic-Graph is optimized for **graph t
 │                   REST API + MaaS Proxy (axum, embedded)      │
 │  /gremlin  |  /vertices  |  /edges  |  /documents  |  /search │
 │  /maas/openai/v1/models | /maas/openai/v1/chat/completions   │
-│  /settings | /extract  | /graphs                             │
+│  /settings/graph/search | /settings/graph/rank | /settings/llm | /settings/web-search | /web-search/proxy
+│  /settings/tokenizer | /extract  | /graphs                             │
 ├──────────────────────────────────────────────────────────────┤
 │              Graph Engine (token-indexed query)                │
 │  Gremlin pipeline (25 steps)  |  BFS+DFS traversal            │
@@ -135,7 +136,6 @@ Auto-created at `~/.config/bionic-graph/settings.json` if not present. Full refe
     "max_output_tokens": 16384,
     "max_retries": 3
   },
-  "storage": { "data_dir": "data" },
   "cluster": {
     "enabled": false,
     "bind_addr": "0.0.0.0:9090",
@@ -285,10 +285,12 @@ curl localhost:8080/documents/{id}/content
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/health` | System health |
-| `GET/PUT` | `/settings/search` | Search settings (greedy/exact config) |
-| `GET/PUT` | `/settings/rank` | Rank decay config |
+| `GET/PUT` | `/settings/graph/search` | Search settings (greedy/exact config) |
+| `GET/PUT` | `/settings/graph/rank` | Rank decay config |
 | `GET` | `/settings/tokenizer` | Tokenizer custom dictionary config |
 | `POST/DELETE` | `/settings/tokenizer/words` | Add / remove custom tokenizer words |
+| `GET/PUT` | `/settings/web-search` | Web search provider config |
+| `POST` | `/web-search/proxy` | Web search proxy (via backend, avoids CORS) |
 | `POST` | `/documents/:id/extract` | Extract from document by ID |
 | `GET` | `/maas/openai/v1/models` | List models (`provider/model` format) |
 | `POST` | `/maas/openai/v1/chat/completions` | OpenAI-compatible chat proxy (SSE) |
@@ -335,7 +337,7 @@ src/
 ├── lib.rs                     # Library exports
 ├── config/                    # File-based configuration
 │   ├── loader.rs              # JSON load/save with env overrides
-│   └── settings.rs            # Settings structs (server, llm, storage, cluster, search)
+│   └── settings.rs            # Settings structs (server, llm, cluster, web_search, graph)
 ├── storage/                   # Block-based storage engine
 │   ├── types.rs               # Constants, enums, binary layouts
 │   ├── data_file.rs           # 16KB block I/O
