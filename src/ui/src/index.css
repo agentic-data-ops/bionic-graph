@@ -1,0 +1,141 @@
+@import "tailwindcss";
+
+/* ─── Theme Variables ─── */
+:root {
+  --bg-primary: #1a1a1e;
+  --bg-secondary: #1c1c20;
+  --bg-tertiary: #2a2a2e;
+  --bg-hover: #3a3a3e;
+  --text-primary: #e5e5e7;
+  --text-secondary: #86868b;
+  --text-tertiary: #636366;
+  --text-muted: #48484a;
+  --border: #2a2a2e;
+  --accent: #0a84ff;
+  --danger: #ff453a;
+  --success: #30d158;
+  --danger-bg: rgba(255, 69, 58, 0.15);
+  --accent-bg: rgba(10, 132, 255, 0.15);
+  --success-bg: rgba(48, 209, 88, 0.15);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.08);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.14);
+}
+
+.light {
+  --bg-primary: #ffffff;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #eef4fa;
+  --bg-hover: #dee9f3;
+  --text-primary: #1a2332;
+  --text-secondary: #5a6b7d;
+  --text-tertiary: #8a9aa8;
+  --text-muted: #b0bec5;
+  --border: #d5dde6;
+  --accent: #5b9bd5;
+  --danger: #e57373;
+  --success: #81c784;
+  --danger-bg: rgba(229, 115, 115, 0.12);
+  --accent-bg: rgba(91, 155, 213, 0.12);
+  --success-bg: rgba(129, 199, 132, 0.12);
+  --scrollbar-thumb: rgba(0, 0, 0, 0.08);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.14);
+}
+
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+    "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-feature-settings: "kern";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* Scrollbar — subtle Mac-style */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* Selection */
+::selection {
+  background: rgba(10, 132, 255, 0.3);
+}
+
+/* Focus ring */
+*:focus-visible {
+  outline: 2px solid rgba(10, 132, 255, 0.6);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* Allow text selection in messages and property panels */
+.select-text {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* Smooth transitions everywhere */
+* {
+  transition-property: background-color, border-color, color, opacity, box-shadow;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0.25, 0.1, 0.25, 1);
+}
+
+/* Typography scale */
+.text-caption {
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.3);
+}
+
+/* Glass effect */
+.glass {
+  background: rgba(30, 30, 30, 0.72);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+}
+.glass-light {
+  background: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+}
+
+/* Message bubble animation */
+@keyframes message-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.message-enter {
+  animation: message-in 0.2s cubic-bezier(0.25, 0.1, 0.25, 1) both;
+}
+
+/* Pulse dot for streaming */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 0.3; transform: scale(0.8); }
+  50%      { opacity: 1;   transform: scale(1.2); }
+}
+.pulse-dot {
+  animation: pulse-dot 1.2s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.skeleton-loading {
+  background: linear-gradient(90deg, rgba(255,255,255,0.04) 25%, rgba(255,255,255,0.08) 50%, rgba(255,255,255,0.04) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+

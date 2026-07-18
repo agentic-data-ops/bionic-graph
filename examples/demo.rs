@@ -3,55 +3,58 @@
 /// Build graph → neural index → keyword search → graph traversal
 ///
 /// Run: cargo run --example demo
-use bionic_graph::graph::{Graph, PropertyValue, Vertex};
+use bionic_graph::graph::{Graph, PropertyValue};
 use bionic_graph::neuron::{NeuralNetwork, Neuron};
 
 fn main() {
     println!("╔══════════════════════════════════════════╗");
     println!("║   Bionic-Graph Demo                      ║");
-    println!("║   Knowledge Graph + Bio-Neural Index        ║");
+    println!("║   Knowledge Graph + Bio-Neural Index     ║");
     println!("╚══════════════════════════════════════════╝");
     println!();
 
     // ── Step 1: Build graph ─────────────────────────────
+    // Note: In production, use GraphManager::add_vertex_to_graph()
+    // which auto-creates neurons and writes to WAL.
+    // This demo uses Graph directly for simplicity.
     println!("📊 Step 1: Building knowledge graph...");
     let mut graph = Graph::new();
 
-    // Create person vertices
+    // Create person vertices (name is a built-in field, not a property)
     let alice = graph.create_vertex(vec!["person".to_string(), "engineer".to_string()]);
     let bob = graph.create_vertex(vec!["person".to_string(), "scientist".to_string()]);
     let carol = graph.create_vertex(vec!["person".to_string(), "designer".to_string()]);
 
-    // Set properties
+    // Set built-in name + custom properties
     if let Some(v) = graph.get_vertex_mut(alice) {
-        v.properties.insert("name".to_string(), PropertyValue::String("Alice".to_string()));
+        v.name = "Alice".to_string();
         v.properties.insert("age".to_string(), PropertyValue::Integer(30));
     }
     if let Some(v) = graph.get_vertex_mut(bob) {
-        v.properties.insert("name".to_string(), PropertyValue::String("Bob".to_string()));
+        v.name = "Bob".to_string();
         v.properties.insert("age".to_string(), PropertyValue::Integer(35));
     }
     if let Some(v) = graph.get_vertex_mut(carol) {
-        v.properties.insert("name".to_string(), PropertyValue::String("Carol".to_string()));
+        v.name = "Carol".to_string();
         v.properties.insert("age".to_string(), PropertyValue::Integer(28));
     }
 
-    // Create company vertex
+    // Create company vertices
     let acme = graph.create_vertex(vec!["company".to_string(), "tech".to_string()]);
     let globex = graph.create_vertex(vec!["company".to_string()]);
     if let Some(v) = graph.get_vertex_mut(acme) {
-        v.properties.insert("name".to_string(), PropertyValue::String("Acme Corp".to_string()));
+        v.name = "Acme Corp".to_string();
         v.properties.insert("industry".to_string(), PropertyValue::String("AI".to_string()));
     }
     if let Some(v) = graph.get_vertex_mut(globex) {
-        v.properties.insert("name".to_string(), PropertyValue::String("Globex Inc".to_string()));
+        v.name = "Globex Inc".to_string();
         v.properties.insert("industry".to_string(), PropertyValue::String("Robotics".to_string()));
     }
 
     // Create project vertex
     let project_x = graph.create_vertex(vec!["project".to_string()]);
     if let Some(v) = graph.get_vertex_mut(project_x) {
-        v.properties.insert("name".to_string(), PropertyValue::String("Project X".to_string()));
+        v.name = "Project X".to_string();
         v.properties.insert("budget".to_string(), PropertyValue::Integer(1_000_000));
     }
 
@@ -107,16 +110,12 @@ fn main() {
 
     // ── Step 3: Neural search ────────────────────────────
     println!("🔍 Step 3: Neural search — query: 'ai engineering'");
-    let (vertices, _edges, fired, _hot, ticks) = nn.search("ai engineering");
+    let (vertices, _edges, fired, _hot, ticks) = nn.search("ai engineering", None);
     println!("   Fired {} neurons across {} ticks", fired.len(), ticks);
     println!("   Found {} vertices via spreading activation:", vertices.len());
     for (vid, score) in &vertices {
         if let Some(v) = graph.get_vertex(*vid) {
-            let name = v.properties.get("name")
-                .and_then(|p| {
-                    if let PropertyValue::String(s) = p { Some(s.clone()) } else { None }
-                })
-                .unwrap_or_else(|| format!("<vertex {}>", vid));
+            let name = if !v.name.is_empty() { &v.name } else { "<unnamed>" };
             println!("     - {} (vertex {}, relevance score: {})", name, vid, score);
         }
     }
@@ -132,11 +131,7 @@ fn main() {
 
         for step in bfs {
             if let Some(v) = graph.get_vertex(step.vertex) {
-                let name = v.properties.get("name")
-                    .and_then(|p| {
-                        if let PropertyValue::String(s) = p { Some(s.clone()) } else { None }
-                    })
-                    .unwrap_or_else(|| format!("<v{}>", step.vertex));
+                let name = if !v.name.is_empty() { &v.name } else { "<unnamed>" };
                 let labels = v.labels.join(", ");
                 println!("     depth {}: {} [{}]", step.depth, name, labels);
             }
@@ -150,7 +145,7 @@ fn main() {
     
     // Simulate repeated co-firing
     for _ in 0..5 {
-        let (_v, _e, fired, _hot, _) = nn.search("ai engineering");
+        let (_v, _e, fired, _hot, _) = nn.search("ai engineering", None);
         // Hebbian learning happens inside search()
         println!("   Co-firing: {:?} → synapse strengthens", fired);
     }

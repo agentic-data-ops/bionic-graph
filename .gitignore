@@ -1,7 +1,10 @@
-debug
-target
-**/*.rs.bk
-*.pdb
-**/mutants.out*/
 data/
-.reasonix/truncated-results/
+debug
+**/mutants.out*/
+*.pdb
+__pycache__
+/.reasonix/truncated-results/
+**/*.rs.bk
+.SKILL.md.swp
+target
+.venv

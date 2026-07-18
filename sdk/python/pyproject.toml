@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bionic-graph-sdk"
+version = "0.1.0"
+description = "Python SDK for Bionic-Graph knowledge graph engine"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.27",
+    "pydantic>=2.0",
+    "click>=8.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/agentic-data-ops/bionic-graph"
+
+[project.scripts]
+bgcli = "bionic_graph.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["bionic_graph*"]

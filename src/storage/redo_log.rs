@@ -1,458 +1,406 @@
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+//! Write-Ahead Log (WAL) for crash-safe persistence.
+//!
+//! Every vertex/edge/token mutation is appended to a redo log file before
+//! the in-memory state is updated. On restart, uncheckpointed entries are
+//! replayed to restore the graph to its pre-crash state.
+//!
+//! # Write path (new)
+//!
+//! A background writer thread receives log entries through a FIFO channel,
+//! accumulates them into batches (up to `BATCH_SIZE`), and writes each batch
+//! to the WAL file in a single `write_all` + `fsync` call. Callers wait on a
+//! condition variable until the batch is durably committed.
+//!
+//! # File format
+//!
+//! Files are named `redo_<yyyymmddHHMMss>` and are stored in the graph data
+//! directory. Each file contains a sequence of entries:
+//!
+//! | Field | Type | Size |
+//! |-------|------|------|
+//! | op_type | u8 | 1 |
+//! | op_id | u64 | 8 |
+//! | data_len | u32 | 4 |
+//! | data | bytes | data_len |
+//! | crc32 | u32 | 4 |
+//!
+//! Total per entry: 17 + data_len bytes.
+
+use std::{
+    fs::{self, File, OpenOptions},
+    io::{Read, Write},
+    path::{Path, PathBuf},
+    sync::{
+        mpsc::{self, Receiver, Sender, TryRecvError},
+        Arc, Condvar, Mutex,
+    },
+    thread::{self, JoinHandle},
+    time::{Duration, Instant},
+};
 
 use serde::{Deserialize, Serialize};
 
-use super::subgraph::SubgraphId;
+use crate::storage::types::{OpType, StorageError, StorageResult};
 
-// ─── Log Entry Types ─────────────────────────────────────────────
+/// Default rotation threshold: 64 MB.
+pub const ROTATION_THRESHOLD: u64 = 64 * 1024 * 1024;
+/// Default batch size: accumulate up to 128 entries before writing.
+pub const DEFAULT_BATCH_SIZE: usize = 128;
+/// Maximum time the writer waits for more entries before flushing a partial batch.
+const BATCH_FLUSH_INTERVAL: Duration = Duration::from_millis(10);
+/// CRC32 of an entry covers: op_type (1) + op_id (8) + data_len (4) + data.
+const CRC_HEADER_LEN: usize = 1 + 8 + 4;
 
-pub const ENTRY_ADD_VERTEX: u8 = 0x01;
-pub const ENTRY_ADD_EDGE: u8 = 0x02;
-pub const ENTRY_REMOVE_VERTEX: u8 = 0x03;
-pub const ENTRY_REMOVE_EDGE: u8 = 0x04;
-pub const ENTRY_UPDATE_PROPERTY: u8 = 0x05;
-pub const ENTRY_ADD_CROSS_EDGE: u8 = 0x06;
-pub const ENTRY_CHECKPOINT: u8 = 0xFF;
+// ── Data types ───────────────────────────────────────────────────────────────
 
-// ─── Operation Payloads ──────────────────────────────────────────
-
-/// Payload for ADD_VERTEX.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AddVertexPayload {
-    pub subgraph_id: SubgraphId,
-    pub vertex_id: u64,
-    pub labels: Vec<String>,
-}
-
-/// Payload for ADD_EDGE.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AddEdgePayload {
-    pub subgraph_id: SubgraphId,
-    pub edge_id: u64,
-    pub label: String,
-    pub source: u64,
-    pub target: u64,
-}
-
-/// Payload for REMOVE_VERTEX.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RemoveVertexPayload {
-    pub subgraph_id: SubgraphId,
-    pub vertex_id: u64,
-}
-
-/// Payload for REMOVE_EDGE.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RemoveEdgePayload {
-    pub subgraph_id: SubgraphId,
-    pub edge_id: u64,
-}
-
-/// Payload for UPDATE_PROPERTY.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UpdatePropertyPayload {
-    pub subgraph_id: SubgraphId,
-    pub element_id: u64,
-    pub is_vertex: bool,
-    pub key: String,
-    pub value: Vec<u8>, // serialized PropertyValue
-}
-
-/// Payload for ADD_CROSS_EDGE.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AddCrossEdgePayload {
-    pub subgraph_id: SubgraphId,
-    pub edge_id: u64,
-    pub label: String,
-    pub source: u64,
-    pub target_subgraph: SubgraphId,
-    pub target_vertex: u64,
-}
-
-/// Checkpoint payload (just timestamp + seq at checkpoint time).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CheckpointPayload {
-    pub timestamp_us: i64,
-    pub seq_at_checkpoint: u64,
-}
-
-/// A decoded redo log entry.
-#[derive(Debug, Clone)]
-pub struct LogEntry {
-    pub entry_type: u8,
-    pub sequence: u64,
+/// A single redo log entry read from disk.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RedoLogEntry {
+    pub op_type: OpType,
+    pub op_id: u64,
     pub data: Vec<u8>,
 }
 
-/// All possible redo operations.
-#[derive(Debug, Clone)]
-pub enum RedoOperation {
-    AddVertex(AddVertexPayload),
-    AddEdge(AddEdgePayload),
-    RemoveVertex(RemoveVertexPayload),
-    RemoveEdge(RemoveEdgePayload),
-    UpdateProperty(UpdatePropertyPayload),
-    AddCrossEdge(AddCrossEdgePayload),
+/// Shared state between the background writer and callers.
+struct WriteState {
+    /// Incremented after each batch is durably committed to disk.
+    committed_epoch: u64,
+    /// If set, the writer encountered a fatal error.
+    error: Option<StorageError>,
 }
 
-impl RedoOperation {
-    pub fn entry_type(&self) -> u8 {
-        match self {
-            Self::AddVertex(_) => ENTRY_ADD_VERTEX,
-            Self::AddEdge(_) => ENTRY_ADD_EDGE,
-            Self::RemoveVertex(_) => ENTRY_REMOVE_VERTEX,
-            Self::RemoveEdge(_) => ENTRY_REMOVE_EDGE,
-            Self::UpdateProperty(_) => ENTRY_UPDATE_PROPERTY,
-            Self::AddCrossEdge(_) => ENTRY_ADD_CROSS_EDGE,
-        }
-    }
-
-    fn serialize_payload(&self) -> Vec<u8> {
-        match self {
-            Self::AddVertex(p) => bincode::serialize(p).unwrap(),
-            Self::AddEdge(p) => bincode::serialize(p).unwrap(),
-            Self::RemoveVertex(p) => bincode::serialize(p).unwrap(),
-            Self::RemoveEdge(p) => bincode::serialize(p).unwrap(),
-            Self::UpdateProperty(p) => bincode::serialize(p).unwrap(),
-            Self::AddCrossEdge(p) => bincode::serialize(p).unwrap(),
-        }
-    }
+/// Messages sent from the API to the background writer.
+enum WriterMessage {
+    /// A data entry to be written (pre-encoded binary bytes).
+    Entry(Vec<u8>),
+    /// Flush any pending batch and ensure all prior entries are durable.
+    Flush {
+        done: Arc<(Mutex<bool>, Condvar)>,
+    },
+    /// Close the current file, remove all old files, create a new WAL file.
+    Renew {
+        done: Arc<(Mutex<bool>, Condvar)>,
+    },
+    /// Perform a full checkpoint: flush dirty blocks, sync WAL, remove all
+    /// old files, create a new WAL file.
+    Checkpoint {
+        flush_fn: Box<dyn FnOnce() -> StorageResult<()> + Send>,
+        done: Arc<(Mutex<bool>, Condvar)>,
+    },
+    /// Shut down the writer thread.
+    Shutdown,
 }
 
-// ─── RedoLog ─────────────────────────────────────────────────────
+// ── RedoLog ─────────────────────────────────────────────────────────────────
 
-/// Append-only Write-Ahead Log for crash recovery.
-///
-/// Every mutation is written here **before** being applied to the cache.
-/// On crash recovery, we replay entries after the last checkpoint.
+/// WAL manager with FIFO queue, batched writer, rotation, and replay.
 pub struct RedoLog {
-    file: Option<std::fs::File>,
-    path: PathBuf,
-    /// Monotonic sequence number (increases per entry).
-    sequence: u64,
-    /// Sequence number at the last checkpoint.
-    last_checkpoint_seq: u64,
-    /// Total bytes written since last checkpoint (for triggering new checkpoints).
-    bytes_since_checkpoint: u64,
-    /// Entries written since last checkpoint.
-    entries_since_checkpoint: u64,
+    dir: PathBuf,
+    /// Channel to send messages to the background writer.
+    writer_tx: Sender<WriterMessage>,
+    /// Shared state for epoch-based waiting.
+    state: Arc<(Mutex<WriteState>, Condvar)>,
+    /// Background writer thread handle.
+    handle: Option<JoinHandle<()>>,
+    /// File size threshold for rotation (bytes).
+    rotation_threshold: u64,
 }
 
 impl RedoLog {
-    /// Open (or create) the redo log file at `path`.
-    pub fn open(path: impl Into<PathBuf>) -> std::io::Result<Self> {
-        let path: PathBuf = path.into();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
+    /// Open/create redo logs in `dir` and start the background writer.
+    ///
+    /// If there is an existing redo log file, it is opened for appending.
+    /// Otherwise a new file is created.
+    pub fn open(dir: &Path) -> StorageResult<Self> {
+        Self::open_with_config(dir, ROTATION_THRESHOLD, None)
+    }
 
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .read(true)
-            .open(&path)?;
+    /// Open with a custom rotation threshold and max age.
+    pub fn open_with_config(
+        dir: &Path,
+        rotation_threshold: u64,
+        rotation_max_age_secs: Option<u64>,
+    ) -> StorageResult<Self> {
+        fs::create_dir_all(dir)?;
+
+        let (name, path, file, size) = find_latest_or_create(dir)?;
+        let writer = RedoLogWriter {
+            file,
+            name,
+            path: path.clone(),
+            size,
+            created_at: Instant::now(),
+        };
+
+        // Channel for FIFO queue.
+        let (tx, rx) = mpsc::channel::<WriterMessage>();
+
+        // Shared state for epoch-based waiting.
+        let state = Arc::new((
+            Mutex::new(WriteState {
+                committed_epoch: 0,
+                error: None,
+            }),
+            Condvar::new(),
+        ));
+
+        let dir_buf = dir.to_path_buf();
+        let state_clone = state.clone();
+
+        let handle = thread::Builder::new()
+            .name("bgraph-wal-writer".into())
+            .spawn(move || {
+                writer_main_loop(rx, state_clone, dir_buf, rotation_threshold, rotation_max_age_secs, writer);
+            })
+            .map_err(|e| StorageError::Other(format!("failed to spawn WAL writer thread: {e}")))?;
 
         Ok(Self {
-            file: Some(file),
-            path,
-            sequence: 0,
-            last_checkpoint_seq: 0,
-            bytes_since_checkpoint: 0,
-            entries_since_checkpoint: 0,
+            dir: dir.to_path_buf(),
+            writer_tx: tx,
+            state,
+            handle: Some(handle),
+            rotation_threshold,
         })
     }
 
-    /// Append an operation to the log (WAL write + fsync).
-    pub fn append(&mut self, op: &RedoOperation) -> std::io::Result<u64> {
-        let seq = self.sequence;
-        self.sequence += 1;
+    /// Encode a single log entry into its binary representation.
+    fn encode_entry(&self, op_type: OpType, op_id: u64, data: &[u8]) -> Vec<u8> {
+        let entry_size = (1 + 8 + 4 + data.len() + 4) as usize; // crc32 at end
+        let mut buf = Vec::with_capacity(entry_size);
 
-        let payload = op.serialize_payload();
-        let entry_bytes = encode_entry(op.entry_type(), seq, &payload);
+        // 1. op_type
+        buf.push(op_type as u8);
+        // 2. op_id (little-endian)
+        buf.extend_from_slice(&op_id.to_le_bytes());
+        // 3. data_len (little-endian)
+        buf.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        // 4. data
+        buf.extend_from_slice(data);
+        // 5. CRC32 of (1+2+3+4)
+        let crc = crc32fast::hash(&buf);
+        buf.extend_from_slice(&crc.to_le_bytes());
 
-        if let Some(ref mut file) = self.file {
-            file.write_all(&entry_bytes)?;
-            file.sync_all()?; // fsync: durability guarantee
-        }
-
-        self.bytes_since_checkpoint += entry_bytes.len() as u64;
-        self.entries_since_checkpoint += 1;
-
-        Ok(seq)
+        buf
     }
 
-    /// Write a CHECKPOINT marker.
+    /// Append an entry to the redo log.
     ///
-    /// After this, entries before the checkpoint can be safely discarded
-    /// (the corresponding dirty subgraphs have been flushed to disk).
-    pub fn checkpoint(&mut self) -> std::io::Result<u64> {
-        let seq = self.sequence;
-        self.sequence += 1;
+    /// The entry is sent to the background writer via the FIFO queue.
+    /// This call blocks until the writer commits the batch containing this
+    /// entry to disk.
+    pub fn append(&self, op_type: OpType, op_id: u64, data: &[u8]) -> StorageResult<()> {
+        let bytes = self.encode_entry(op_type, op_id, data);
 
-        let payload = CheckpointPayload {
-            timestamp_us: chrono::Utc::now().timestamp_micros(),
-            seq_at_checkpoint: seq,
-        };
-        let payload_bytes = bincode::serialize(&payload).unwrap();
-        let entry_bytes = encode_entry(ENTRY_CHECKPOINT, seq, &payload_bytes);
+        // Read the current epoch so we can detect when our batch commits.
+        let epoch = self.state.0.lock().unwrap().committed_epoch;
 
-        if let Some(ref mut file) = self.file {
-            file.write_all(&entry_bytes)?;
-            file.sync_all()?;
+        // Send the entry to the writer.
+        self.writer_tx
+            .send(WriterMessage::Entry(bytes))
+            .map_err(|_| StorageError::Other("WAL writer channel closed".into()))?;
+
+        // Wait until the epoch advances (our entry is durable).
+        let mut guard = self.state.0.lock().unwrap();
+        while guard.committed_epoch == epoch && guard.error.is_none() {
+            guard = self.state.1.wait(guard).unwrap();
         }
 
-        self.last_checkpoint_seq = seq;
-        self.bytes_since_checkpoint = 0;
-        self.entries_since_checkpoint = 0;
+        if let Some(ref err) = guard.error {
+            return Err(err.to_error());
+        }
 
-        // After checkpoint, try to truncate (rotate the log)
-        self.rotate_if_needed()?;
-
-        Ok(seq)
+        Ok(())
     }
 
-    /// Recover by replaying all entries after the last checkpoint.
+    /// Flush any pending batch and ensure all prior entries are durable
+    /// without rotating or removing files.
+    pub fn sync(&self) -> StorageResult<()> {
+        let done = Arc::new((Mutex::new(false), Condvar::new()));
+        let done_clone = done.clone();
+
+        self.writer_tx
+            .send(WriterMessage::Flush { done })
+            .map_err(|_| StorageError::Other("WAL writer channel closed".into()))?;
+
+        // Wait for the flush to complete.
+        let mut guard = done_clone.0.lock().unwrap();
+        while !*guard {
+            guard = done_clone.1.wait(guard).unwrap();
+        }
+
+        // Check for writer errors.
+        {
+            let state = self.state.0.lock().unwrap();
+            if let Some(ref err) = state.error {
+                return Err(err.to_error());
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Close the current WAL file, remove all old redo log files from disk,
+    /// and create a fresh file for a new WAL epoch.
     ///
-    /// Returns the list of entries to replay (in order).
-    pub fn recover(&mut self) -> std::io::Result<Vec<LogEntry>> {
-        let mut all_entries = Vec::new();
-        // None = no checkpoint found in this file (e.g., after rotation)
-        let mut last_checkpoint_pos: Option<usize> = None;
+    /// Called after startup replay to switch from the consumed WAL to a
+    /// clean active file.
+    pub fn renew(&self) -> StorageResult<()> {
+        let done = Arc::new((Mutex::new(false), Condvar::new()));
+        let done_clone = done.clone();
 
-        // Read all existing entries from the log
-        if let Some(ref mut file) = self.file {
-            file.seek(SeekFrom::Start(0))?;
-            let mut buf = Vec::new();
-            file.read_to_end(&mut buf)?;
+        self.writer_tx
+            .send(WriterMessage::Renew { done })
+            .map_err(|_| StorageError::Other("WAL writer channel closed".into()))?;
 
-            let mut pos = 0;
-            while pos + 1 + 8 + 4 + 4 < buf.len() {
-                let entry_type = buf[pos];
-                pos += 1;
+        let mut guard = done_clone.0.lock().unwrap();
+        while !*guard {
+            guard = done_clone.1.wait(guard).unwrap();
+        }
 
-                let seq = u64::from_le_bytes(
-                    buf[pos..pos + 8].try_into().unwrap(),
-                );
-                pos += 8;
+        {
+            let state = self.state.0.lock().unwrap();
+            if let Some(ref err) = state.error {
+                return Err(err.to_error());
+        }
+        }
 
-                let data_len = u32::from_le_bytes(
-                    buf[pos..pos + 4].try_into().unwrap(),
-                ) as usize;
-                pos += 4;
+        Ok(())
+    }
 
-                let stored_crc = u32::from_le_bytes(
-                    buf[pos + data_len..pos + data_len + 4]
-                        .try_into()
-                        .unwrap(),
-                );
+    /// Perform a full checkpoint: flush all dirty blocks to their data files,
+    /// sync the WAL, then remove all old redo logs and create a fresh file.
+    ///
+    /// The `flush_fn` is called from the writer thread to ensure data blocks
+    /// are durable before the WAL is trimmed.
+    pub fn checkpoint<F>(&self, flush_fn: F) -> StorageResult<()>
+    where
+        F: FnOnce() -> StorageResult<()> + Send + 'static,
+    {
+        let done = Arc::new((Mutex::new(false), Condvar::new()));
+        let done_clone = done.clone();
 
-                // Verify CRC
-                let crc_data = &buf[pos - (1 + 8 + 4)..pos + data_len];
-                let actual_crc = crc32fast::hash(crc_data);
-                if actual_crc != stored_crc {
-                    log::warn!("Redo log CRC mismatch at pos {}, stopping", pos);
-                    break;
+        self.writer_tx
+            .send(WriterMessage::Checkpoint {
+                flush_fn: Box::new(flush_fn),
+                done,
+            })
+            .map_err(|_| StorageError::Other("WAL writer channel closed".into()))?;
+
+        let mut guard = done_clone.0.lock().unwrap();
+        while !*guard {
+            guard = done_clone.1.wait(guard).unwrap();
+        }
+
+        {
+            let state = self.state.0.lock().unwrap();
+            if let Some(ref err) = state.error {
+                return Err(err.to_error());
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Stop the background writer thread and wait for it to finish.
+    ///
+    /// This is called during graph shutdown to ensure all pending entries
+    /// are flushed before the process exits.
+    pub fn stop(&mut self) {
+        // Signal shutdown.
+        let _ = self.writer_tx.send(WriterMessage::Shutdown);
+        // Drop the sender so the writer sees channel disconnection.
+        // (We keep a clone for potential sends above, then drain.)
+        self.writer_tx = mpsc::channel::<WriterMessage>().0; // dummy sender
+
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+
+    // ── Static methods (unchanged, no writer interaction) ────────────────
+
+    /// Iterate over all redo log files in order (oldest first) and call
+    /// `callback` for each entry.
+    ///
+    /// This is used at startup to recover state.
+    pub fn replay<F>(dir: &Path, mut callback: F) -> StorageResult<()>
+    where
+        F: FnMut(RedoLogEntry) -> StorageResult<()>,
+    {
+        let mut files = list_redo_files(dir);
+        files.sort();
+
+        for fname in &files {
+            let path = dir.join(fname);
+            let mut file = File::open(&path)?;
+            let mut seq: u64 = 0;
+
+            loop {
+                // Read header: op_type (1) + op_id (8) + data_len (4) = 13 bytes.
+                let mut header = [0u8; 13];
+                match file.read_exact(&mut header) {
+                    Ok(_) => {}
+                    Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                    Err(e) => return Err(e.into()),
                 }
 
-                let data = buf[pos..pos + data_len].to_vec();
-                pos += data_len + 4; // skip data + crc
+                let op_type_byte = header[0];
+                let op_id = u64::from_le_bytes(header[1..9].try_into().unwrap());
+                let data_len = u32::from_le_bytes(header[9..13].try_into().unwrap()) as usize;
 
-                let entry = LogEntry {
-                    entry_type,
-                    sequence: seq,
+                // Read data.
+                let mut data = vec![0u8; data_len];
+                file.read_exact(&mut data)?;
+
+                // Read CRC32.
+                let mut crc_bytes = [0u8; 4];
+                file.read_exact(&mut crc_bytes)?;
+                let stored_crc = u32::from_le_bytes(crc_bytes);
+
+                // Verify CRC32.
+                let mut crc_buf = Vec::with_capacity(CRC_HEADER_LEN + data_len);
+                crc_buf.push(op_type_byte);
+                crc_buf.extend_from_slice(&op_id.to_le_bytes());
+                crc_buf.extend_from_slice(&(data_len as u32).to_le_bytes());
+                crc_buf.extend_from_slice(&data);
+                let computed_crc = crc32fast::hash(&crc_buf);
+
+                if stored_crc != computed_crc {
+                    return Err(StorageError::RedoLogReplay {
+                        seq,
+                        message: format!(
+                            "CRC mismatch: stored={:#x}, computed={:#x}",
+                            stored_crc, computed_crc
+                        ),
+                    });
+                }
+
+                let op_type = OpType::try_from(op_type_byte).map_err(|_| {
+                    StorageError::RedoLogReplay {
+                        seq,
+                        message: format!("unknown op_type byte: {:#x}", op_type_byte),
+                    }
+                })?;
+
+                callback(RedoLogEntry {
+                    op_type,
+                    op_id,
                     data,
-                };
+                })?;
 
-                if entry_type == ENTRY_CHECKPOINT {
-                    last_checkpoint_pos = Some(all_entries.len());
-
-                    // Update last_checkpoint_seq from the checkpoint payload
-                    if let Ok(ckpt) = bincode::deserialize::<CheckpointPayload>(&entry.data) {
-                        self.last_checkpoint_seq = ckpt.seq_at_checkpoint;
-                    }
-                }
-
-                all_entries.push(entry);
-            }
-
-            // Update sequence to continue from where we left off
-            if let Some(last) = all_entries.last() {
-                if last.sequence >= self.sequence {
-                    self.sequence = last.sequence + 1;
-                }
+                seq += 1;
             }
         }
-
-        match last_checkpoint_pos {
-            // Checkpoint found: replay only entries after it
-            Some(ckpt_pos) if ckpt_pos + 1 < all_entries.len() => {
-                let to_replay = all_entries[ckpt_pos + 1..].to_vec();
-                log::info!(
-                    "Redo log recovery: {} entries total, {} after last checkpoint, replaying",
-                    all_entries.len(),
-                    to_replay.len()
-                );
-                Ok(to_replay)
-            }
-            // Checkpoint found and it's the last entry: nothing to replay
-            Some(_) => {
-                log::info!("Redo log: all entries before last checkpoint, nothing to replay");
-                Ok(Vec::new())
-            }
-            // No checkpoint found: replay all entries (previous checkpoint rotated)
-            None if !all_entries.is_empty() => {
-                log::info!(
-                    "Redo log: no checkpoint in this file, replaying all {} entries",
-                    all_entries.len()
-                );
-                Ok(all_entries)
-            }
-            // Empty log
-            None => {
-                log::info!("Redo log is empty, no recovery needed");
-                Ok(Vec::new())
-            }
-        }
-    }
-
-    /// Rotate the log file — called after a successful checkpoint.
-    /// Renames the old log so it can be safely deleted.
-    fn rotate_if_needed(&mut self) -> std::io::Result<()> {
-        // Only rotate if we have a meaningful amount of data to discard
-        if self.bytes_since_checkpoint > 0 || self.entries_since_checkpoint > 0 {
-            // Not yet efficient to rotate; the checkpoint marker is in the current file
-            return Ok(());
-        }
-
-        // Rotate: close old file, open new one
-        if let Some(mut file) = self.file.take() {
-            file.flush()?;
-            // Rename: redo.log → redo.{seq}.done
-            let done_path = self.path.with_extension(format!(
-                "{:020}.done",
-                self.last_checkpoint_seq
-            ));
-            let closed_path = self.path.with_extension("closed");
-            // Need to copy since we can't rename an open handle portably
-            // Simpler approach: just close and don't worry about the old file
-            // The old file will be cleaned up on next startup
-            drop(file);
-            let _ = std::fs::rename(&self.path, &done_path);
-        }
-
-        // Open new log file
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .read(true)
-            .open(&self.path)?;
-        self.file = Some(file);
 
         Ok(())
     }
 
-    /// Force-truncate: read back everything before the last checkpoint,
-    /// write it to a temp file, then atomically replace.
-    /// Called on startup after successful recovery.
-    pub fn truncate_after_recovery(&mut self) -> std::io::Result<()> {
-        let mut all_entries = Vec::new();
-
-        // Read all entries
-        if let Some(ref mut file) = self.file {
-            file.seek(SeekFrom::Start(0))?;
-            let mut buf = Vec::new();
-            file.read_to_end(&mut buf)?;
-
-            let mut pos = 0;
-            while pos + 1 + 8 + 4 + 4 < buf.len() {
-                let entry_type = buf[pos];
-                pos += 1;
-                let seq = u64::from_le_bytes(buf[pos..pos + 8].try_into().unwrap());
-                pos += 8;
-                let data_len = u32::from_le_bytes(buf[pos..pos + 4].try_into().unwrap()) as usize;
-                pos += 4;
-
-                // Skip CRC check for speed
-                let data = buf[pos..pos + data_len].to_vec();
-                pos += data_len + 4;
-
-                all_entries.push((entry_type, seq, data));
-            }
-        }
-
-        // Find the last checkpoint
-        let last_ckpt = all_entries.iter().rposition(|(t, _, _)| *t == ENTRY_CHECKPOINT);
-        let keep_from = last_ckpt.unwrap_or(0);
-
-        // Rebuild the log file with only entries from the last checkpoint onward
-        let tmp_path = self.path.with_extension("tmp");
-        let mut tmp = std::fs::File::create(&tmp_path)?;
-
-        for i in keep_from..all_entries.len() {
-            let (entry_type, seq, data) = &all_entries[i];
-            let bytes = encode_entry(*entry_type, *seq, data);
-            tmp.write_all(&bytes)?;
-        }
-        tmp.sync_all()?;
-        drop(tmp);
-
-        // Atomic replace
-        std::fs::rename(&tmp_path, &self.path)?;
-
-        // Re-open the file
-        let file = std::fs::OpenOptions::new()
-            .append(true)
-            .read(true)
-            .open(&self.path)?;
-        self.file = Some(file);
-
-        log::info!(
-            "Redo log truncated: kept {} entries (from checkpoint to end)",
-            all_entries.len() - keep_from
-        );
-
-        Ok(())
-    }
-
-    /// Clean up old .done log files.
-    pub fn clean_old_logs(&self) -> std::io::Result<()> {
-        if let Some(parent) = self.path.parent() {
-            let stem = self.path.file_stem().unwrap_or_default();
-            for entry in std::fs::read_dir(parent)? {
-                let entry = entry?;
-                let path = entry.path();
-                if let Some(ext) = path.extension() {
-                    if ext == "done" && path.file_stem() == Some(stem) {
-                        let _ = std::fs::remove_file(&path);
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Get the current sequence number.
-    pub fn sequence(&self) -> u64 {
-        self.sequence
-    }
-
-    /// Get the sequence at the last checkpoint.
-    pub fn last_checkpoint_seq(&self) -> u64 {
-        self.last_checkpoint_seq
-    }
-
-    /// Check whether a checkpoint is recommended based on
-    /// the number of entries written.
-    pub fn should_checkpoint(&self, max_entries: u64) -> bool {
-        self.entries_since_checkpoint >= max_entries
-    }
-
-    /// Close the log file.
-    pub fn close(&mut self) -> std::io::Result<()> {
-        if let Some(mut file) = self.file.take() {
-            file.flush()?;
-            file.sync_all()?;
+    /// Remove all redo log files from disk (after a successful checkpoint).
+    pub fn remove_all(dir: &Path) -> StorageResult<()> {
+        let files = list_redo_files(dir);
+        for fname in &files {
+            let path = dir.join(fname);
+            let _ = fs::remove_file(&path);
         }
         Ok(())
     }
@@ -460,280 +408,411 @@ impl RedoLog {
 
 impl Drop for RedoLog {
     fn drop(&mut self) {
-        let _ = self.close();
+        self.stop();
     }
 }
 
-// ─── Binary Encoding ─────────────────────────────────────────────
+// ── Background writer ───────────────────────────────────────────────────────
 
-/// Encode a single log entry into bytes:
-/// [type(1)] [seq(8)] [data_len(4)] [data...] [crc32(4)]
-fn encode_entry(entry_type: u8, seq: u64, data: &[u8]) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(1 + 8 + 4 + data.len() + 4);
-    buf.push(entry_type);
-    buf.extend_from_slice(&seq.to_le_bytes());
-    buf.extend_from_slice(&(data.len() as u32).to_le_bytes());
-    buf.extend_from_slice(data);
-
-    // CRC covers everything from type through data
-    let crc = crc32fast::hash(&buf);
-    buf.extend_from_slice(&crc.to_le_bytes());
-    buf
+/// Internal writer for a single redo log file.
+struct RedoLogWriter {
+    file: File,
+    /// Base name (e.g. "redo_20250101120000").
+    name: String,
+    /// Path of the current file.
+    path: PathBuf,
+    /// Current file size in bytes.
+    size: u64,
+    /// When this file was created (for time-based rotation).
+    created_at: Instant,
 }
 
-// ─── Decoding (for debugging / inspection) ───────────────────────
+/// Main loop of the background WAL writer thread.
+///
+/// Receives entries from the FIFO channel, accumulates batches, and writes
+/// them to the WAL file in a single `write_all + fsync` call.
+fn writer_main_loop(
+    rx: Receiver<WriterMessage>,
+    state: Arc<(Mutex<WriteState>, Condvar)>,
+    dir: PathBuf,
+    rotation_threshold: u64,
+    rotation_max_age_secs: Option<u64>,
+    mut writer: RedoLogWriter,
+) {
+    let mut batch: Vec<Vec<u8>> = Vec::with_capacity(DEFAULT_BATCH_SIZE);
+    let mut checkpoint_seq: u64 = 0;
 
-/// Decode a log entry from raw bytes. Returns None if truncated or invalid.
-pub fn decode_entry(data: &[u8]) -> Option<LogEntry> {
-    if data.len() < 1 + 8 + 4 + 4 {
-        return None;
+    // ── Main receive loop ────────────────────────────────────────────────
+    loop {
+        // Wait for the first message.
+        let msg = match rx.recv() {
+            Ok(m) => m,
+            Err(_) => break, // Channel closed, shutdown.
+        };
+
+        match msg {
+            WriterMessage::Entry(bytes) => {
+                batch.push(bytes);
+
+                // Try to collect more entries up to batch size.
+                let deadline = Instant::now() + BATCH_FLUSH_INTERVAL;
+                while batch.len() < DEFAULT_BATCH_SIZE && Instant::now() < deadline {
+                    match rx.try_recv() {
+                        Ok(WriterMessage::Entry(b)) => batch.push(b),
+                        Ok(other) => {
+                            // Control message arrived mid-batch.
+                            // Flush the partial batch, then handle control.
+                            writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, rotation_max_age_secs, &mut checkpoint_seq, &state);
+                            handle_control_msg(other, &mut writer, &dir, &mut checkpoint_seq, &state);
+                            continue;
+                        }
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => {
+                            flush_entries(writer, &mut batch, &dir, rotation_threshold, rotation_max_age_secs, &mut checkpoint_seq, &state);
+                            return;
+                        }
+                    }
+                }
+
+                // Flush accumulated batch.
+                writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, rotation_max_age_secs, &mut checkpoint_seq, &state);
+            }
+            WriterMessage::Shutdown => {
+                flush_entries(writer, &mut batch, &dir, rotation_threshold, rotation_max_age_secs, &mut checkpoint_seq, &state);
+                return;
+            }
+            WriterMessage::Flush { done } => {
+                writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, rotation_max_age_secs, &mut checkpoint_seq, &state);
+                let mut guard = done.0.lock().unwrap();
+                *guard = true;
+                done.1.notify_all();
+            }
+            WriterMessage::Renew { done } => {
+                writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, rotation_max_age_secs, &mut checkpoint_seq, &state);
+                let _ = writer.file.sync_all();
+                let files = list_redo_files(&dir);
+                for fname in &files {
+                    let _ = fs::remove_file(dir.join(fname));
+                }
+                match create_new_file(&dir, checkpoint_seq) {
+                    Ok(new_writer) => {
+                        checkpoint_seq += 1;
+                        writer = new_writer;
+                        advance_epoch(&state, None);
+                    }
+                    Err(e) => advance_epoch(&state, Some(e)),
+                }
+                let mut guard = done.0.lock().unwrap();
+                *guard = true;
+                done.1.notify_all();
+            }
+            WriterMessage::Checkpoint { flush_fn, done } => {
+                writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, rotation_max_age_secs, &mut checkpoint_seq, &state);
+                if let Err(e) = flush_fn() {
+                    advance_epoch(&state, Some(e));
+                    let mut guard = done.0.lock().unwrap();
+                    *guard = true;
+                    done.1.notify_all();
+                    return;
+                }
+                let _ = writer.file.sync_all();
+                let files = list_redo_files(&dir);
+                for fname in &files {
+                    let _ = fs::remove_file(dir.join(fname));
+                }
+                match create_new_file(&dir, checkpoint_seq) {
+                    Ok(new_writer) => {
+                        checkpoint_seq += 1;
+                        writer = new_writer;
+                        advance_epoch(&state, None);
+                    }
+                    Err(e) => advance_epoch(&state, Some(e)),
+                }
+                let mut guard = done.0.lock().unwrap();
+                *guard = true;
+                done.1.notify_all();
+            }
+        }
     }
-    let entry_type = data[0];
-    let seq = u64::from_le_bytes(data[1..9].try_into().ok()?);
-    let data_len = u32::from_le_bytes(data[9..13].try_into().ok()?) as usize;
+}
 
-    if data.len() < 13 + data_len + 4 {
-        return None;
+/// Flush accumulated entries to disk, returning (potentially new) writer.
+fn flush_entries(
+    mut writer: RedoLogWriter,
+    batch: &mut Vec<Vec<u8>>,
+    dir: &Path,
+    rotation_threshold: u64,
+    rotation_max_age_secs: Option<u64>,
+    checkpoint_seq: &mut u64,
+    state: &Arc<(Mutex<WriteState>, Condvar)>,
+) -> RedoLogWriter {
+    let result = try_flush_entries(&mut writer, batch, dir, rotation_threshold, rotation_max_age_secs, checkpoint_seq);
+    match result {
+        Ok(()) => {
+            advance_epoch(state, None);
+            batch.clear();
+            writer
+        }
+        Err(e) => {
+            advance_epoch(state, Some(e));
+            writer
+        }
+    }
+}
+
+fn try_flush_entries(
+    writer: &mut RedoLogWriter,
+    batch: &[Vec<u8>],
+    dir: &Path,
+    rotation_threshold: u64,
+    rotation_max_age_secs: Option<u64>,
+    checkpoint_seq: &mut u64,
+) -> Result<(), StorageError> {
+    if batch.is_empty() {
+        return Ok(());
     }
 
-    let stored_crc = u32::from_le_bytes(data[13 + data_len..13 + data_len + 4].try_into().ok()?);
-    let crc_data = &data[..13 + data_len];
-    let actual_crc = crc32fast::hash(crc_data);
-
-    if actual_crc != stored_crc {
-        return None;
+    // Check time-based rotation.
+    if let Some(max_age) = rotation_max_age_secs {
+        if writer.created_at.elapsed() > Duration::from_secs(max_age) {
+            let old_path = writer.path.clone();
+            let new_writer = create_new_file(dir, *checkpoint_seq)?;
+            *checkpoint_seq += 1;
+            writer.file.sync_all()?;
+            let _ = fs::remove_file(&old_path);
+            *writer = new_writer;
+        }
     }
 
-    Some(LogEntry {
-        entry_type,
-        sequence: seq,
-        data: data[13..13 + data_len].to_vec(),
+    // Check size-based rotation.
+    let batch_size: u64 = batch.iter().map(|b| b.len() as u64).sum();
+    if writer.size + batch_size > rotation_threshold {
+        let old_path = writer.path.clone();
+        let new_writer = create_new_file(dir, *checkpoint_seq)?;
+        *checkpoint_seq += 1;
+        writer.file.sync_all()?;
+        let _ = fs::remove_file(&old_path);
+        *writer = new_writer;
+    }
+
+    // Write all entries in one call.
+    for entry_bytes in batch.iter() {
+        writer.file.write_all(entry_bytes)?;
+    }
+    writer.file.sync_all()?;
+    writer.size += batch_size;
+
+    Ok(())
+}
+
+/// Handle control messages (Flush, Renew) that arrive mid-batch.
+fn handle_control_msg(
+    msg: WriterMessage,
+    writer: &mut RedoLogWriter,
+    dir: &Path,
+    checkpoint_seq: &mut u64,
+    state: &Arc<(Mutex<WriteState>, Condvar)>,
+) {
+    match msg {
+        WriterMessage::Renew { done } => {
+            let _ = writer.file.sync_all();
+            let files = list_redo_files(dir);
+            for fname in &files {
+                let _ = fs::remove_file(dir.join(fname));
+            }
+            match create_new_file(dir, *checkpoint_seq) {
+                Ok(new_writer) => {
+                    *checkpoint_seq += 1;
+                    *writer = new_writer;
+                    advance_epoch(state, None);
+                }
+                Err(e) => advance_epoch(state, Some(e)),
+            }
+            let mut guard = done.0.lock().unwrap();
+            *guard = true;
+            done.1.notify_all();
+        }
+        _ => {
+            // Other control messages: just advance epoch and signal done.
+            advance_epoch(state, None);
+            if let WriterMessage::Flush { done } = msg {
+                let mut guard = done.0.lock().unwrap();
+                *guard = true;
+                done.1.notify_all();
+            }
+        }
+    }
+}
+
+fn advance_epoch(state: &Arc<(Mutex<WriteState>, Condvar)>, err: Option<StorageError>) {
+    let mut guard = state.0.lock().unwrap();
+    guard.committed_epoch += 1;
+    guard.error = err;
+    state.1.notify_all();
+}
+
+// ── Private helpers ──────────────────────────────────────────────────────────
+
+/// Find the most recent redo log file in `dir`, or create a new one.
+fn find_latest_or_create(dir: &Path) -> StorageResult<(String, PathBuf, File, u64)> {
+    let mut files = list_redo_files(dir);
+    files.sort();
+
+    if let Some(latest) = files.last() {
+        let path = dir.join(latest);
+        let file = OpenOptions::new().append(true).read(true).open(&path)?;
+        let size = file.metadata()?.len();
+        Ok((latest.clone(), path, file, size))
+    } else {
+        let w = create_new_file(dir, 0)?;
+        Ok((w.name, w.path, w.file, w.size))
+    }
+}
+
+/// Create a brand new redo log file.
+fn create_new_file(dir: &Path, seq: u64) -> StorageResult<RedoLogWriter> {
+    let now = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string();
+    let name = format!("redo_{}_{:06}", now, seq);
+    let path = dir.join(&name);
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .read(true)
+        .open(&path)?;
+    Ok(RedoLogWriter {
+        file,
+        name,
+        path,
+        size: 0,
+        created_at: Instant::now(),
     })
 }
 
-// ─── Tests ───────────────────────────────────────────────────────
+/// List all files in `dir` whose name starts with "redo_".
+fn list_redo_files(dir: &Path) -> Vec<String> {
+    let mut files = Vec::new();
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("redo_") {
+                files.push(name);
+            }
+        }
+    }
+    files
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    fn make_log() -> (RedoLog, tempfile::TempDir) {
+    #[test]
+    fn test_append_and_replay() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("redo.log");
-        let log = RedoLog::open(&path).unwrap();
-        (log, dir)
+        let mut log = RedoLog::open(dir.path()).unwrap();
+
+        log.append(OpType::VertexCreate, 1, b"hello").unwrap();
+        log.append(OpType::EdgeCreate, 2, b"world").unwrap();
+
+        // Stop the writer so the file is closed.
+        log.stop();
+
+        let mut entries = Vec::new();
+        RedoLog::replay(dir.path(), |entry| {
+            entries.push(entry);
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].op_type as u8, OpType::VertexCreate as u8);
+        assert_eq!(entries[0].op_id, 1);
+        assert_eq!(&entries[0].data, b"hello");
+        assert_eq!(entries[1].op_type as u8, OpType::EdgeCreate as u8);
+        assert_eq!(entries[1].op_id, 2);
+        assert_eq!(&entries[1].data, b"world");
     }
 
     #[test]
-    fn test_append_and_recover_empty() {
-        let (mut log, _dir) = make_log();
-        let entries = log.recover().unwrap();
-        assert!(entries.is_empty());
+    fn test_crc_mismatch_detected() {
+        let dir = tempdir().unwrap();
+        let mut log = RedoLog::open(dir.path()).unwrap();
+        log.append(OpType::VertexCreate, 1, b"data").unwrap();
+        log.stop();
+
+        // Corrupt the file.
+        let mut files = list_redo_files(dir.path());
+        files.sort();
+        let path = dir.path().join(&files[0]);
+        let mut f = OpenOptions::new().write(true).open(&path).unwrap();
+        // Corrupt byte 0 (op_type)
+        f.write_all(&[0xFF]).unwrap();
+        drop(f);
+
+        let result = RedoLog::replay(dir.path(), |_| Ok(()));
+        assert!(result.is_err());
     }
 
     #[test]
-    fn test_append_and_recover_single() {
+    fn test_remove_all() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("redo.log");
+        let mut log = RedoLog::open(dir.path()).unwrap();
+        log.append(OpType::VertexCreate, 1, b"x").unwrap();
+        log.stop();
 
-        // Write phase
-        {
-            let mut log = RedoLog::open(&path).unwrap();
-            log.append(&RedoOperation::AddVertex(AddVertexPayload {
-                subgraph_id: 1,
-                vertex_id: 100,
-                labels: vec!["person".to_string()],
-            }))
-            .unwrap();
-            log.checkpoint().unwrap();
-        }
-
-        // Read phase (simulating restart)
-        {
-            let mut log = RedoLog::open(&path).unwrap();
-            let entries = log.recover().unwrap();
-            // Everything is before checkpoint, so nothing to replay
-            assert!(entries.is_empty());
-        }
+        assert!(!list_redo_files(dir.path()).is_empty());
+        RedoLog::remove_all(dir.path()).unwrap();
+        assert!(list_redo_files(dir.path()).is_empty());
     }
 
     #[test]
-    fn test_entries_after_checkpoint_are_replayed() {
+    fn test_batch_ordering() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("redo.log");
+        let mut log = RedoLog::open(dir.path()).unwrap();
 
-        // Write phase
-        {
-            let mut log = RedoLog::open(&path).unwrap();
-            log.append(&RedoOperation::AddVertex(AddVertexPayload {
-                subgraph_id: 1,
-                vertex_id: 1,
-                labels: vec!["before".to_string()],
-            }))
-            .unwrap();
-            log.checkpoint().unwrap();
-            // This entry is after the checkpoint
-            log.append(&RedoOperation::AddVertex(AddVertexPayload {
-                subgraph_id: 1,
-                vertex_id: 2,
-                labels: vec!["after".to_string()],
-            }))
-            .unwrap();
+        // Append multiple entries rapidly — they should land in one batch.
+        for i in 0..10 {
+            log.append(OpType::VertexCreate, i, b"batch-test").unwrap();
         }
+        log.stop();
 
-        // Recovery phase
-        {
-            let mut log = RedoLog::open(&path).unwrap();
-            let entries = log.recover().unwrap();
-            assert_eq!(entries.len(), 1, "Should replay 1 entry after checkpoint");
-            assert_eq!(entries[0].entry_type, ENTRY_ADD_VERTEX);
-        }
-    }
+        let mut entries = Vec::new();
+        RedoLog::replay(dir.path(), |entry| {
+            entries.push(entry);
+            Ok(())
+        })
+        .unwrap();
 
-    #[test]
-    fn test_two_checkpoints_only_replay_after_last() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("redo.log");
-
-        {
-            let mut log = RedoLog::open(&path).unwrap();
-            log.append(&RedoOperation::AddVertex(AddVertexPayload {
-                subgraph_id: 1,
-                vertex_id: 1,
-                labels: vec!["a".to_string()],
-            }))
-            .unwrap();
-            log.checkpoint().unwrap();
-
-            log.append(&RedoOperation::AddVertex(AddVertexPayload {
-                subgraph_id: 1,
-                vertex_id: 2,
-                labels: vec!["b".to_string()],
-            }))
-            .unwrap();
-            log.checkpoint().unwrap();
-
-            log.append(&RedoOperation::AddVertex(AddVertexPayload {
-                subgraph_id: 1,
-                vertex_id: 3,
-                labels: vec!["c".to_string()],
-            }))
-            .unwrap();
-            // No checkpoint after this
-        }
-
-        {
-            let mut log = RedoLog::open(&path).unwrap();
-            let entries = log.recover().unwrap();
-            // Only entry after the LAST checkpoint (vertex 3)
-            assert_eq!(entries.len(), 1);
+        assert_eq!(entries.len(), 10);
+        for (i, entry) in entries.iter().enumerate() {
+            assert_eq!(entry.op_id, i as u64);
+            assert_eq!(entry.op_type as u8, OpType::VertexCreate as u8);
         }
     }
 
     #[test]
-    fn test_crc_detects_corruption() {
+    fn test_sync_flushes_batch() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("redo.log");
+        let mut log = RedoLog::open(dir.path()).unwrap();
 
-        {
-            let mut log = RedoLog::open(&path).unwrap();
-            log.append(&RedoOperation::AddVertex(AddVertexPayload {
-                subgraph_id: 1,
-                vertex_id: 1,
-                labels: vec!["test".to_string()],
-            }))
-            .unwrap();
-        }
+        log.append(OpType::VertexCreate, 1, b"data").unwrap();
 
-        // Corrupt the file
-        {
-            let mut data = std::fs::read(&path).unwrap();
-            if data.len() > 20 {
-                data[15] ^= 0xFF; // flip some bits
-            }
-            std::fs::write(&path, &data).unwrap();
-        }
+        // sync should ensure the entry is durable.
+        log.sync().unwrap();
 
-        {
-            let mut log = RedoLog::open(&path).unwrap();
-            let entries = log.recover().unwrap();
-            // Should gracefully handle corruption (CRC mismatch stops)
-            assert!(entries.is_empty() || entries.len() <= 1);
-        }
-    }
+        // Now we can stop and replay.
+        log.stop();
 
-    #[test]
-    fn test_checkpoint_rotation() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("redo.log");
+        let mut entries = Vec::new();
+        RedoLog::replay(dir.path(), |entry| {
+            entries.push(entry);
+            Ok(())
+        })
+        .unwrap();
 
-        {
-            let mut log = RedoLog::open(&path).unwrap();
-            log.append(&RedoOperation::AddVertex(AddVertexPayload {
-                subgraph_id: 1,
-                vertex_id: 1,
-                labels: vec!["rotate_test".to_string()],
-            }))
-            .unwrap();
-            log.checkpoint().unwrap();
-        }
-
-        // After checkpoint + drop, data is in the rotated .done file
-        // The main log file may be empty after rotation
-        let done_name = format!("redo.{:020}.done", 1);
-        let done_path = dir.path().join(&done_name);
-        assert!(done_path.exists(), "Done file should exist after checkpoint rotation");
-        let metadata = std::fs::metadata(&done_path).unwrap();
-        assert!(metadata.len() > 0, "Done file should have content");
-    }
-
-    #[test]
-    fn test_append_after_recovery() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("redo.log");
-
-        // Write, checkpoint, write more
-        {
-            let mut log = RedoLog::open(&path).unwrap();
-            log.append(&RedoOperation::AddVertex(AddVertexPayload {
-                subgraph_id: 1,
-                vertex_id: 1,
-                labels: vec!["first".to_string()],
-            }))
-            .unwrap();
-            log.checkpoint().unwrap();
-            log.append(&RedoOperation::AddVertex(AddVertexPayload {
-                subgraph_id: 1,
-                vertex_id: 2,
-                labels: vec!["second".to_string()],
-            }))
-            .unwrap();
-        }
-
-        // Recover, then append more
-        {
-            let mut log = RedoLog::open(&path).unwrap();
-            let replay = log.recover().unwrap();
-            assert_eq!(replay.len(), 1);
-
-            // After recovery, append new entries
-            log.append(&RedoOperation::AddVertex(AddVertexPayload {
-                subgraph_id: 1,
-                vertex_id: 3,
-                labels: vec!["third".to_string()],
-            }))
-            .unwrap();
-        }
-
-        // Verify: should have checkpoint + second + third entries now
-        {
-            let mut log = RedoLog::open(&path).unwrap();
-            let replay = log.recover().unwrap();
-            // After last checkpoint: second, third (and checkpoint itself is before)
-            assert_eq!(replay.len(), 2);
-            assert_eq!(replay[0].sequence, 2); // second
-            assert_eq!(replay[1].sequence, 3); // third
-        }
+        assert_eq!(entries.len(), 1);
     }
 }

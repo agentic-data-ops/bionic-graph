@@ -1,16 +1,94 @@
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Parser;
-use bionic_graph::config::load_or_create_settings;
+use bionic_graph::cluster::node::NodeRegistry;
+use bionic_graph::cluster::server::{build_cluster_router, ClusterAppState};
+use bionic_graph::config::load_or_create_settings_from;
+use bionic_graph::config::NodeRole;
+use bionic_graph::gremlin::build_router as build_new_router;
 use bionic_graph::graph_manager::GraphManager;
-use bionic_graph::memory_system::MemorySystem;
 
-/// Bionic-Graph: Ultral fast graph indexed with bionic neural net.
+/// Check whether a process with the given PID is alive on Unix.
 ///
-/// A low-cost AI memory system that caches knowledge graph structure in a
-/// spreading-activation neural network for fast keyword-based retrieval.
-/// Provides a Gremlin-compatible query interface via REST API.
+/// Uses `/proc/<pid>/status` to verify the process exists and is not a zombie.
+#[cfg(unix)]
+fn is_process_running(pid: u32) -> bool {
+    let proc_path = std::path::PathBuf::from(format!("/proc/{}", pid));
+    if !proc_path.exists() {
+        return false;
+    }
+    // Also check it's not a zombie process.
+    if let Ok(status) = std::fs::read_to_string(proc_path.join("status")) {
+        for line in status.lines() {
+            if line.starts_with("State:") && line.contains('Z') {
+                return false; // zombie — treat as dead
+            }
+        }
+    }
+    true
+}
+
+/// Fallback for non-Unix: assume stale (allow startup).
+#[cfg(not(unix))]
+fn is_process_running(_pid: u32) -> bool {
+    false
+}
+
+/// Create a PID file at `<data_dir>/lock.pid` to prevent multiple instances.
+///
+/// If the file already exists and the recorded process is still alive, the
+/// function returns an error and the caller should exit. Otherwise the stale
+/// file is overwritten with the current process ID.
+fn create_pid_file(data_dir: &std::path::Path) -> Result<(), String> {
+    std::fs::create_dir_all(data_dir)
+        .map_err(|e| format!("Failed to create data directory '{}': {}", data_dir.display(), e))?;
+
+    let pid_path = data_dir.join("lock.pid");
+
+    if pid_path.exists() {
+        match std::fs::read_to_string(&pid_path) {
+            Ok(content) => {
+                let trimmed = content.trim();
+                if let Ok(pid) = trimmed.parse::<u32>() {
+                    if is_process_running(pid) {
+                        return Err(format!(
+                            "Another instance (PID {}) is already running. \
+                             Data directory: {}. Exiting.",
+                            pid,
+                            data_dir.display()
+                        ));
+                    }
+                    log::warn!("Found stale lock.pid (PID {}). Overwriting.", pid);
+                } else {
+                    log::warn!(
+                        "Invalid content in lock.pid: '{}'. Overwriting.",
+                        trimmed
+                    );
+                }
+            }
+            Err(e) => {
+                log::warn!("Failed to read lock.pid ({}). Overwriting.", e);
+            }
+        }
+    }
+
+    let pid = std::process::id();
+    std::fs::write(&pid_path, pid.to_string())
+        .map_err(|e| format!("Failed to write lock.pid: {}", e))?;
+
+    log::info!("Lock file created at {} (PID {})", pid_path.display(), pid);
+    Ok(())
+}
+
+/// Bionic-Graph: Block-based knowledge graph with token-indexed search.
+///
+/// A high-performance graph database with:
+/// - Block-based storage engine (16 KB blocks, LRU cache, WAL)
+/// - Token-indexed search (replaces old neuron activation network)
+/// - Gremlin-compatible query pipeline
+/// - MaaS proxy for LLM integration
 #[derive(Parser, Debug)]
 #[command(name = "bionic-graph", version, about)]
 struct Args {
@@ -30,31 +108,23 @@ struct Args {
     #[arg(long = "config")]
     config: Option<String>,
 
-    /// Auto-index vertices by label on startup
-    #[arg(short = 'i', long = "auto-index", default_value_t = true)]
-    auto_index: bool,
-
-    /// Disable auto-save background thread
-    #[arg(long = "no-auto-save")]
-    no_auto_save: bool,
+    /// Path to tokenizer custom dictionary config (default: ~/.config/bionic-graph/tokenizer.json)
+    #[arg(long = "tokenizer-config")]
+    tokenizer_config: Option<String>,
 }
 
 #[tokio::main]
 async fn main() {
-    // Initialize logger
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("info"),
     )
     .init();
 
     let args = Args::parse();
+    let mut settings = load_or_create_settings_from(args.config.map(std::path::PathBuf::from));
 
-    // Load settings from config file (or create defaults)
-    let mut settings = load_or_create_settings();
-
-    // CLI args override settings
     if let Some(dir) = &args.data_dir {
-        settings.storage.data_dir = dir.clone();
+        settings.graph.storage.data_dir = dir.clone();
     }
     if let Some(h) = &args.host {
         settings.server.host = h.clone();
@@ -63,101 +133,250 @@ async fn main() {
         settings.server.port = p;
     }
 
+    // Acquire process lock: check for existing instance, write PID file.
+    let data_dir_path = std::path::PathBuf::from(&settings.graph.storage.data_dir);
+    if let Err(msg) = create_pid_file(&data_dir_path) {
+        log::error!("{}", msg);
+        eprintln!("{}", msg);
+        std::process::exit(1);
+    }
+
+    // Initialize tokenizer with custom dictionary config.
+    let tokenizer_config = args.tokenizer_config.unwrap_or_else(|| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        format!("{}/.config/bionic-graph/tokenizer.json", home)
+    });
+    bionic_graph::graph::tokenizer::set_config_path(std::path::PathBuf::from(&tokenizer_config));
+
+    // Shared shutdown signal for all servers.
+    let shutdown = Arc::new(tokio::sync::Notify::new());
+
+    // Signal handler task — notifies shutdown on SIGINT / SIGTERM.
+    {
+        let sig = shutdown.clone();
+        tokio::spawn(async move {
+            #[cfg(unix)]
+            {
+                let mut term = tokio::signal::unix::signal(
+                    tokio::signal::unix::SignalKind::terminate(),
+                )
+                .expect("Failed to install SIGTERM handler");
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {},
+                    _ = term.recv() => {},
+                }
+            }
+            #[cfg(not(unix))]
+            tokio::signal::ctrl_c()
+                .await
+                .expect("Failed to install Ctrl+C handler");
+            log::info!("Shutdown signal received — finishing requests...");
+            sig.notify_one();
+        });
+    }
+
     log::info!(
-        "Starting Bionic-Graph — data: {}, listen: {}:{}",
-        settings.storage.data_dir,
+        "Starting Bionic-Graph (new engine) — data: {}, listen: {}:{}",
+        settings.graph.storage.data_dir,
         settings.server.host,
         settings.server.port,
     );
 
-    // Initialize GraphManager (scans/creates graphs under data dir)
-    let graph_manager = GraphManager::open(&settings.storage.data_dir)
-        .expect("Failed to initialize graph manager");
+    // Initialize the new block-based graph manager.
+    let gm = Arc::new(GraphManager::new(data_dir_path.clone()));
 
-    // Auto-index all graphs if requested
-    if args.auto_index {
-        let names = graph_manager.list();
-        for name in &names {
-            if let Some(handle) = graph_manager.get(name) {
-                let mut g = handle.graph.lock().unwrap();
-                // Simple auto-index: create neurons from vertex labels
-                let mut label_groups: std::collections::HashMap<String, Vec<u64>> =
-                    std::collections::HashMap::new();
-                for vid in g.vertex_ids() {
-                    if let Some(v) = g.get_vertex(*vid) {
-                        for label in &v.labels {
-                            label_groups.entry(label.clone()).or_default().push(*vid);
-                        }
-                    }
-                }
-                drop(g);
-                let mut nn = handle.neural_network.lock().unwrap();
-                for (label, vrefs) in label_groups {
-                    let nid = (nn.neuron_count() as u64) + 1;
-                    let mut neuron = bionic_graph::neuron::Neuron::new(nid, &label)
-                        .with_keywords(vec![label.clone()]);
-                    neuron.vertex_refs = vrefs;
-                    nn.add_neuron(neuron);
-                }
-                log::info!("Auto-indexed graph '{}' in neural network", name);
-            }
-        }
+    // Ensure the default graph "graph0" exists on first startup.
+    if let Err(e) = gm.get("graph0") {
+        log::warn!("Failed to create default graph 'graph0': {}", e);
     }
 
-    // Wrap graph_manager in Arc<Mutex<>>
-    let gm = Arc::new(Mutex::new(graph_manager));
+    // Create cluster registry early so it can be shared between
+    // the main API server and the cluster communication server.
+    let cluster_registry: Option<Arc<bionic_graph::cluster::node::NodeRegistry>> =
+        if settings.cluster.enabled {
+            Some(Arc::new(bionic_graph::cluster::node::NodeRegistry::new(&settings.cluster)))
+        } else {
+            None
+        };
 
-    // Start auto-save for all graphs
-    if !args.no_auto_save {
-        let bg_gm = gm.clone();
-        let interval = settings.storage.auto_save_interval_secs;
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(std::time::Duration::from_secs(interval));
-                if let Ok(gm) = bg_gm.lock() {
-                    gm.save_all();
-                }
+    // ── Main API server ──────────────────────────────────────────────────────
+    // Determine master API address for worker→master forwarding.
+    let master_api_addr: Option<String> = if settings.cluster.enabled && settings.cluster.role == NodeRole::Worker {
+        settings.cluster.master_addr.as_ref().map(|addr| {
+            // Derive master's API port: cluster port (e.g. 9090) → API port (e.g. 8090)
+            if let Some(col) = addr.rfind(':') {
+                let host = &addr[..col];
+                let port: u16 = addr[col+1..].parse().unwrap_or(9090);
+                format!("{}:{}", host, port.saturating_sub(1000))
+            } else {
+                addr.clone()
             }
-        });
-        log::info!("Auto-save background thread started for all graphs");
-    }
+        })
+    } else {
+        None
+    };
+    let app = build_new_router(gm.clone(), settings.clone(), cluster_registry.clone(), master_api_addr);
 
-    // Build the router with extraction settings
-    let ext_cfg = bionic_graph::extract::ExtractionConfig::from_settings(&settings);
-    let app = MemorySystem::into_router_with_manager(gm.clone(), Some(ext_cfg));
-
-    // Start server
-    let addr: SocketAddr = format!("{}:{}", settings.server.host, settings.server.port)
+    let api_addr: SocketAddr = format!("{}:{}", settings.server.host, settings.server.port)
         .parse()
         .expect("Invalid address");
 
-    log_info_banner(&addr);
+    log_info_banner(&api_addr);
 
-    let listener = tokio::net::TcpListener::bind(addr)
+    let api_listener = tokio::net::TcpListener::bind(api_addr)
         .await
-        .expect("Failed to bind address");
+        .expect("Failed to bind API address");
 
-    axum::serve(listener, app)
-        .await
-        .expect("Server error");
+    let main_shutdown = shutdown.clone();
+    let api_server = async {
+        axum::serve(api_listener, app)
+            .with_graceful_shutdown(async move { main_shutdown.notified().await })
+            .await
+            .expect("Main server error");
+    };
+
+    // ── Cluster server ───────────────────────────────────────────────────────
+    let is_master = settings.cluster.role == NodeRole::Master;
+
+    let cluster_server = async {
+        if !settings.cluster.enabled {
+            return;
+        }
+
+        log::info!(
+            "Cluster mode enabled — role: {}, bind: {}",
+            if is_master { "master" } else { "worker" },
+            settings.cluster.bind_addr,
+        );
+
+        let registry = cluster_registry.clone().unwrap();
+        let api_addr_str = format!("{}:{}", settings.server.host, settings.server.port);
+        let cluster_state = ClusterAppState {
+            gm: gm.clone(),
+            registry: registry.clone(),
+            is_master,
+            api_addr: api_addr_str,
+        };
+        let cluster_router = build_cluster_router(cluster_state);
+
+        let cluster_addr: SocketAddr = settings
+            .cluster
+            .bind_addr
+            .parse()
+            .expect("Invalid cluster bind address");
+
+        let cluster_listener = tokio::net::TcpListener::bind(cluster_addr)
+            .await
+            .expect("Failed to bind cluster address");
+
+        // If master, spawn heartbeat cleanup task.
+        if is_master {
+            let reg = registry.clone();
+            let interval = Duration::from_secs(settings.cluster.heartbeat_interval_secs);
+            let sig = shutdown.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = tokio::time::sleep(interval) => {
+                            let expired = reg.purge_expired();
+                            if !expired.is_empty() {
+                                log::info!("Purged {} expired worker(s): {:?}", expired.len(), expired);
+                            }
+                        }
+                        _ = sig.notified() => break,
+                    }
+                }
+            });
+        }
+
+        // If worker, start heartbeat sender.
+        if !is_master {
+            if let Some(ref master_addr) = settings.cluster.master_addr {
+                let master_cluster = master_addr.clone();
+                let interval = Duration::from_secs(settings.cluster.heartbeat_interval_secs);
+                let sig = shutdown.clone();
+                tokio::spawn(async move {
+                    let client = reqwest::Client::new();
+                    loop {
+                        let heartbeat = bionic_graph::cluster::node::ClusterMessage::Heartbeat {
+                            node_id: "worker".to_string(),
+                            api_addr: settings.server.host.clone(),
+                            cluster_addr: settings.cluster.bind_addr.clone(),
+                            last_acked_seq: 0,
+                        };
+                        let url = format!("http://{}/cluster/heartbeat", master_cluster);
+                        if let Err(e) = client
+                            .post(&url)
+                            .json(&heartbeat)
+                            .send()
+                            .await
+                        {
+                            log::warn!("Heartbeat to master failed: {}", e);
+                        }
+                        tokio::select! {
+                            _ = tokio::time::sleep(interval) => {},
+                            _ = sig.notified() => break,
+                        }
+                    }
+                });
+            }
+        }
+
+        let cluster_shutdown = shutdown.clone();
+        axum::serve(cluster_listener, cluster_router)
+            .with_graceful_shutdown(async move { cluster_shutdown.notified().await })
+            .await
+            .expect("Cluster server error");
+    };
+
+    // Start rank decay background task (if enabled).
+    if let Ok(default_graph) = gm.get("graph0") {
+        bionic_graph::graph::rank_decay::spawn_rank_decay(
+            default_graph,
+            settings.graph.rank.auto_dec_rank_when_inactive,
+            settings.graph.rank.inactive_after_accessed_secs,
+            settings.graph.rank.inactive_rank_update_period,
+        );
+    }
+
+    // Run both servers concurrently.
+    tokio::join!(api_server, cluster_server);
+
+    log::info!("Server shut down. Goodbye.");
+
+    // Flush and checkpoint all graphs before exiting.
+    gm.close_all();
+    log::info!("All graphs flushed and checkpointed.");
+
+    // Release process lock.
+    let pid_path = data_dir_path.join("lock.pid");
+    if pid_path.exists() {
+        if let Err(e) = std::fs::remove_file(&pid_path) {
+            log::warn!("Failed to remove lock.pid: {}", e);
+        } else {
+            log::info!("Lock file removed.");
+        }
+    }
 }
 
 fn log_info_banner(addr: &SocketAddr) {
     println!();
-    println!("╔══════════════════════════════════════════════════╗");
-    println!("║            Bionic-Graph v{}            ║", env!("CARGO_PKG_VERSION"));
-    println!("║  Bio-inspired Neural Knowledge Graph             ║");
-    println!("╠══════════════════════════════════════════════════╣");
-    println!("║  HTTP server listening on: {addr:<15}    ║");
-    println!("║                                                  ║");
-    println!("║  Endpoints:                                      ║");
-    println!("║    GET  /health   — System health                ║");
-    println!("║    POST /gremlin  — Gremlin query                ║");
-    println!("║    POST /search   — Neural keyword search        ║");
-    println!("║    POST /vertices — Add vertex                   ║");
-    println!("║    POST /edges    — Add edge                     ║");
-    println!("║    POST /neurons  — Create neuron                ║");
-    println!("║    POST /extract  — Extract from Markdown doc    ║");
-    println!("╚══════════════════════════════════════════════════╝");
+    println!("╔══════════════════════════════════════════════════════════╗");
+    println!("║                 Bionic-Graph v{:<13} ║", env!("CARGO_PKG_VERSION"));
+    println!("║            Block-based Knowledge Graph                  ║");
+    println!("╠══════════════════════════════════════════════════════════╣");
+    println!("║  HTTP server → {addr:<21}            ║");
+    println!("║                                                          ║");
+    println!("║  Knowledge Graph API                                     ║");
+    println!("║    POST /gremlin      Gremlin pipeline query             ║");
+    println!("║    GET  /search       Keyword search                     ║");
+    println!("║    POST /vertices     Add vertex                         ║");
+    println!("║    POST /edges        Add edge                           ║");
+    println!("║    GET  /graphs       List graphs                        ║");
+    println!("║                                                          ║");
+    println!("║  Settings                                                 ║");
+    println!("║    GET/PUT /settings/search   Neuron search config       ║");
+    println!("║    GET/PUT /settings/llm       LLM provider config        ║");
+    println!("╚══════════════════════════════════════════════════════════╝");
     println!();
 }
