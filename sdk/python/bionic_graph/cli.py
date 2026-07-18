@@ -67,8 +67,8 @@ def _parse_json_arg(ctx, param, value):
 # ── Global options ──────────────────────────────────────────────────
 
 @click.group()
-@click.option("--base-url", default="http://127.0.0.1:8080", show_default=True, help="Backend server URL")
-@click.option("--api-key", default=None, help="API key for authentication")
+@click.option("--base-url", default="http://127.0.0.1:8080", envvar="BIONIC_GRAPH_BASE_URL", show_default=True, show_envvar=True, help="Backend server URL")
+@click.option("--api-key", default=None, envvar="BIONIC_GRAPH_API_KEY", show_envvar=True, help="API key for authentication")
 @click.option("--timeout", default=30.0, show_default=True, help="Request timeout (seconds)")
 @click.option("--output", "fmt", type=click.Choice(["text", "json"]), default="text", help="Output format")
 @click.pass_context
