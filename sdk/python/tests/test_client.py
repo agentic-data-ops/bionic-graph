@@ -84,13 +84,13 @@ def test_set_graph_config(client, mock):
 
 def test_create_vertex(client, mock):
     mock.post("/vertices").respond(json={"id": 1})
-    resp = client.create_vertex("王耀辉", labels=["person"])
+    resp = client.create_vertex("Eddard Stark", labels=["person"])
     assert resp.id == 1
 
 
 def test_update_vertex(client, mock):
     mock.put("/vertices/1").respond(json={})
-    client.update_vertex(1, name="王耀辉", properties={"age": "40"})
+    client.update_vertex(1, name="Eddard Stark", properties={"title": "Lord of Winterfell"})
 
 
 def test_delete_vertex(client, mock):
@@ -120,13 +120,13 @@ def test_update_vertex_meta(client, mock):
 
 def test_create_edge(client, mock):
     mock.post("/edges").respond(json={"id": 1})
-    resp = client.create_edge(1, 2, "宠物", strength=0.9)
+    resp = client.create_edge(1, 2, "married_to", strength=0.9)
     assert resp.id == 1
 
 
 def test_update_edge(client, mock):
     mock.put("/edges/1").respond(json={})
-    client.update_edge(1, name="相好")
+    client.update_edge(1, name="lovers")
 
 
 def test_delete_edge(client, mock):
@@ -151,7 +151,7 @@ def test_update_edge_meta(client, mock):
 def test_execute_gremlin(client, mock):
     mock.post("/gremlin").respond(json={
         "success": True,
-        "data": [{"type": "vertex", "id": 1, "name": "王耀辉", "labels": ["person"], "keywords": [], "properties": {}, "score": None, "rank": 1}],
+        "data": [{"type": "vertex", "id": 1, "name": "Eddard Stark", "labels": ["person"], "keywords": [], "properties": {}, "score": None, "rank": 1}],
         "error": None,
     })
     steps = [{"step": "V", "ids": [1]}]

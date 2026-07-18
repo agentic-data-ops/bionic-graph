@@ -67,7 +67,7 @@ def test_graph_get_config(runner, mock):
 
 def test_vertex_create(runner, mock):
     mock.post("/vertices").respond(json={"id": 1})
-    result = runner.invoke(main, ["--base-url", BASE_URL, "vertex", "create", "--name", "王耀辉", "--labels", '["person"]'])
+    result = runner.invoke(main, ["--base-url", BASE_URL, "vertex", "create", "--name", "Eddard Stark", "--labels", '["person"]'])
     assert result.exit_code == 0
     assert '"id"' in result.output or "1" in result.output
 
@@ -90,7 +90,7 @@ def test_vertex_get_meta(runner, mock):
 
 def test_edge_create(runner, mock):
     mock.post("/edges").respond(json={"id": 1})
-    result = runner.invoke(main, ["--base-url", BASE_URL, "edge", "create", "--source", "1", "--target", "2", "--name", "宠物"])
+    result = runner.invoke(main, ["--base-url", BASE_URL, "edge", "create", "--source", "1", "--target", "2", "--name", "married_to"])
     assert result.exit_code == 0
 
 
