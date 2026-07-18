@@ -48,7 +48,7 @@ Unlike relational or document databases, Bionic-Graph is optimized for **graph t
 | **Graph Engine** | `src/graph/` | `Graph` struct (facade), CRUD operations, Gremlin pipeline (25 steps), jieba-rs tokenizer, bincode serialize. Lock-safe wrappers in `locked.rs`. |
 | **Gremlin API** | `src/gremlin/` | REST routes (44+ endpoints). Auto-injects `match_mode` and `traverse` step from graph search config. |
 | **Web Search** | `src/gremlin/settings.rs` | Backend proxy for web search (`/web-search/proxy`, `POST`). Configurable providers (Bing, Baidu, etc.) with custom URL, method, headers, body template. |
-| **Python SDK** | `sdk/python/` | Full REST API client library (`pip install bionic-graph-sdk`). CLI tool `bgcli` with interactive chat mode supporting web + graph search. |
+| **Python SDK** | `sdk/python/` | Full REST API client library (`pip install git+...`). CLI tool `bgcli` with interactive chat mode supporting web + graph search. |
 
 ### How it works — a search flow
 
@@ -395,15 +395,15 @@ src/
 9. **Multi-graph** — multiple named graphs, isolated `data/graphs/<name>/` directories
 10. **Fine-grained concurrency** — striped RwLock pools with deadlock-free ordering
 11. **Web Search** — backend proxy for web search, configurable providers (Bing, Baidu API). LLM extracts keywords before searching for better results.
-12. **Python SDK** — `pip install bionic-graph-sdk`, full REST API client with CLI tool `bgcli` and interactive chat mode.
+12. **Python SDK** — `pip install git+https://github.com/agentic-data-ops/bionic-graph.git#subdirectory=sdk/python`, full REST API client with CLI tool `bgcli` and interactive chat mode.
 
 ## Python SDK & CLI
 
 A complete Python client library and CLI tool are available in `sdk/python/`:
 
 ```bash
-# Install
-pip install bionic-graph-sdk
+# Install from GitHub
+pip install git+https://github.com/agentic-data-ops/bionic-graph.git#subdirectory=sdk/python
 
 # CLI usage
 bgcli --base-url http://127.0.0.1:8080 health check

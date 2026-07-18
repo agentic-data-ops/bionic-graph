@@ -5,10 +5,10 @@ A Python command-line tool to interact with a Bionic-Graph knowledge graph serve
 ## Installation
 
 ```bash
-# From PyPI (once published)
-pip install bionic-graph-sdk
+# Install directly from GitHub
+pip install git+https://github.com/agentic-data-ops/bionic-graph.git#subdirectory=sdk/python
 
-# Or install from source
+# Or install from source after cloning
 cd sdk/python
 pip install .
 ```

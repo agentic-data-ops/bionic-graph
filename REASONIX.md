@@ -128,7 +128,7 @@ src/ui/
 - **frontend build**: `npm --prefix src/ui run build`
 - **frontend test**: `npm --prefix src/ui run test`
 - **frontend e2e**: `node src/ui/test/e2e/<name>.mjs`
-- **SDK install**: `pip install bionic-graph-sdk` (or `cd sdk/python && pip install .`)
+- **SDK install**: `pip install git+https://github.com/agentic-data-ops/bionic-graph.git#subdirectory=sdk/python` (or `cd sdk/python && pip install .`)
 - **SDK test**: `cd sdk/python && python3 -m pytest tests/`
 
 ## Data Directory Structure
@@ -240,8 +240,8 @@ Settings under `"web_search"` key in settings.json:
 ## Python SDK & CLI
 
 ```bash
-# Install
-pip install bionic-graph-sdk
+# Install from GitHub
+pip install git+https://github.com/agentic-data-ops/bionic-graph.git#subdirectory=sdk/python
 
 # CLI: bgcli <topic> <action> [options]
 bgcli health check
