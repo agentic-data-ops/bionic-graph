@@ -60,8 +60,8 @@ class Client:
     def list_graphs(self) -> GraphListResponse:
         return GraphListResponse.model_validate(self._request("GET", "/graphs"))
 
-    def create_graph(self, name: str, description: str = "", time_travel: bool = False) -> StatusResponse:
-        return StatusResponse.model_validate(
+    def create_graph(self, name: str, description: str = "", time_travel: bool = False) -> GraphCreateResponse:
+        return GraphCreateResponse.model_validate(
             self._request("POST", "/graphs", json={"name": name, "description": description, "time_travel": time_travel})
         )
 
@@ -230,10 +230,12 @@ class Client:
 
     # ── 9. Documents ────────────────────────────────────────────────
 
-    def list_documents(self, graph: Optional[str] = None) -> DocumentListResponse:
-        return DocumentListResponse.model_validate(
-            self._request("GET", "/documents", headers=self._graph_header(graph))
-        )
+    def list_documents(self, graph: Optional[str] = None) -> list[Document]:
+        """List documents. Backend returns a JSON array directly, not a wrapped object."""
+        data = self._request("GET", "/documents", headers=self._graph_header(graph))
+        if isinstance(data, list):
+            return [Document.model_validate(d) for d in data]
+        return DocumentListResponse.model_validate(data).documents
 
     def create_document(self, title: str, content: str, tags: Optional[list[str]] = None, graph: Optional[str] = None) -> dict:
         body: dict = {"title": title, "content": content}
@@ -286,10 +288,21 @@ class Client:
         )
 
     def get_extraction_task(self, task_id: str) -> ExtractionTask:
-        return ExtractionTask.model_validate(self._request("GET", f"/extract/task/{task_id}"))
+        """Get extraction task by ID. Deprecated: use get_task()."""
+        return ExtractionTask.model_validate(self._request("GET", f"/tasks/{task_id}"))
+
+    def get_task(self, task_id: str) -> ExtractionTask:
+        """Get task by ID (generic task endpoint)."""
+        return ExtractionTask.model_validate(self._request("GET", f"/tasks/{task_id}"))
 
     def list_extraction_tasks(self) -> list[ExtractionTask]:
-        data = self._request("GET", "/extract/tasks")
+        """List all tasks. Deprecated: use list_tasks()."""
+        data = self._request("GET", "/tasks")
+        return [ExtractionTask.model_validate(t) for t in data]
+
+    def list_tasks(self) -> list[ExtractionTask]:
+        """List all tasks (newest first)."""
+        data = self._request("GET", "/tasks")
         return [ExtractionTask.model_validate(t) for t in data]
 
     def wait_for_extraction(
@@ -339,7 +352,7 @@ class Client:
         body: dict = {"query": query}
         if provider_id:
             body["provider_id"] = provider_id
-        data = self._request("POST", "/web-search/proxy", json=body)
+        data = self._request("POST", "/proxy/web-search", json=body)
         if data.get("success"):
             return data["data"]
         raise ApiError(502, data.get("error", "proxy search failed"))
@@ -360,15 +373,50 @@ class Client:
     # ── 16. MaaS ────────────────────────────────────────────────────
 
     def list_models(self) -> ModelListResponse:
-        return ModelListResponse.model_validate(self._request("GET", "/maas/openai/v1/models"))
+        return ModelListResponse.model_validate(self._request("GET", "/proxy/openai/v1/models"))
 
     def chat_completion(
         self,
         messages: list[dict],
         model: Optional[str] = None,
         stream: bool = False,
+        on_chunk: Optional[callable] = None,
     ) -> dict:
         body: dict = {"messages": messages, "stream": stream}
         if model:
             body["model"] = model
-        return self._request("POST", "/maas/openai/v1/chat/completions", json=body)
+        if stream:
+            return self._chat_completion_stream(body, on_chunk)
+        return self._request("POST", "/proxy/openai/v1/chat/completions", json=body)
+
+    def _chat_completion_stream(self, body: dict, on_chunk: Optional[callable] = None) -> dict:
+        """Send a streaming chat completion request and accumulate SSE response.
+        If on_chunk is provided, it is called with each content fragment as it arrives."""
+        import json
+        import httpx
+        url = f"{self.base_url}/proxy/openai/v1/chat/completions"
+        headers = dict(self._http.headers)
+        headers["Accept"] = "text/event-stream"
+        full_content = ""
+        with httpx.Client(base_url=self.base_url, headers=headers, timeout=self._http.timeout) as client:
+            with client.stream("POST", "/proxy/openai/v1/chat/completions", json=body) as resp:
+                if resp.status_code == 404:
+                    raise NotFoundError(body="not found")
+                if not resp.is_success:
+                    raise ApiError(resp.status_code, "error", "stream request failed")
+                for line in resp.iter_lines():
+                    if line.startswith("data: "):
+                        data = line[6:]
+                        if data == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data)
+                            delta = chunk.get("choices", [{}])[0].get("delta", {})
+                            content = delta.get("content", "")
+                            if content:
+                                full_content += content
+                                if on_chunk:
+                                    on_chunk(content)
+                        except json.JSONDecodeError:
+                            pass
+        return {"choices": [{"message": {"content": full_content}}]}

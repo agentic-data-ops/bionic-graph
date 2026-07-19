@@ -8,4 +8,5 @@ pub mod gremlin;
 pub mod lock;
 pub mod maas;
 pub mod storage;
+pub mod task;
 pub mod ui_serve;

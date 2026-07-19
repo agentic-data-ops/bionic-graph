@@ -1,3 +1,12 @@
+//! # Task Module
+//!
+//! Generic task tracking system for async background operations.
+//! Currently used by document extraction; designed for future task types
+//! (e.g., async Gremlin queries on large graphs).
+//!
+//! Each task has a `task_type` string to distinguish different kinds of work.
+//! The task lifecycle is: Pending → Running → Completed | Failed.
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -5,13 +14,9 @@ use chrono::Utc;
 use serde::Serialize;
 use uuid::Uuid;
 
-
-
-
-
 // ─── Task Status ─────────────────────────────────────────────────
 
-/// Status of an extraction task.
+/// Status of a task.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum TaskStatus {
@@ -40,11 +45,11 @@ impl TaskProgress {
     }
 }
 
-// ─── Step-based Progress (for full-doc extraction) ────────────────
+// ─── Step-based Progress ──────────────────────────────────────────
 
-/// A single step within an extraction task (shown in the frontend).
+/// A single step within a task (shown in the frontend).
 #[derive(Debug, Clone, Serialize)]
-pub struct ExtractionStep {
+pub struct TaskStep {
     /// Human-readable label shown in the UI.
     pub label: String,
     /// One of: "pending", "running", "completed", "failed".
@@ -55,38 +60,8 @@ pub struct ExtractionStep {
     pub detail: Option<String>,
 }
 
-/// Create a default set of extraction steps (all pending).
-pub fn default_extraction_steps() -> Vec<ExtractionStep> {
-    vec![
-        ExtractionStep {
-            label: "Reading document content".to_string(),
-            status: "pending".to_string(),
-            progress_pct: 0.0,
-            detail: None,
-        },
-        ExtractionStep {
-            label: "Calling LLM to extract knowledge".to_string(),
-            status: "pending".to_string(),
-            progress_pct: 0.0,
-            detail: None,
-        },
-        ExtractionStep {
-            label: "Creating graph vertices".to_string(),
-            status: "pending".to_string(),
-            progress_pct: 0.0,
-            detail: None,
-        },
-        ExtractionStep {
-            label: "Creating graph edges".to_string(),
-            status: "pending".to_string(),
-            progress_pct: 0.0,
-            detail: None,
-        },
-    ]
-}
-
 /// Update a step in the steps vec by label.
-pub fn update_step(steps: &mut Vec<ExtractionStep>, label: &str, status: &str, progress_pct: f64, detail: Option<&str>) {
+pub fn update_step(steps: &mut Vec<TaskStep>, label: &str, status: &str, progress_pct: f64, detail: Option<&str>) {
     if let Some(step) = steps.iter_mut().find(|s| s.label == label) {
         step.status = status.to_string();
         step.progress_pct = progress_pct;
@@ -95,7 +70,7 @@ pub fn update_step(steps: &mut Vec<ExtractionStep>, label: &str, status: &str, p
 }
 
 /// Compute overall progress from step progress values (equal weight per step).
-pub fn compute_overall_pct(steps: &[ExtractionStep]) -> f64 {
+pub fn compute_overall_pct(steps: &[TaskStep]) -> f64 {
     if steps.is_empty() {
         return 0.0;
     }
@@ -113,40 +88,42 @@ pub fn compute_overall_pct(steps: &[ExtractionStep]) -> f64 {
     total / steps.len() as f64
 }
 
-// ─── Extraction Task ─────────────────────────────────────────────
+// ─── Task ─────────────────────────────────────────────────────────
 
-/// A single extraction task with its lifecycle.
+/// A single task with its lifecycle.
 #[derive(Debug, Clone, Serialize)]
-pub struct ExtractionTask {
+pub struct Task {
     pub task_id: String,
+    /// Distinguishes different kinds of tasks: "extraction", etc.
+    pub task_type: String,
     pub status: TaskStatus,
     /// Legacy section-based progress (used by old pipeline).
     pub progress: Option<TaskProgress>,
-    /// New step-based progress (used by full-doc extraction).
-    pub steps: Vec<ExtractionStep>,
+    /// New step-based progress.
+    pub steps: Vec<TaskStep>,
     /// Overall progress percentage (0.0–100.0), derived from steps.
     pub overall_pct: f64,
-    pub stats: Option<ExtractionStats>,
+    /// Task-type-specific statistics (e.g., ExtractionStats for extraction tasks).
+    pub stats: Option<serde_json::Value>,
     pub error: Option<String>,
     pub created_at: String,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
+    /// Graph this task operates on.
     pub graph_name: String,
-    /// Source name / description embedded in the task
+    /// Source name / description embedded in the task.
     pub source_name: String,
-    /// Document ID if this task was created for a document extraction
-    pub document_id: Option<String>,
 }
 
-// ─── Task Manager ────────────────────────────────────────────────
+// ─── Task Manager ─────────────────────────────────────────────────
 
-/// Manages async extraction tasks.
+/// Manages async tasks of any type.
 #[derive(Clone)]
-pub struct ExtractionTaskManager {
-    pub tasks: Arc<Mutex<HashMap<String, ExtractionTask>>>,
+pub struct TaskManager {
+    pub tasks: Arc<Mutex<HashMap<String, Task>>>,
 }
 
-impl ExtractionTaskManager {
+impl TaskManager {
     pub fn new() -> Self {
         Self {
             tasks: Arc::new(Mutex::new(HashMap::new())),
@@ -154,10 +131,11 @@ impl ExtractionTaskManager {
     }
 
     /// Create a new task and return its ID.
-    pub fn create_task(&self, graph_name: &str, source_name: &str) -> String {
+    pub fn create_task(&self, task_type: &str, graph_name: &str, source_name: &str) -> String {
         let task_id = Uuid::new_v4().to_string();
-        let task = ExtractionTask {
+        let task = Task {
             task_id: task_id.clone(),
+            task_type: task_type.to_string(),
             status: TaskStatus::Pending,
             progress: None,
             steps: Vec::new(),
@@ -169,7 +147,6 @@ impl ExtractionTaskManager {
             completed_at: None,
             graph_name: graph_name.to_string(),
             source_name: source_name.to_string(),
-            document_id: None,
         };
         self.tasks.lock().unwrap().insert(task_id.clone(), task);
         task_id
@@ -181,7 +158,7 @@ impl ExtractionTaskManager {
         task_id: &str,
         status: TaskStatus,
         progress: Option<TaskProgress>,
-        stats: Option<ExtractionStats>,
+        stats: Option<serde_json::Value>,
         error: Option<String>,
     ) {
         let mut tasks = self.tasks.lock().unwrap();
@@ -207,7 +184,7 @@ impl ExtractionTaskManager {
     }
 
     /// Update a task's steps (step-based progress).
-    pub fn update_task_steps(&self, task_id: &str, steps: Vec<ExtractionStep>) {
+    pub fn update_task_steps(&self, task_id: &str, steps: Vec<TaskStep>) {
         let mut tasks = self.tasks.lock().unwrap();
         if let Some(task) = tasks.get_mut(task_id) {
             task.steps = steps.clone();
@@ -241,13 +218,13 @@ impl ExtractionTaskManager {
     }
 
     /// Get a task by ID.
-    pub fn get_task(&self, task_id: &str) -> Option<ExtractionTask> {
+    pub fn get_task(&self, task_id: &str) -> Option<Task> {
         self.tasks.lock().unwrap().get(task_id).cloned()
     }
 
     /// List all tasks, newest first.
-    pub fn list_tasks(&self) -> Vec<ExtractionTask> {
-        let mut tasks: Vec<ExtractionTask> = self
+    pub fn list_tasks(&self) -> Vec<Task> {
+        let mut tasks: Vec<Task> = self
             .tasks
             .lock()
             .unwrap()
@@ -257,13 +234,44 @@ impl ExtractionTaskManager {
         tasks.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         tasks
     }
-
 }
 
-impl Default for ExtractionTaskManager {
+impl Default for TaskManager {
     fn default() -> Self {
         Self::new()
     }
+}
+
+// ─── Extraction-Specific: Default Steps ───────────────────────────
+
+/// Default extraction task steps (all pending).
+pub fn default_extraction_steps() -> Vec<TaskStep> {
+    vec![
+        TaskStep {
+            label: "Reading document content".to_string(),
+            status: "pending".to_string(),
+            progress_pct: 0.0,
+            detail: None,
+        },
+        TaskStep {
+            label: "Calling LLM to extract knowledge".to_string(),
+            status: "pending".to_string(),
+            progress_pct: 0.0,
+            detail: None,
+        },
+        TaskStep {
+            label: "Creating graph vertices".to_string(),
+            status: "pending".to_string(),
+            progress_pct: 0.0,
+            detail: None,
+        },
+        TaskStep {
+            label: "Creating graph edges".to_string(),
+            status: "pending".to_string(),
+            progress_pct: 0.0,
+            detail: None,
+        },
+    ]
 }
 
 /// Statistics from a document extraction run.
@@ -277,29 +285,28 @@ pub struct ExtractionStats {
     pub new_edges: usize,
 }
 
-// ─── Helper to get step-based task response for frontend ──────────
+// ─── Helper to get task response for frontend ─────────────────────
 
-/// Simplified task view returned to the frontend for document extraction tasks.
-/// Picks the best representation (steps for new, progress for legacy).
+/// Simplified task view returned to the frontend.
 #[derive(Debug, Clone, Serialize)]
 pub struct TaskResponse {
     pub task_id: String,
-    pub document_id: Option<String>,
+    pub task_type: String,
     pub status: String,
-    pub steps: Vec<ExtractionStep>,
+    pub steps: Vec<TaskStep>,
     pub overall_pct: f64,
-    pub stats: Option<ExtractionStats>,
+    pub stats: Option<serde_json::Value>,
     pub error: Option<String>,
     pub created_at: String,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
 }
 
-impl From<ExtractionTask> for TaskResponse {
-    fn from(task: ExtractionTask) -> Self {
+impl From<Task> for TaskResponse {
+    fn from(task: Task) -> Self {
         TaskResponse {
             task_id: task.task_id,
-            document_id: task.document_id,
+            task_type: task.task_type,
             status: match task.status {
                 TaskStatus::Pending => "pending".to_string(),
                 TaskStatus::Running => "running".to_string(),
@@ -307,9 +314,8 @@ impl From<ExtractionTask> for TaskResponse {
                 TaskStatus::Failed => "failed".to_string(),
             },
             steps: if task.steps.is_empty() {
-                // Legacy task: synthesize a simple step from section progress
                 if let Some(ref p) = task.progress {
-                    vec![ExtractionStep {
+                    vec![TaskStep {
                         label: "Processing sections".to_string(),
                         status: match task.status {
                             TaskStatus::Completed => "completed".to_string(),
@@ -320,7 +326,7 @@ impl From<ExtractionTask> for TaskResponse {
                         detail: Some(format!("{}/{} sections", p.processed_sections, p.total_sections)),
                     }]
                 } else {
-                    vec![ExtractionStep {
+                    vec![TaskStep {
                         label: match task.status {
                             TaskStatus::Pending => "Waiting...".to_string(),
                             TaskStatus::Failed => "Failed".to_string(),
@@ -356,18 +362,19 @@ mod tests {
 
     #[test]
     fn test_create_and_get_task() {
-        let mgr = ExtractionTaskManager::new();
-        let id = mgr.create_task("default", "test.md");
+        let mgr = TaskManager::new();
+        let id = mgr.create_task("extraction", "default", "test.md");
         let task = mgr.get_task(&id).unwrap();
         assert_eq!(task.status, TaskStatus::Pending);
+        assert_eq!(task.task_type, "extraction");
         assert_eq!(task.graph_name, "default");
         assert_eq!(task.source_name, "test.md");
     }
 
     #[test]
     fn test_update_task_status() {
-        let mgr = ExtractionTaskManager::new();
-        let id = mgr.create_task("default", "test.md");
+        let mgr = TaskManager::new();
+        let id = mgr.create_task("extraction", "default", "test.md");
         mgr.update_task(&id, TaskStatus::Running, Some(TaskProgress {
             processed_sections: 1,
             total_sections: 5,
@@ -381,10 +388,10 @@ mod tests {
 
     #[test]
     fn test_list_tasks_ordered() {
-        let mgr = ExtractionTaskManager::new();
-        let id1 = mgr.create_task("default", "a.md");
+        let mgr = TaskManager::new();
+        let id1 = mgr.create_task("extraction", "default", "a.md");
         std::thread::sleep(std::time::Duration::from_millis(10));
-        let id2 = mgr.create_task("default", "b.md");
+        let id2 = mgr.create_task("extraction", "default", "b.md");
         let tasks = mgr.list_tasks();
         assert_eq!(tasks.len(), 2);
         assert_eq!(tasks[0].task_id, id2);
@@ -409,7 +416,7 @@ mod tests {
 
     #[test]
     fn test_get_nonexistent_task() {
-        let mgr = ExtractionTaskManager::new();
+        let mgr = TaskManager::new();
         assert!(mgr.get_task("nonexistent").is_none());
     }
 
@@ -431,16 +438,15 @@ mod tests {
     #[test]
     fn test_compute_overall_pct() {
         let mut steps = default_extraction_steps();
-        // First step completed
         update_step(&mut steps, "Reading document content", "completed", 100.0, None);
         let pct = compute_overall_pct(&steps);
-        assert!((pct - 25.0).abs() < 0.001); // 1/4 done = 25%
+        assert!((pct - 25.0).abs() < 0.001);
     }
 
     #[test]
     fn test_task_response_from_legacy_task() {
-        let mgr = ExtractionTaskManager::new();
-        let id = mgr.create_task("default", "test.md");
+        let mgr = TaskManager::new();
+        let id = mgr.create_task("extraction", "default", "test.md");
         mgr.update_task(&id, TaskStatus::Running, Some(TaskProgress {
             processed_sections: 3,
             total_sections: 10,
