@@ -20,11 +20,13 @@ Unlike relational or document databases, Bionic-Graph is optimized for **graph t
 │  Chat interface  |  Knowledge Base  |  Graph Visualization   │
 │  LLM Chat (SSE)  |  Semantic Search  |  Document Extraction  │
 ├──────────────────────────────────────────────────────────────┤
-│                   REST API + MaaS Proxy (axum, embedded)      │
+│                   REST API + Proxy (axum, embedded)           │
 │  /gremlin  |  /vertices  |  /edges  |  /documents  |  /search │
-│  /maas/openai/v1/models | /maas/openai/v1/chat/completions   │
-│  /settings/graph/search | /settings/graph/rank | /settings/llm | /settings/web-search | /web-search/proxy
-│  /settings/tokenizer | /extract  | /graphs                             │
+│  /proxy/openai/v1/models | /proxy/openai/v1/chat/completions  │
+│  /proxy/web-search | /tasks  | /tasks/:task_id                │
+│  /settings/graph/search | /settings/graph/rank | /settings/llm │
+│  /settings/web-search | /settings/tokenizer                    │
+│  /extract  |  /graphs  |  /documents/:id/extract               │
 ├──────────────────────────────────────────────────────────────┤
 │              Graph Engine (token-indexed query)                │
 │  Gremlin pipeline (25 steps)  |  BFS+DFS traversal            │
@@ -47,8 +49,8 @@ Unlike relational or document databases, Bionic-Graph is optimized for **graph t
 |-------|--------|-------------|
 | **Frontend** | `src/ui/` | React 19 + Vite 8 + Tailwind CSS 4. Chat interface, knowledge base management, graph visualization via vis-network (Canvas 2D, no WebGL). All LLM calls go through backend MaaS proxy. |
 | **Graph Engine** | `src/graph/` | `Graph` struct (facade), CRUD operations, Gremlin pipeline (25 steps), jieba-rs tokenizer, bincode serialize. Lock-safe wrappers in `locked.rs`. |
-| **Gremlin API** | `src/gremlin/` | REST routes (44+ endpoints) including graph search, rank, LLM, web search, and tokenizer settings. Web search proxy (`/web-search/proxy`) with configurable providers (Bing, Baidu API, etc.). Auto-injects `match_mode` and `traverse` step from graph search config. |
-| **Python SDK** | `sdk/python/` | Full REST API client library (`pip install git+...`). CLI tool `bgcli` with interactive chat mode supporting web + graph search. |
+| **Gremlin API** | `src/gremlin/` | REST routes (45+ endpoints) including graph CRUD, search, rank, LLM, web search, and tokenizer settings. Proxy services at `/proxy/*` (web search, OpenAI-compatible LLM). Generic async task tracking at `/tasks/*`. Auto-injects `match_mode` and `traverse` step from graph search config. |
+| **Python SDK** | `sdk/python/` | Full REST API client library (`pip install git+...`). CLI tool `bgcli` with 11 topics, 45+ actions, interactive chat mode supporting web + graph search. |
 
 ### How it works — a search flow
 
@@ -264,18 +266,26 @@ curl -X POST localhost:8080/gremlin \
 curl 'localhost:8080/search?text=AI+engineer&mode=greedy&graph=default'
 ```
 
-#### Web Search
+#### Web Search & LLM Proxy
 
 ```bash
-# Search via backend proxy (no CORS issues)
-curl -X POST localhost:8080/web-search/proxy \
+# Web search via proxy
+curl -X POST localhost:8080/proxy/web-search \
   -H 'Content-Type: application/json' \
   -d '{"query":"Game of Thrones characters"}'
 
 # Specify a different provider
-curl -X POST localhost:8080/web-search/proxy \
+curl -X POST localhost:8080/proxy/web-search \
   -H 'Content-Type: application/json' \
   -d '{"query":"winterfell","provider_id":"bing"}'
+
+# List available LLM models
+curl localhost:8080/proxy/openai/v1/models
+
+# OpenAI-compatible chat completion
+curl -X POST localhost:8080/proxy/openai/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"DeepSeek/deepseek-v4-flash","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
 #### Settings
@@ -322,13 +332,13 @@ curl localhost:8080/documents/{id}/content
 | `GET` | `/settings/tokenizer` | Tokenizer custom dictionary config |
 | `POST/DELETE` | `/settings/tokenizer/words` | Add / remove custom tokenizer words |
 | `GET/PUT` | `/settings/web-search` | Web search provider config |
-| `POST` | `/web-search/proxy` | Web search proxy (via backend, avoids CORS) |
-| `POST` | `/documents/:id/extract` | Extract from document by ID |
-| `GET` | `/maas/openai/v1/models` | List models |
-| `POST` | `/maas/openai/v1/chat/completions` | OpenAI-compatible chat proxy (SSE) |
+| `POST` | `/proxy/web-search` | Web search proxy (via backend, avoids CORS) |
+| `GET` | `/proxy/openai/v1/models` | List LLM models |
+| `POST` | `/proxy/openai/v1/chat/completions` | OpenAI-compatible chat proxy (SSE) |
 | `POST` | `/extract` | Submit document extraction (async) |
-| `GET` | `/extract/task/:task_id` | Poll extraction task |
-| `GET` | `/extract/tasks` | List all extraction tasks |
+| `POST` | `/documents/:id/extract` | Extract from document by ID |
+| `GET` | `/tasks/:task_id` | Poll task status |
+| `GET` | `/tasks` | List all tasks |
 
 ### Supported Gremlin steps
 
@@ -442,7 +452,15 @@ pip install git+https://github.com/agentic-data-ops/bionic-graph.git#subdirector
 # CLI usage
 bgcli --base-url http://127.0.0.1:8080 health check
 bgcli vertex create --name "Eddard Stark" --labels '["person"]' --graph got
-bgcli gremlin search --text "Stark" --graph got
+bgcli search --text "Stark" --graph got              # Full-text search (top-level)
+bgcli gremlin execute --steps '[{"step":"V","ids":[1]}]'  # Gremlin pipeline
+bgcli document extract d1                            # Background document extraction
+bgcli task list                                       # List async tasks
+bgcli task get --task-id t1                           # Get task status
+bgcli task wait --task-id t1                          # Wait for task completion
+bgcli proxy web-search --query "AI"                   # Web search proxy
+bgcli proxy openai-models                             # List LLM models
+bgcli proxy openai-chat --messages '...'               # LLM chat (non-interactive)
 
 # Interactive chat with web + graph search
 bgcli chat --model "DeepSeek/deepseek-v4-flash"

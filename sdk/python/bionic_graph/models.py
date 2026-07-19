@@ -57,10 +57,15 @@ class IdResponse(BaseModel):
 
 
 class MetaResponse(BaseModel):
-    id: int
-    rank: int
-    atime: str
-    status: str
+    """Vertex/edge metadata from backend. Backend returns:
+    {atime: int, ctime: int, mtime: int, rank: int, status: int, success: bool, version: int}"""
+    atime: int
+    ctime: int = 0
+    mtime: int = 0
+    rank: int = 0
+    status: int = 0
+    success: bool = True
+    version: int = 0
 
 
 class Document(BaseModel):
@@ -85,6 +90,7 @@ class ExtractionTaskStep(BaseModel):
 
 class ExtractionTask(BaseModel):
     task_id: str
+    task_type: str = "extraction"
     status: str
     steps: list[ExtractionTaskStep] = []
     overall_pct: float = 0.0
@@ -143,3 +149,11 @@ class ModelListResponse(BaseModel):
 
 class StatusResponse(BaseModel):
     status: str
+
+
+class GraphCreateResponse(BaseModel):
+    """Response from POST /graphs — backend returns {name, description, time_travel, created}."""
+    name: str
+    description: str = ""
+    time_travel: bool = False
+    created: bool = True

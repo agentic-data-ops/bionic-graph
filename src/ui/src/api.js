@@ -85,14 +85,14 @@ export async function extractDocAsync(content, graph = 'default') {
 
 /** Get the status and results of an extraction task. */
 export async function getTaskStatus(taskId) {
-  const res = await fetch(BASE + `/extract/task/${encodeURIComponent(taskId)}`);
+  const res = await fetch(BASE + `/tasks/${encodeURIComponent(taskId)}`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
 /** List all extraction tasks (newest first). */
 export async function listExtractTasks() {
-  const res = await fetch(BASE + '/extract/tasks');
+  const res = await fetch(BASE + '/tasks');
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -244,7 +244,7 @@ export async function deleteDocument(id, cleanGraph) {
  * where models is the OpenAI-compatible list { object, data }.
  */
 export async function fetchModels() {
-  const res = await fetch('/maas/openai/v1/models');
+  const res = await fetch('/proxy/openai/v1/models');
   if (!res.ok) throw new Error(await res.text());
   const defaultModel = res.headers.get('x-default-model') || '';
   const models = await res.json();
@@ -261,7 +261,7 @@ export async function fetchModels() {
 export function chatCompletionProxy(messages, model, stream = true) {
   const controller = new AbortController();
 
-  const promise = fetch('/maas/openai/v1/chat/completions', {
+  const promise = fetch('/proxy/openai/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -378,14 +378,14 @@ export async function startDocumentExtraction(docId, graphName, model) {
 
 /** Get extraction task status (with step progress). */
 export async function getExtractionTask(taskId) {
-  const res = await fetch(`/extract/task/${encodeURIComponent(taskId)}`);
+  const res = await fetch(`/tasks/${encodeURIComponent(taskId)}`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
 /** List all extraction tasks. */
 export async function listExtractionTasks() {
-  const res = await fetch('/extract/tasks');
+  const res = await fetch('/tasks');
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -488,7 +488,7 @@ export async function updateWebSearchConfig(config) {
 
 /** Search the web via the backend proxy (avoids CORS). Returns the raw response text. */
 export async function searchWeb(provider, query) {
-  const res = await fetch('/web-search/proxy', {
+  const res = await fetch('/proxy/web-search', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query, provider_id: provider?.id }),

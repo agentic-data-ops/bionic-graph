@@ -19,7 +19,7 @@
 ```
 src/
 ├── main.rs                  # CLI entry + HTTP server bootstrap
-├── lib.rs                   # Crate root — 11 pub mod declarations
+├── lib.rs                   # Crate root — 12 pub mod declarations
 ├── config/                  # Settings structs + JSON file loader
 │   ├── mod.rs               # Re-exports
 │   ├── loader.rs            # ~/.config/bionic-graph/settings.json load/save
@@ -65,8 +65,9 @@ src/
 │   │                        #   ExtractedRelation(source,target,name,labels,keywords,strength,properties)
 │   ├── document.rs          # Markdown section parser + token budget
 │   ├── extraction.rs        # LLM prompt templates (full-field format) + response parsers
-│   ├── llm_client.rs        # OpenAI-compatible HTTP client with retry
-│   └── task_manager.rs      # Async task lifecycle
+│   └── llm_client.rs        # OpenAI-compatible HTTP client with retry
+├── task/                    # Generic async task tracking (extraction, future gremlin, etc.)
+│   └── mod.rs               # TaskManager, Task, TaskStep, TaskResponse, TaskStatus
 ├── maas/                    # MaaS OpenAI-compatible proxy
 │   ├── mod.rs
 │   └── openai.rs            # GET /v1/models + POST /v1/chat/completions (SSE)
@@ -84,17 +85,17 @@ src/
 ```
 sdk/python/
 ├── pyproject.toml          # Build config (setuptools)
-├── SKILL.md               # CLI usage guide
+├── SKILL.md                # CLI usage guide
 ├── bionic_graph/
 │   ├── __init__.py         # Client + type exports
 │   ├── client.py           # Full REST API client (httpx, pydantic)
-│   ├── cli.py              # CLI entry point: bgcli (click)
-│   ├── models.py           # 17 Pydantic data models
+│   ├── cli.py              # CLI entry point: bgcli (click, 11 topics)
+│   ├── models.py           # 18 Pydantic data models
 │   └── exceptions.py       # Error classes
 └── tests/
-    ├── test_client.py      # 43 SDK tests
-    └── test_cli.py         # 21 CLI tests
-```
+    ├── test_client.py      # SDK unit tests
+    ├── test_cli.py         # 57 CLI mock tests (all topics, all actions)
+    └── test_cli_real.sh    # Real backend CLI integration tests
 
 ### Frontend (React)
 
@@ -210,8 +211,13 @@ App.jsx
 | POST | `/documents/:id/extract` | Extract from document by ID |
 | GET | `/extract/task/:task_id` | Task polling |
 | GET | `/extract/tasks` | List extraction tasks |
-| GET | `/maas/openai/v1/models` | Model listing |
-| POST | `/maas/openai/v1/chat/completions` | Chat proxy (SSE) |
+| GET | `/proxy/openai/v1/models` | Model listing |
+| POST | `/proxy/openai/v1/chat/completions` | Chat proxy (SSE) |
+| POST | `/proxy/web-search` | Web search proxy |
+| POST | `/extract` | Submit extraction task |
+| POST | `/documents/:id/extract` | Extract from document by ID |
+| GET | `/tasks/:task_id` | Task polling |
+| GET | `/tasks` | List tasks |
 
 > Default graph: `"graph0"` when `?graph=` omitted. DELETE supports `?force=true`.
 
@@ -245,6 +251,15 @@ pip install git+https://github.com/agentic-data-ops/bionic-graph.git#subdirector
 # CLI: bgcli <topic> <action> [options]
 bgcli health check
 bgcli vertex create --name "Eddard Stark" --labels '["person"]'
+bgcli search --text "Stark"                              # Full-text search
+bgcli gremlin execute --steps '[{"step":"V","ids":[1]}]' # Gremlin pipeline
+bgcli document extract d1                                 # Background extraction
+bgcli task list                                           # Async tasks
+bgcli task get --task-id t1                                # Task status
+bgcli task wait --task-id t1                               # Wait for task
+bgcli proxy web-search --query "AI"                       # Web search
+bgcli proxy openai-models                                  # List LLM models
+bgcli proxy openai-chat --messages '...'                   # LLM chat
 
 # Interactive chat with web + graph search
 bgcli chat --model "DeepSeek/deepseek-v4-flash" \
@@ -346,10 +361,13 @@ Decay ←─ spawn_rank_decay (background, every period secs)        │
 - `100-graph-rearch-design.md` — Block-based storage architecture
 - `101-graph-rearch-plan.md` — Re-architecture coding plan (Phase 1-8)
 - `--- edge-data-structure-update.md` — EdgePayload label→name, +labels
+- `201-sdk-python-test-plan.md` — Python SDK CLI full test coverage (57 tests)
+- `--- task-module.md` — Generic task module extracted from extraction pipeline
+- `--- proxy-api-restructure.md` — Unified `/proxy/*` API paths, CLI theme restructure
 
 ## TODO
-1. **前端测试** — 使用 Playwright 对前端交互进行端到端测试，覆盖图可视化、知识库管理、设置面板等核心功能
-2. **构建个体自我意识图谱模板** — 设计并实现个体自我意识的知识图谱模板（persona template），包含个性特征、记忆模式、认知偏好等维度
-3. **设计个体自我行为机制** — 在 GraphAgent 框架中实现个体基于自身图谱的自主行为决策机制（意图识别 → 目标规划 → 行为执行 → 反馈学习）
-4. **构建社会图谱** — 构建多个体间的社会关系图谱，包含信任度、影响力、社交距离等维度
-5. **设计社会行为机制** — 实现群体层面的社会行为机制（信息传播、合作博弈、共识形成、社会规范演化）
+1. **前端测试** — 使用 Playwright 对前端交互进行端到端测试
+2. **构建个体自我意识图谱模板** — 设计并实现个体自我意识的知识图谱模板
+3. **设计个体自我行为机制** — 在 GraphAgent 框架中实现个体自主行为决策机制
+4. **构建社会图谱** — 构建多个体间的社会关系图谱
+5. **设计社会行为机制** — 实现群体层面的社会行为机制

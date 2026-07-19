@@ -17,11 +17,11 @@ use std::sync::Mutex;
 
 use crate::config::Settings;
 use crate::documents::{Document, DocumentManager};
-use crate::extract::task_manager::{ExtractionTaskManager, TaskResponse, TaskStatus, default_extraction_steps, update_step, compute_overall_pct};
 use crate::graph::graph::Graph;
 use crate::graph::gremlin::{execute_gremlin, GremlinQuery, GremlinResponse, GremlinResult};
 use crate::graph_manager::GraphManager;
 use crate::cluster::node::NodeRegistry;
+use crate::task::{TaskManager, TaskResponse, TaskStatus, TaskStep, default_extraction_steps, update_step, compute_overall_pct};
 
 pub mod settings;
 pub mod tokenizer_settings;
@@ -33,7 +33,7 @@ pub struct AppState {
     pub gm: Arc<GraphManager>,
     pub settings: Arc<Mutex<Settings>>,
     pub doc_mgr: DocumentManager,
-    pub task_mgr: ExtractionTaskManager,
+    pub task_mgr: TaskManager,
     /// NodeRegistry for cluster-mode broadcasts (None in standalone).
     pub cluster_registry: Option<Arc<NodeRegistry>>,
     /// Master's API address for worker→master forwarding (None on master / standalone).
@@ -52,7 +52,7 @@ pub fn build_router(
         gm,
         settings: Arc::new(Mutex::new(settings)),
         doc_mgr,
-        task_mgr: ExtractionTaskManager::new(),
+        task_mgr: TaskManager::new(),
         cluster_registry,
         master_api_addr,
     };
@@ -96,15 +96,15 @@ pub fn build_router(
         .route("/settings/graph/rank", put(settings::update_rank_settings))
         .route("/settings/web-search", get(settings::get_web_search_settings))
         .route("/settings/web-search", put(settings::update_web_search_settings))
-        .route("/web-search/proxy", post(settings::web_search_proxy))
+        .route("/proxy/web-search", post(settings::web_search_proxy))
         .route("/settings/tokenizer", get(tokenizer_settings::get_tokenizer_settings))
         .route("/settings/tokenizer/words", post(tokenizer_settings::add_tokenizer_words))
         .route("/settings/tokenizer/words", delete(tokenizer_settings::remove_tokenizer_words))
         // Health
         .route("/health", get(health_check))
         // MaaS — OpenAI-compatible proxy
-        .route("/maas/openai/v1/models", get(crate::maas::openai::list_models_handler))
-        .route("/maas/openai/v1/chat/completions", post(crate::maas::openai::chat_completions_handler))
+        .route("/proxy/openai/v1/models", get(crate::maas::openai::list_models_handler))
+        .route("/proxy/openai/v1/chat/completions", post(crate::maas::openai::chat_completions_handler))
         // Document CRUD
         .route("/documents", get(list_documents))
         .route("/documents", post(create_document))
@@ -115,8 +115,9 @@ pub fn build_router(
         // Extraction
         .route("/extract", post(submit_extraction))
         .route("/documents/:id/extract", post(extract_document_handler))
-        .route("/extract/task/:task_id", get(get_extraction_task))
-        .route("/extract/tasks", get(list_extraction_tasks))
+        // Tasks (generic async task tracking)
+        .route("/tasks/:task_id", get(get_task_handler))
+        .route("/tasks", get(list_tasks_handler))
         // Shared state
         .with_state(state)
 }
@@ -995,12 +996,11 @@ pub async fn submit_extraction(
     // Resolve the graph
     let graph = state.gm.get(graph_name).map_err(|_| StatusCode::NOT_FOUND)?;
 
-    // Create task
-    let task_id = state.task_mgr.create_task(graph_name, &doc.title);
+    // Create extraction task
+    let task_id = state.task_mgr.create_task("extraction", graph_name, &doc.title);
     {
         let mut tasks = state.task_mgr.tasks.lock().unwrap();
         if let Some(task) = tasks.get_mut(&task_id) {
-            task.document_id = Some(doc_id.clone());
             task.status = TaskStatus::Running;
             task.started_at = Some(chrono::Utc::now().to_rfc3339());
             task.steps = default_extraction_steps();
@@ -1277,15 +1277,14 @@ Return ONLY valid JSON with this structure:
                 task.status = TaskStatus::Completed;
                 task.completed_at = Some(chrono::Utc::now().to_rfc3339());
                 task.overall_pct = 100.0;
-                task.stats = Some(crate::extract::ExtractionStats {
-                    total_sections: 1,
-                    processed_sections: 1,
-                    total_entities: total_entities,
-                    total_relations: total_relations,
-                    new_vertices: vertex_count,
-                    new_edges: edge_count,
-                    ..Default::default()
-                });
+                task.stats = Some(serde_json::json!({
+                    "total_sections": 1,
+                    "processed_sections": 1,
+                    "total_entities": total_entities,
+                    "total_relations": total_relations,
+                    "new_vertices": vertex_count,
+                    "new_edges": edge_count,
+                }));
             }
         }
 
@@ -1300,8 +1299,8 @@ Return ONLY valid JSON with this structure:
     }))
 }
 
-/// Get extraction task status.
-pub async fn get_extraction_task(
+/// Get task status.
+pub async fn get_task_handler(
     State(state): State<AppState>,
     Path(task_id): Path<String>,
 ) -> Result<Json<TaskResponse>, StatusCode> {
@@ -1310,8 +1309,8 @@ pub async fn get_extraction_task(
         .ok_or(StatusCode::NOT_FOUND)
 }
 
-/// List all extraction tasks.
-pub async fn list_extraction_tasks(
+/// List all tasks (newest first).
+pub async fn list_tasks_handler(
     State(state): State<AppState>,
 ) -> Json<Vec<TaskResponse>> {
     let tasks = state.task_mgr.list_tasks();
