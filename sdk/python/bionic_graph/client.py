@@ -60,7 +60,7 @@ class Client:
     def list_graphs(self) -> GraphListResponse:
         return GraphListResponse.model_validate(self._request("GET", "/graphs"))
 
-    def create_graph(self, name: str, description: str = "", time_travel: bool = False) -> GraphCreateResponse:
+    def create_graph(self, name: str, description: str = "", time_travel: bool = True) -> GraphCreateResponse:
         return GraphCreateResponse.model_validate(
             self._request("POST", "/graphs", json={"name": name, "description": description, "time_travel": time_travel})
         )
