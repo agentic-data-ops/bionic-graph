@@ -38,12 +38,14 @@ export default function GraphManagerDialog({
   const [newGraphDesc, setNewGraphDesc] = useState('');
   const [newGraphTT, setNewGraphTT] = useState(true);
   const [editingMeta, setEditingMeta] = useState(null); // { name, description, time_travel }
+  const [backendDefault, setBackendDefault] = useState(''); // true default from backend
 
-  // Reload metas from backend when dialog opens.
+  // Reload metas + backend default from backend when dialog opens.
   useEffect(() => {
     if (open) {
       listGraphs().then((d) => {
         onGraphMetasChange?.(d.graphs || []);
+        setBackendDefault(d.default || '');
       }).catch(() => {});
     }
   }, [open, onGraphMetasChange]);
@@ -69,7 +71,7 @@ export default function GraphManagerDialog({
 
   const handleSetDefault = async (name) => {
     await setDefaultGraph(name);
-    onGraphNameChange(name);
+    setBackendDefault(name);
     const d = await listGraphs();
     onGraphMetasChange(d.graphs || []);
   };
@@ -103,12 +105,12 @@ export default function GraphManagerDialog({
                 {meta.time_travel && (
                   <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-[#ff9f0a]/20 text-[#ff9f0a] border border-[#ff9f0a]/30 flex-shrink-0">时光</span>
                 )}
-                {meta.name === graphName && (
+                {meta.name === backendDefault && (
                   <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-[var(--accent)]/20 text-[var(--accent)] border border-[#0a84ff]/30 flex-shrink-0">{t('settings.defaultGraph')}</span>
                 )}
               </div>
               <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 ml-2">
-                {meta.name !== graphName && (
+                {meta.name !== backendDefault && (
                   <button className="px-2 py-1 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] rounded-lg transition-all cursor-pointer"
                     onClick={() => handleSetDefault(meta.name)}>设为默认</button>
                 )}
