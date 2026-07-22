@@ -29,6 +29,7 @@ const FREE_LIST_TARGET: usize = 128;
 /// - The on-disk bitmap is always in sync with the in-memory `bitmap` vec.
 pub struct BitmapFile {
     file: Mutex<File>,
+    #[allow(dead_code)]
     path: std::path::PathBuf,
     bitmap: Vec<u8>,
     /// Sorted list of block indices that have at least one free chunk.

@@ -2,7 +2,7 @@
 //! failed nodes.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -66,6 +66,7 @@ pub enum ClusterMessage {
 
 /// The cluster node registry on the master.
 pub struct NodeRegistry {
+    #[allow(dead_code)]
     config: ClusterConfig,
     workers: RwLock<HashMap<String, WorkerInfo>>,
     /// The heartbeat timeout duration (computed from config).

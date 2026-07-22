@@ -3,14 +3,14 @@
 //! Processes a sequence of `GremlinStep` values against a `Graph`,
 //! producing a list of `GremlinResult` items.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::graph::crud;
 use crate::graph::graph::Graph;
 use crate::storage::index_file::{EdgeIndexRecord, VertexIndexRecord};
 use crate::storage::types::{
-    EdgePayload, PropertyValue, StorageResult, VertexPayload, BLOCK_SIZE,
+    EdgePayload, PropertyValue, StorageResult, VertexPayload,
 };
 
 // ── Step definitions ────────────────────────────────────────────────────────
@@ -376,10 +376,8 @@ fn step_search(
                     if let Ok(Some(tpay)) = crud::read_token_by_record(graph, &trec) {
                         for tref in &tpay.refs {
                             // Time-travel filter: skip refs created after the query timestamp.
-                            if let Some(ts) = at {
-                                if tref.timestamp > ts {
-                                    continue;
-                                }
+                            if at.map_or(false, |ts| tref.timestamp > ts) {
+                                continue;
                             }
                             let score = tref.ref_frequency as f32;
                             if tref.ref_type == 0 {
@@ -442,10 +440,10 @@ fn step_search(
                 if rec.rank >= min_rank {
                     if let Ok(Some(v)) = crud::read_vertex_by_record(graph, &rec, at) {
                         // Verify the payload at query time still matches the search token.
-                        if let Some(ts) = at {
-                            if !tokens.iter().any(|t| token_valid_in_payload(t, &v.name, &v.labels, &v.keywords, &v.properties)) {
+                        if at.is_some()
+                            && !tokens.iter().any(|t| token_valid_in_payload(t, &v.name, &v.labels, &v.keywords, &v.properties))
+                        {
                                 continue; // false positive — token was removed by this time
-                            }
                         }
                         let score = vertex_scores.get(vid).copied().unwrap_or(0.0);
                         results.push(GremlinResult::from_vertex(&v, Some(&rec), Some(score)));
@@ -464,8 +462,8 @@ fn step_search(
             if let Ok(rec) = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset) {
                 if rec.rank >= min_rank {
                     if let Ok(Some(e)) = crud::read_edge_by_record(graph, &rec, at) {
-                        if let Some(ts) = at {
-                            if !tokens.iter().any(|t| {
+                        if at.is_some()
+                            && !tokens.iter().any(|t| {
                                 e.name.contains(t)
                                     || e.labels.iter().any(|l| l.contains(t))
                                     || e.keywords.iter().any(|k| k.contains(t))
@@ -476,7 +474,6 @@ fn step_search(
                             }) {
                                 continue;
                             }
-                        }
                         results.push(GremlinResult::from_edge(&e, Some(&rec), Some(*score)));
                     }
                 }

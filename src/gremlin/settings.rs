@@ -3,8 +3,6 @@
 //! Persisted in `~/.config/bionic-graph/settings.json` under the `"graph.search"` key.
 //! Editable via `GET/PUT /settings/graph/search`.
 
-use std::sync::Arc;
-
 use axum::{extract::State, http::StatusCode, Json};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
@@ -40,8 +38,6 @@ pub async fn update_search_settings(
 }
 
 // ── /settings/llm ───────────────────────────────────────────────────────────
-
-use crate::config::settings::LlmConfig;
 
 /// GET /settings/llm — return the full LLM config wrapped for frontend.
 pub async fn get_llm_settings(
