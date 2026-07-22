@@ -194,6 +194,13 @@ result = client.execute_gremlin([
     {"step": "V", "ids": [ned.id]},
     {"step": "expand"},
 ])
-for item in result.data:
-    print(f"  {item}")
+
+# Point-in-time Gremlin query (microsecond timestamp via X-Time-Travel header)
+result = client.execute_gremlin(
+    [{"step": "V"}, {"step": "expand"}],
+    time_travel=1700000000000000,
+)
+
+# Search with time travel
+result = client.search("Stark", time_travel=1700000000000000)
 ```

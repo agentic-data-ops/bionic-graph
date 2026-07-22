@@ -13,24 +13,27 @@ function ChatModelSelector({
 }) {
   const { t } = useTranslation();
   const [modelList, setModelList] = useState(null);
+  const [fetchError, setFetchError] = useState(null);
   const [defaultModel, setDefaultModel] = useState('');
-  const [fetching, setFetching] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
+  const [loadKey, setLoadKey] = useState(0);
   const initialised = useRef(false);
 
   // Fetch model list + default model from backend.
   // Re-fetches when providers or defaultModelKey change (settings modified).
+  // Falls back to local provider config after 5s timeout.
   useEffect(() => {
-    if (!fetching) {
-      setFetching(true);
-      fetchModels().then(({ models, defaultModel: dm }) => {
+    let cancelled = false;
+    setFetchError(null);
+
+    fetchModels()
+      .then(({ models, defaultModel: dm }) => {
+        if (cancelled) return;
         const list = models?.data || [];
         setModelList(list);
         setDefaultModel(dm || '');
 
         // On first load only, determine the initial model key:
-        // 1. Try localStorage saved model
-        // 2. If missing or not in the list, use backend defaultModel
         if (!initialised.current) {
           initialised.current = true;
           const saved = localStorage.getItem('bgraph-last-model');
@@ -44,12 +47,84 @@ function ChatModelSelector({
             }
           }
         }
-      }).catch(() => {}).finally(() => setFetching(false));
-    }
-  }, [providers, defaultModelKey]);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setFetchError(err.message || 'fetch failed');
+        // Fallback: build model list from local providers
+        const localList = (providers || []).flatMap((p) =>
+          (p.models || [p.model]).map((m) => ({
+            id: `${p.name}/${m}`,
+            object: 'model',
+            created: 0,
+            owned_by: p.name,
+          }))
+        );
+        setModelList(localList.length > 0 ? localList : null);
+
+        // Attempt initialisation with local data
+        if (localList.length > 0 && !initialised.current) {
+          initialised.current = true;
+          const saved = localStorage.getItem('bgraph-last-model');
+          const validSaved = saved && localList.some(e => e.id === saved);
+          const dm = defaultModelKey || localList[0]?.id || '';
+          const targetKey = validSaved ? saved : dm;
+          if (targetKey) {
+            const parts = targetKey.split('/');
+            if (parts.length >= 2) {
+              onProviderChange(parts[0]);
+              onChatModelChange(parts.slice(1).join('/'));
+            }
+          }
+        }
+      });
+
+    // Timeout fallback: if still loading after 8s, fall back to local providers
+    const timer = setTimeout(() => {
+      if (cancelled) return;
+      if (initialised.current) return;
+      if (providers?.length > 0) {
+        const localList = providers.flatMap((p) =>
+          (p.models || [p.model]).map((m) => ({
+            id: `${p.name}/${m}`,
+            object: 'model',
+            created: 0,
+            owned_by: p.name,
+          }))
+        );
+        setModelList(localList.length > 0 ? localList : []);
+        setFetchError('timeout');
+        initialised.current = true;
+        const firstKey = localList[0]?.id || '';
+        if (firstKey) {
+          const parts = firstKey.split('/');
+          onProviderChange(parts[0]);
+          onChatModelChange(parts.slice(1).join('/'));
+        }
+      }
+    }, 8000);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [providers, defaultModelKey, loadKey]);
 
   if (!modelList) {
-    return <span className="text-xs text-[var(--text-tertiary)]">加载中...</span>;
+    return (
+      <div className="flex items-center gap-1.5">
+        <span className="text-xs text-[var(--text-tertiary)]">加载中...</span>
+        <button
+          className="text-[10px] text-[var(--accent)] hover:underline px-1"
+          onClick={() => {
+            initialised.current = false;
+            setLoadKey((k) => k + 1);
+          }}
+        >
+          重试
+        </button>
+      </div>
+    );
   }
 
   const currentModel = chatModel || '';
@@ -206,7 +281,7 @@ const ChatInput = forwardRef(function ChatInput({
               {graphOpen && (
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => setGraphOpen(false)} />
-                  <div className="absolute right-0 bottom-full mb-1 z-50 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-lg overflow-hidden min-w-full w-max max-w-[200px]">
+                  <div className="absolute left-0 bottom-full mb-1 z-50 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-lg overflow-hidden min-w-full w-max max-w-[200px]">
                     {graphs.map((g) => (
                       <button
                         key={g}

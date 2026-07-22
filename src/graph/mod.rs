@@ -11,6 +11,7 @@
 #[cfg(test)]
 pub mod tests;
 
+pub mod batch;
 pub mod crud;
 pub mod graph;
 pub mod graph_registry;

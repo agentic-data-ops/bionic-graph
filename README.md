@@ -24,6 +24,7 @@ Unlike relational or document databases, Bionic-Graph is optimized for **graph t
 │  /gremlin  |  /vertices  |  /edges  |  /documents  |  /search │
 │  /proxy/openai/v1/models | /proxy/openai/v1/chat/completions  │
 │  /proxy/web-search | /tasks  | /tasks/:task_id                │
+│  /batch/load | /batch/delete                                  │
 │  /settings/graph/search | /settings/graph/rank | /settings/llm │
 │  /settings/web-search | /settings/tokenizer                    │
 │  /extract  |  /graphs  |  /documents/:id/extract               │
@@ -145,10 +146,9 @@ Auto-created at `~/.config/bionic-graph/settings.json` if not present. Full refe
     "forward_writes": true
   },
   "web_search": {
-    "default_provider": "baidu",
+    "default_provider": "Baidu",
     "providers": [{
-      "id": "baidu",
-      "name": "\u767e\u5ea6\u641c\u7d22",
+      "name": "Baidu",
       "search_url": "https://qianfan.baidubce.com/v2/ai_search/web_search",
       "method": "POST",
       "body_template": "{\"messages\":[{\"content\":\"{text}\",\"role\":\"user\"}],\"search_source\":\"baidu_search_v2\",\"resource_type_filter\":[{\"type\":\"web\",\"top_k\":5}],\"search_recency_filter\":\"year\"}"
@@ -246,11 +246,11 @@ curl -X POST localhost:8080/gremlin \
     {"step":"limit","count":10}
   ]}'
 
-# Time travel query
+# Time travel query (via X-Time-Travel header)
 curl -X POST localhost:8080/gremlin \
   -H 'Content-Type: application/json' \
+  -H 'X-Time-Travel: 1718000000000000' \
   -d '{"steps":[
-    {"step":"timeTravel","at":1718000000000000},
     {"step":"search","text":"project"}
   ]}'
 
@@ -277,7 +277,7 @@ curl -X POST localhost:8080/proxy/web-search \
 # Specify a different provider
 curl -X POST localhost:8080/proxy/web-search \
   -H 'Content-Type: application/json' \
-  -d '{"query":"winterfell","provider_id":"bing"}'
+  -d '{"query":"winterfell","provider":"Bing"}'
 
 # List available LLM models
 curl localhost:8080/proxy/openai/v1/models
@@ -339,12 +339,17 @@ curl localhost:8080/documents/{id}/content
 | `POST` | `/documents/:id/extract` | Extract from document by ID |
 | `GET` | `/tasks/:task_id` | Poll task status |
 | `GET` | `/tasks` | List all tasks |
+| `POST` | `/batch/load` | Batch import vertices/edges (upsert by name, edges by source/target name) |
+| `POST` | `/batch/delete` | Batch delete vertices (cascade edges) and/or edges by key |
+
+> **Graph name**: all CRUD, Gremlin, search, batch, and document endpoints use `X-Graph-Name` HTTP header.
+> No `?graph=` query parameter. Falls back to default graph (`graph0`) when header omitted.
 
 ### Supported Gremlin steps
 
 | Step | Parameters | Description |
 |------|-----------|-------------|
-| `search` | `text`, `mode?`, `match_mode?`, `at?`, `limit?`, `min_rank?` | Token-indexed full-text search. `mode` = `"greedy"` (union of any token match) or `"exact"` (intersection — must match all tokens). `match_mode` = `"prefix"` or `"word"`. Auto-injects `match_mode` from graph search settings + optional `traverse` step. `at` enables time-travel filtering. |
+| `search` | `text`, `mode?`, `match_mode?`, `limit?`, `min_rank?` | Token-indexed full-text search. `mode` = `"greedy"` (union of any token match) or `"exact"` (intersection — must match all tokens). `match_mode` = `"prefix"` or `"word"`. Auto-injects `match_mode` from graph search settings + optional `traverse` step. Time travel via `X-Time-Travel` header. |
 | `V` | `ids?`, `at?` | All vertices or filtered by ID array. `at` enables time-travel. |
 | `E` | `ids?`, `at?` | All edges or filtered by ID array. `at` enables time-travel. |
 | `has` | `key`, `value` | Filter results by exact property key-value match. `value` supports any JSON type (string, number, boolean, array, object). |
@@ -364,12 +369,11 @@ curl localhost:8080/documents/{id}/content
 | `count` | — | Replace results with a single `{count: N}` item. |
 | `dedup` | — | Deduplicate results by ID (removes duplicate vertices/edges). |
 | `repeat` | `steps`, `times` | Execute sub-pipeline `steps` iteratively `times` times. |
-| `timeTravel` | `at` (μs) | Set global query timestamp. Subsequent steps only see data as it existed at `at`. |
-| `expand` | `depth?`, `label?`, `at?` | From each vertex, add its neighbor vertices + connecting edges to results (both directions). Optional `label` filters by edge label. `at` enables time-travel filtering. |
-| `traverse` | `decay?`, `activate?`, `max_depth?`, `min_score?`, `at?` | BFS activation spread from input vertices. Score = parent_score × `decay` × edge_strength. Stops when score < `activate`. Collects results with score >= `min_score`. Defaults: decay=0.95, activate=0.2, max_depth=16, min_score=0.1. `at` enables time-travel filtering. Both endpoints of each traversed edge must meet min_score threshold (edge score = average of its endpoints). |
+| `expand` | `depth?`, `label?` | From each vertex, add its neighbor vertices + connecting edges to results (both directions). Optional `label` filters by edge label. Time travel via `X-Time-Travel` header. |
+| `traverse` | `decay?`, `activate?`, `max_depth?`, `min_score?` | BFS activation spread from input vertices. Score = parent_score × `decay` × edge_strength. Stops when score < `activate`. Collects results with score >= `min_score`. Defaults: decay=0.95, activate=0.2, max_depth=16, min_score=0.1. Time travel via `X-Time-Travel` header. Both endpoints of each traversed edge must meet min_score threshold (edge score = average of its endpoints). |
 | `rank` | `limit?`, `min?` | Return top results by rank. As source step: iterate rank index descending. As filter step: sort existing results by rank. `min` sets minimum rank threshold (inclusive). |
 
----
+> **Time travel**: no longer a Gremlin step. Set `X-Time-Travel` HTTP header with microsecond timestamp for point-in-time queries. The header applies to all steps.
 
 ## Project structure
 
@@ -440,6 +444,8 @@ src/
 10. **Fine-grained concurrency** — striped RwLock pools with deadlock-free ordering
 11. **Web Search** — backend proxy for web search, configurable providers (Bing, Baidu API). LLM extracts keywords before searching for better results.
 12. **Python SDK** — `pip install git+https://github.com/agentic-data-ops/bionic-graph.git#subdirectory=sdk/python`, full REST API client with CLI tool `bgcli` and interactive chat mode.
+13. **Batch operations** — `/batch/load` and `/batch/delete` for bulk upsert/delete by vertex name.
+14. **Examples** — self-awareness KG (`examples/self_awareness/`) and social activities KG (`examples/social_activities/`) with LLM-driven load/plan/act pipelines.
 
 ## Python SDK & CLI
 
@@ -461,6 +467,8 @@ bgcli task wait --task-id t1                          # Wait for task completion
 bgcli proxy web-search --query "AI"                   # Web search proxy
 bgcli proxy openai-models                             # List LLM models
 bgcli proxy openai-chat --messages '...'               # LLM chat (non-interactive)
+bgcli batch load --graph my-graph --data data.json     # Batch load vertices/edges from JSON
+bgcli batch delete --graph my-graph --data delete.json # Batch delete vertices/edges
 
 # Interactive chat with web + graph search
 bgcli chat --model "DeepSeek/deepseek-v4-flash"

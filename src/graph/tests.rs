@@ -14,7 +14,7 @@ fn setup_graph() -> (Arc<Graph>, tempfile::TempDir) {
 
 fn run_steps(g: &Arc<Graph>, steps: Vec<GremlinStep>) -> Vec<GremlinResult> {
     let q = GremlinQuery { steps };
-    let r = execute_gremlin(g, &q);
+    let r = execute_gremlin(g, &q, None);
     assert!(r.success, "gremlin failed: {:?}", r.error);
     r.data
 }

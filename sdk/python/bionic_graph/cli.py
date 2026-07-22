@@ -175,6 +175,61 @@ def graph_set_config(ctx, name, config):
     _output(c.set_graph_config(name, config).model_dump(), _fmt(ctx))
 
 
+# ── batch ─────────────────────────────────────────────────────────
+
+@main.group()
+def batch():
+    """Batch data operations."""
+
+
+@batch.command("load")
+@click.option("--graph", default="self-awareness", show_default=True, help="Target graph name")
+@click.option("--data", required=True, type=click.Path(exists=True, dir_okay=False),
+              help="Path to JSON file with 'entities' and 'relations' arrays")
+@click.option("--update-existing/--no-update-existing", default=True,
+              help="Update existing vertices/edges if they already exist (default: update)")
+@click.pass_context
+def batch_load(ctx, graph, data, update_existing):
+    """Load vertices and edges from a JSON file.
+
+    The JSON file must contain two arrays:
+      - "entities": list of {name, labels?, keywords?, properties?}
+      - "relations": list of {source, target, name, labels?, keywords?, strength?, properties?}
+
+    Vertices are identified by 'name'. Edges are identified by
+    (source_name, target_name, name).
+    """
+    c = _client(ctx)
+    with open(data, "r") as f:
+        payload = json.load(f)
+    entities = payload.get("entities", [])
+    relations = payload.get("relations", [])
+    _output(c.batch_load(entities, relations, graph, update_existing=update_existing), _fmt(ctx))
+
+
+@batch.command("delete")
+@click.option("--graph", default="self-awareness", show_default=True, help="Target graph name")
+@click.option("--data", required=True, type=click.Path(exists=True, dir_okay=False),
+              help="Path to JSON file with 'vertices' and/or 'edges' arrays")
+@click.pass_context
+def batch_delete(ctx, graph, data):
+    """Delete vertices and edges from a JSON file.
+
+    The JSON file may contain two arrays:
+      - "vertices": list of vertex names (strings) to delete.
+        All edges connected to these vertices are also deleted.
+      - "edges": list of {source, target, name} for specific edges to delete.
+
+    Edges are deleted before vertices.
+    """
+    c = _client(ctx)
+    with open(data, "r") as f:
+        payload = json.load(f)
+    vertices = payload.get("vertices", [])
+    edges = payload.get("edges", [])
+    _output(c.batch_delete(vertices=vertices, edges=edges, graph=graph), _fmt(ctx))
+
+
 # ── vertex ─────────────────────────────────────────────────────────
 
 @main.group()
@@ -340,11 +395,13 @@ def gremlin():
 @click.option("--steps", required=True, callback=_parse_json_arg,
               help='JSON array of pipeline step objects. Steps: V, E, has, hasNot, hasLabel, hasText, hasKey, hasValue, out, in, both, outE, inE, bothE, search, traverse, repeat, expand, limit, count, dedup, values, timeTravel, rank. Example: \'[{"step":"V","ids":[1]},{"step":"out","labels":["married_to"]}]\'')
 @click.option("--graph", help="Target graph (default: graph0)")
+@click.option("--time-travel", type=int, default=None,
+              help="Microsecond timestamp for point-in-time queries (X-Time-Travel header)")
 @click.pass_context
-def gremlin_execute(ctx, steps, graph):
+def gremlin_execute(ctx, steps, graph, time_travel):
     """Execute a Gremlin pipeline query."""
     c = _client(ctx)
-    resp = c.execute_gremlin(steps, graph)
+    resp = c.execute_gremlin(steps, graph, time_travel=time_travel)
     _output(resp.model_dump(), _fmt(ctx))
 
 
@@ -356,11 +413,13 @@ def gremlin_execute(ctx, steps, graph):
 @click.option("--mode", default="greedy", show_default=True, help="Search mode: greedy or exact")
 @click.option("--limit", default=20, type=int, help="Max results")
 @click.option("--graph", help="Graph name (default: graph0)")
+@click.option("--time-travel", type=int, default=None,
+              help="Microsecond timestamp for point-in-time queries (X-Time-Travel header)")
 @click.pass_context
-def search(ctx, text, mode, limit, graph):
+def search(ctx, text, mode, limit, graph, time_travel):
     """Full-text search across vertices and edges."""
     c = _client(ctx)
-    resp = c.search(text, mode, limit, graph=graph)
+    resp = c.search(text, mode, limit, graph=graph, time_travel=time_travel)
     _output(resp.model_dump(), _fmt(ctx))
 
 
@@ -386,12 +445,11 @@ def document_list(ctx, graph):
 @click.option("--content", required=True, help="Document content (markdown)")
 @click.option("--tags", callback=_parse_json_arg,
               help='JSON array of tags. Example: \'["important", "research"]\'')
-@click.option("--graph", help="Target graph for extraction (default: graph0)")
 @click.pass_context
-def document_create(ctx, title, content, tags, graph):
+def document_create(ctx, title, content, tags):
     """Create a new document."""
     c = _client(ctx)
-    _output(c.create_document(title, content, tags, graph), _fmt(ctx))
+    _output(c.create_document(title, content, tags), _fmt(ctx))
 
 
 @document.command("get")
@@ -558,7 +616,7 @@ def settings_get_web_search(ctx):
 
 @settings.command("set-web-search")
 @click.option("--config", required=True, callback=_parse_json_arg,
-              help='JSON: web search config. Fields: providers: [{id, name, search_url, method, params, headers}], default_provider (string). Example: \'{"default_provider":"bing","providers":[{"id":"bing","name":"Bing","search_url":"https://api.bing.com/search","method":"GET","params":{"q":"{query}"}}]}\'')
+              help='JSON: web search config. Fields: providers: [{name, search_url, method, params, headers}], default_provider (string). Example: \'{"default_provider":"Bing","providers":[{"name":"Bing","search_url":"https://api.bing.com/search","method":"GET","params":{"q":"{query}"}}]}\'')
 @click.pass_context
 def settings_set_web_search(ctx, config):
     """Update web search provider configuration."""
@@ -603,12 +661,12 @@ def proxy():
 
 @proxy.command("web-search")
 @click.option("--query", required=True, help="Search query text")
-@click.option("--provider-id", help="Web search provider ID (default from settings)")
+@click.option("--provider", help="Web search provider name (default from settings)")
 @click.pass_context
-def proxy_web_search(ctx, query, provider_id):
+def proxy_web_search(ctx, query, provider):
     """Execute a web search via the configured proxy."""
     c = _client(ctx)
-    data = c.web_search_proxy(query, provider_id)
+    data = c.web_search_proxy(query, provider)
     if _fmt(ctx) == "json":
         _output({"data": data[:500]}, "json")
     else:
@@ -740,10 +798,10 @@ def chat(ctx, web_search, graph_search, extract_keywords, graph, search_mode, mo
         if web_search:
             try:
                 ws_config = c.get_web_search_settings()
-                provider_id = ws_config.default_provider
+                provider_name = ws_config.default_provider
 
-                click.echo(f"  🌐 Searching web... ({provider_id})", err=True)
-                raw_html = c.web_search_proxy(search_query, provider_id)
+                click.echo(f"  🌐 Searching web... ({provider_name})", err=True)
+                raw_html = c.web_search_proxy(search_query, provider_name)
                 search_context = raw_html[:32000]
             except Exception as e:
                 click.echo(f"  ⚠️ Web search error: {e}", err=True)

@@ -239,7 +239,6 @@ impl Default for RankConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebSearchProvider {
-    pub id: String,
     pub name: String,
     /// URL template with {text} placeholder, e.g. "https://cn.bing.com/search?q={text}"
     pub search_url: String,
@@ -271,15 +270,14 @@ impl Default for WebSearchConfig {
         );
         Self {
             providers: vec![WebSearchProvider {
-                id: "baidu".to_string(),
-                name: "百度搜索".to_string(),
+                name: "Baidu".to_string(),
                 search_url: "https://qianfan.baidubce.com/v2/ai_search/web_search".to_string(),
                 method: "POST".to_string(),
                 body_template: Some(r#"{"messages":[{"content":"{text}","role":"user"}],"search_source":"baidu_search_v2","resource_type_filter":[{"type":"web","top_k":5}],"search_recency_filter":"year"}"#.to_string()),
                 params: std::collections::HashMap::new(),
                 headers,
             }],
-            default_provider: "baidu".to_string(),
+            default_provider: "Baidu".to_string(),
         }
     }
 }

@@ -112,24 +112,24 @@ pub async fn update_web_search_settings(
 #[derive(serde::Deserialize)]
 pub struct WebSearchProxyBody {
     pub query: String,
-    pub provider_id: Option<String>,
+    pub provider: Option<String>,
 }
 
 pub async fn web_search_proxy(
     State(state): State<AppState>,
     Json(body): Json<WebSearchProxyBody>,
 ) -> Response {
-    let provider_id = {
+    let provider_name = {
         let settings = state.settings.lock().unwrap();
-        body.provider_id.clone().unwrap_or_else(|| settings.web_search.default_provider.clone())
+        body.provider.clone().unwrap_or_else(|| settings.web_search.default_provider.clone())
     };
 
-    let provider = {
+    let provider_match = {
         let settings = state.settings.lock().unwrap();
-        settings.web_search.providers.iter().find(|p| p.id == provider_id).cloned()
+        settings.web_search.providers.iter().find(|p| p.name == provider_name).cloned()
     };
 
-    let provider = match provider {
+    let provider = match provider_match {
         Some(p) => p,
         None => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"success": false, "error": "provider not found"}))).into_response(),
     };

@@ -23,7 +23,7 @@ export default defineConfig({
       }
     }
   },
-  build: { outDir: 'dist', emptyOutDir: true, minify: false },
+  build: { outDir: 'dist', emptyOutDir: true, minify: true },
   test: {
     environment: 'jsdom',
     globals: true,
