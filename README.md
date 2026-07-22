@@ -358,8 +358,8 @@ curl localhost:8080/documents/{id}/content
 | Step | Parameters | Description |
 |------|-----------|-------------|
 | `search` | `text`, `mode?`, `match_mode?`, `limit?`, `min_rank?` | Token-indexed full-text search. `mode` = `"greedy"` (union of any token match) or `"exact"` (intersection — must match all tokens). `match_mode` = `"prefix"` or `"word"`. Auto-injects `match_mode` from graph search settings + optional `traverse` step. Time travel via `X-Time-Travel` header. |
-| `V` | `ids?`, `at?` | All vertices or filtered by ID array. `at` enables time-travel. |
-| `E` | `ids?`, `at?` | All edges or filtered by ID array. `at` enables time-travel. |
+| `V` | `ids?` | All vertices or filtered by ID array. |
+| `E` | `ids?` | All edges or filtered by ID array. |
 | `has` | `key`, `value` | Filter results by exact property key-value match. `value` supports any JSON type (string, number, boolean, array, object). |
 | `hasNot` | `key`, `value` | Negated property filter — exclude if property matches. `value` supports any JSON type. |
 | `hasKey` | `key` | Filter by property key existence. |
