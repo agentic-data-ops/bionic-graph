@@ -195,5 +195,15 @@
   "time.second": "sec",
   "time.minute": "min",
   "time.hour": "hour",
-  "time.day": "day"
+  "time.day": "day",
+  "chat.graphSearch": "🔎 Graph Search ·",
+  "chat.webSearch": "🌐 Web Search ·",
+  "chat.items": "items",
+  "chat.selectedResults": "Selected results:",
+  "graphViewer.noData": "No graph data",
+  "graphViewer.clearFilter": "Clear filter",
+  "graph.saving": "Saving...",
+  "graph.save": "Save",
+  "knowledgeBase.all": "All",
+  "knowledgeBase.noDocs": "No documents yet"
 }

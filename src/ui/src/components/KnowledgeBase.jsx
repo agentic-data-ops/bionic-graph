@@ -311,7 +311,7 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
         <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.tagFilter')}</label>
       </div>
       <div className="flex gap-1.5 mb-4 flex-wrap">
-        <button className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${!filterTag ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`} onClick={() => setFilterTag('')}>All</button>
+        <button className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${!filterTag ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`} onClick={() => setFilterTag('')}>{t('knowledgeBase.all')}</button>
         {allTags.map((tag) => (<button key={tag} className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${filterTag === tag ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`} onClick={() => setFilterTag(tag)}>{tag}</button>))}
       </div>
 
@@ -320,7 +320,7 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
         <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.graphFilter')}</label>
       </div>
       <div className="flex gap-1.5 mb-4 flex-wrap">
-        <button className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${!filterGraph ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`} onClick={() => setFilterGraph('')}>All</button>
+        <button className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${!filterGraph ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`} onClick={() => setFilterGraph('')}>{t('knowledgeBase.all')}</button>
         {allGraphs.map((g) => (<button key={g} className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${filterGraph === g ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`} onClick={() => setFilterGraph(g)}>{g}</button>))}
       </div>
 
@@ -483,7 +483,7 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
           <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-2 tracking-tight">{t('knowledgeBase.docList')}</label>
         </div>
         <div className="space-y-1 max-h-60 overflow-y-auto">
-          {filteredDocs.length === 0 && <div className="text-center text-[var(--text-tertiary)] text-sm py-8">No documents yet</div>}
+          {filteredDocs.length === 0 && <div className="text-center text-[var(--text-tertiary)] text-sm py-8">{t('knowledgeBase.noDocs')}</div>}
           {filteredDocs.map((doc) => (
             <div key={doc.id} className="flex items-center justify-between py-2.5 px-3 rounded-xl hover:bg-[var(--bg-tertiary)] transition-all group">
               <div className="flex-1 min-w-0 cursor-pointer" onClick={async () => {
@@ -498,8 +498,8 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
                 </div>
               </div>
               <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 ml-2">
-                <button className="px-2 py-1 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] rounded-lg transition-all" onClick={() => handleEdit(doc)} disabled={!!importing}>Edit</button>
-                <button className="px-2 py-1 text-xs text-[var(--danger)] hover:bg-[color-mix(in srgb, var(--bg-hover), var(--danger) 30%)] rounded-lg transition-all" onClick={() => { setDeleteConfirm(doc); setDeleteGraphData(false); }} disabled={!!importing}>Delete</button>
+                <button className="px-2 py-1 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] rounded-lg transition-all" onClick={() => handleEdit(doc)} disabled={!!importing}>{t('panel.edit')}</button>
+                <button className="px-2 py-1 text-xs text-[var(--danger)] hover:bg-[color-mix(in srgb, var(--bg-hover), var(--danger) 30%)] rounded-lg transition-all" onClick={() => { setDeleteConfirm(doc); setDeleteGraphData(false); }} disabled={!!importing}>{t('settings.delete')}</button>
               </div>
             </div>
           ))}

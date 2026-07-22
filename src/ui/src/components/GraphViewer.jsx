@@ -520,9 +520,9 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onS
           <div className="space-y-2">
             {error && <div className="text-[11px] text-[var(--danger)] bg-[#3a2a2e] rounded-lg px-2.5 py-1.5">{error}</div>}
             <div className="flex gap-2">
-              <button className="flex-1 py-1.5 rounded-lg bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs font-medium transition-all" onClick={cancelEdit}>Cancel</button>
+              <button className="flex-1 py-1.5 rounded-lg bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs font-medium transition-all" onClick={cancelEdit}>{t('graph.cancel')}</button>
               <button className="flex-1 py-1.5 rounded-lg bg-[var(--accent)] text-white text-xs font-medium hover:bg-[color-mix(in srgb, var(--accent), black 10%)] transition-all shadow-sm disabled:opacity-50" onClick={saveEdit} disabled={saving}>
-                {saving ? 'Saving...' : 'Save'}
+                {saving ? t('graph.saving') : t('graph.save')}
               </button>
             </div>
           </div>
@@ -917,7 +917,7 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
   }, [confirmDeleteEdge, graph, t, onDataChange, collectUpdatedData]);
 
   if (!data?.data?.length) {
-    return <div className="flex items-center justify-center text-[var(--text-tertiary)] text-sm min-h-[200px]">No graph data</div>;
+    return <div className="flex items-center justify-center text-[var(--text-tertiary)] text-sm min-h-[200px]">{t('graphViewer.noData')}</div>;
   }
 
   return (
@@ -964,7 +964,7 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
                       <button
                         className="w-full text-left px-3 py-2 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] border-t border-[var(--border)] transition-all"
                         onClick={() => setLabelFilter([])}
-                      >Clear filter</button>
+                      >{t('graphViewer.clearFilter')}</button>
                     )}
                   </div>
                 </>

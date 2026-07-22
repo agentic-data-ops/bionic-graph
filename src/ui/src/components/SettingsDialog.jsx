@@ -690,7 +690,7 @@ export default function SettingsDialog({
                       <button className="px-2.5 py-1 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] rounded-lg transition-all" onClick={() => setEditingWebProvider({ ...p })}>{t('panel.edit')}</button>
                       <button className="px-2.5 py-1 text-xs text-[var(--danger)] hover:bg-[color-mix(in srgb, var(--bg-hover), var(--danger) 30%)] rounded-lg transition-all" onClick={() => {
                         setWebSearchConfig({ ...webSearchConfig, providers: webSearchConfig.providers.filter((x) => x.name !== p.name) });
-                      }}>删除</button>
+                      }}>{t('settings.delete')}</button>
                     </div>
                   </div>
                 ))}

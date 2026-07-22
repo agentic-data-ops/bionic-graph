@@ -123,14 +123,14 @@ function ChatMessage({ message, graphRef, onMaximizeRef, theme, onEdit, onSaveTo
       <div className="flex justify-start mb-3 message-enter">
         <div className="w-full max-w-[90%] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-2xl overflow-hidden shadow-sm">
           <div className="px-4 py-3.5">
-            <div className="text-xs text-[var(--accent)] font-semibold mb-2 tracking-tight">🔎 Graph Search · <span className="text-[var(--text-tertiary)] font-normal">{message.title}</span></div>
+            <div className="text-xs text-[var(--accent)] font-semibold mb-2 tracking-tight">{t('chat.graphSearch')} <span className="text-[var(--text-tertiary)] font-normal">{message.title}</span></div>
             <div className="space-y-0">{(message.steps || []).map((step, i) => <SearchStep key={i} step={step} />)}</div>
           </div>
           {message.graphData && (
             <div className="border-t border-[var(--border)]">
               <div className="px-4 py-2 bg-[var(--bg-secondary)] border-b border-[var(--border)] flex items-center gap-2">
                 <span className="text-xs font-semibold text-[var(--text-primary)] tracking-tight">{t('chat.searchResult')}</span>
-                <span className="text-xs text-[var(--text-tertiary)] ml-auto font-medium">{message.graphData?.data?.length || 0} <span className="text-[var(--text-muted)]">items</span></span>
+                <span className="text-xs text-[var(--text-tertiary)] ml-auto font-medium">{message.graphData?.data?.length || 0} <span className="text-[var(--text-muted)]">{t('chat.items')}</span></span>
                 <button className="w-6 h-6 rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-all flex-shrink-0 ml-2" onClick={() => onMaximizeRef?.(message.graphName)} title={t('chat.maximize')}>
                   <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
@@ -150,7 +150,7 @@ function ChatMessage({ message, graphRef, onMaximizeRef, theme, onEdit, onSaveTo
         <div className="w-full max-w-[90%] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-2xl overflow-hidden shadow-sm">
           <div className="px-4 py-2.5 bg-[var(--bg-secondary)] border-b border-[var(--border)] flex items-center gap-2">
             <span className="text-xs font-semibold text-[var(--text-primary)] tracking-tight">{t('chat.searchResult')}</span>
-            <span className="text-xs text-[var(--text-tertiary)] ml-auto font-medium">{message.data?.data?.length || 0} <span className="text-[var(--text-muted)]">items</span></span>
+            <span className="text-xs text-[var(--text-tertiary)] ml-auto font-medium">{message.data?.data?.length || 0} <span className="text-[var(--text-muted)]">{t('chat.items')}</span></span>
             <button className="w-6 h-6 rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-all flex-shrink-0 ml-2" onClick={() => onMaximizeRef?.(message.graphName)} title={t('chat.maximize')}>
               <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
@@ -167,11 +167,11 @@ function ChatMessage({ message, graphRef, onMaximizeRef, theme, onEdit, onSaveTo
       <div className="flex justify-start mb-3 message-enter">
         <div className="w-full max-w-[90%] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-2xl overflow-hidden shadow-sm">
           <div className="px-4 py-3.5">
-            <div className="text-xs text-[var(--accent)] font-semibold mb-2 tracking-tight">🌐 Web Search · <span className="text-[var(--text-tertiary)] font-normal">{message.title}</span></div>
+            <div className="text-xs text-[var(--accent)] font-semibold mb-2 tracking-tight">{t('chat.webSearch')} <span className="text-[var(--text-tertiary)] font-normal">{message.title}</span></div>
             <div className="space-y-0">{(message.steps || []).map((step, i) => <SearchStep key={i} step={step} />)}</div>
             {message.webDetail && (
               <div className="mt-2 text-xs text-[var(--text-tertiary)] leading-relaxed border-t border-[var(--border)] pt-2">
-                <div className="font-medium text-[var(--text-primary)] mb-1">Selected results:</div>
+                <div className="font-medium text-[var(--text-primary)] mb-1">{t('chat.selectedResults')}</div>
                 <div className="space-y-0.5">{message.webDetail.split('\n').map((line, i) => (
                   <div key={i} className="truncate">{line}</div>
                 ))}</div>
