@@ -204,6 +204,62 @@ class Client:
     def update_edge_meta(self, eid: int, meta: dict, graph: Optional[str] = None) -> None:
         self._request("PUT", f"/edges/{eid}/meta", json=meta, headers=self._graph_header(graph))
 
+    # ── 6b. Batch load ──────────────────────────────────────────────
+
+    def batch_load(
+        self,
+        entities: list[dict],
+        relations: list[dict],
+        graph: Optional[str] = None,
+        update_existing: bool = True,
+    ) -> dict:
+        """Batch import vertices and edges.
+
+        Vertices are upserted by 'name'. Edges are upserted by
+        (source_name, target_name, name). Edges reference vertices
+        by string name, not numeric ID.
+
+        Args:
+            entities: List of {name, labels?, keywords?, properties?}
+            relations: List of {source, target, name, labels?, keywords?, strength?, properties?}
+            graph: Target graph name (via X-Graph-Name header).
+            update_existing: If True (default), update existing vertices/edges.
+                             If False, skip existing and only create new ones.
+
+        Returns:
+            Dict with vertices_created, vertices_updated, vertices_skipped,
+            edges_created, edges_updated, edges_skipped.
+        """
+        body = {"entities": entities, "relations": relations, "update_existing": update_existing}
+        return self._request("POST", "/batch/load", json=body, headers=self._graph_header(graph))
+
+    def batch_delete(
+        self,
+        vertices: Optional[list[str]] = None,
+        edges: Optional[list[dict]] = None,
+        graph: Optional[str] = None,
+    ) -> dict:
+        """Batch delete vertices and edges by name.
+
+        Vertices are identified by 'name'. All edges connected to deleted
+        vertices (both incoming and outgoing) are also deleted.
+
+        Edges are identified by {source, target, name}.
+
+        Args:
+            vertices: List of vertex names to delete.
+            edges: List of {source, target, name} for edges to delete.
+            graph: Target graph name (via X-Graph-Name header).
+
+        Returns:
+            Dict with vertices_deleted, edges_deleted.
+        """
+        body = {
+            "vertices": vertices or [],
+            "edges": edges or [],
+        }
+        return self._request("POST", "/batch/delete", json=body, headers=self._graph_header(graph))
+
     # ── 7. Gremlin ──────────────────────────────────────────────────
 
     def execute_gremlin(self, steps: list[dict], graph: Optional[str] = None) -> GremlinResponse:
@@ -237,11 +293,11 @@ class Client:
             return [Document.model_validate(d) for d in data]
         return DocumentListResponse.model_validate(data).documents
 
-    def create_document(self, title: str, content: str, tags: Optional[list[str]] = None, graph: Optional[str] = None) -> dict:
+    def create_document(self, title: str, content: str, tags: Optional[list[str]] = None) -> dict:
         body: dict = {"title": title, "content": content}
         if tags:
             body["tags"] = tags
-        return self._request("POST", "/documents", json=body, headers=self._graph_header(graph))
+        return self._request("POST", "/documents", json=body)
 
     def get_document(self, doc_id: str) -> Document:
         return Document.model_validate(self._request("GET", f"/documents/{doc_id}"))
@@ -271,11 +327,11 @@ class Client:
     def submit_extraction(self, document_id: str, graph: Optional[str] = None, model: Optional[str] = None) -> ExtractionSubmitResponse:
         url = f"/extract"
         body: dict = {"document_id": document_id}
-        if graph:
-            body["graph"] = graph
         if model:
             body["model"] = model
-        return ExtractionSubmitResponse.model_validate(self._request("POST", url, json=body))
+        return ExtractionSubmitResponse.model_validate(
+            self._request("POST", url, json=body, headers=self._graph_header(graph))
+        )
 
     def extract_document(self, doc_id: str, graph: Optional[str] = None, model: Optional[str] = None) -> ExtractionSubmitResponse:
         url = f"/documents/{doc_id}/extract"

@@ -175,6 +175,61 @@ def graph_set_config(ctx, name, config):
     _output(c.set_graph_config(name, config).model_dump(), _fmt(ctx))
 
 
+# ── batch ─────────────────────────────────────────────────────────
+
+@main.group()
+def batch():
+    """Batch data operations."""
+
+
+@batch.command("load")
+@click.option("--graph", default="self-awareness", show_default=True, help="Target graph name")
+@click.option("--data", required=True, type=click.Path(exists=True, dir_okay=False),
+              help="Path to JSON file with 'entities' and 'relations' arrays")
+@click.option("--update-existing/--no-update-existing", default=True,
+              help="Update existing vertices/edges if they already exist (default: update)")
+@click.pass_context
+def batch_load(ctx, graph, data, update_existing):
+    """Load vertices and edges from a JSON file.
+
+    The JSON file must contain two arrays:
+      - "entities": list of {name, labels?, keywords?, properties?}
+      - "relations": list of {source, target, name, labels?, keywords?, strength?, properties?}
+
+    Vertices are identified by 'name'. Edges are identified by
+    (source_name, target_name, name).
+    """
+    c = _client(ctx)
+    with open(data, "r") as f:
+        payload = json.load(f)
+    entities = payload.get("entities", [])
+    relations = payload.get("relations", [])
+    _output(c.batch_load(entities, relations, graph, update_existing=update_existing), _fmt(ctx))
+
+
+@batch.command("delete")
+@click.option("--graph", default="self-awareness", show_default=True, help="Target graph name")
+@click.option("--data", required=True, type=click.Path(exists=True, dir_okay=False),
+              help="Path to JSON file with 'vertices' and/or 'edges' arrays")
+@click.pass_context
+def batch_delete(ctx, graph, data):
+    """Delete vertices and edges from a JSON file.
+
+    The JSON file may contain two arrays:
+      - "vertices": list of vertex names (strings) to delete.
+        All edges connected to these vertices are also deleted.
+      - "edges": list of {source, target, name} for specific edges to delete.
+
+    Edges are deleted before vertices.
+    """
+    c = _client(ctx)
+    with open(data, "r") as f:
+        payload = json.load(f)
+    vertices = payload.get("vertices", [])
+    edges = payload.get("edges", [])
+    _output(c.batch_delete(vertices=vertices, edges=edges, graph=graph), _fmt(ctx))
+
+
 # ── vertex ─────────────────────────────────────────────────────────
 
 @main.group()
@@ -386,12 +441,11 @@ def document_list(ctx, graph):
 @click.option("--content", required=True, help="Document content (markdown)")
 @click.option("--tags", callback=_parse_json_arg,
               help='JSON array of tags. Example: \'["important", "research"]\'')
-@click.option("--graph", help="Target graph for extraction (default: graph0)")
 @click.pass_context
-def document_create(ctx, title, content, tags, graph):
+def document_create(ctx, title, content, tags):
     """Create a new document."""
     c = _client(ctx)
-    _output(c.create_document(title, content, tags, graph), _fmt(ctx))
+    _output(c.create_document(title, content, tags), _fmt(ctx))
 
 
 @document.command("get")

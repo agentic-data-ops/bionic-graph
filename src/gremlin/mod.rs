@@ -100,6 +100,10 @@ pub fn build_router(
         .route("/settings/tokenizer", get(tokenizer_settings::get_tokenizer_settings))
         .route("/settings/tokenizer/words", post(tokenizer_settings::add_tokenizer_words))
         .route("/settings/tokenizer/words", delete(tokenizer_settings::remove_tokenizer_words))
+        // Data import
+        // Batch operations
+        .route("/batch/load", post(handle_batch_import))
+        .route("/batch/delete", post(handle_batch_delete))
         // Health
         .route("/health", get(health_check))
         // MaaS — OpenAI-compatible proxy
@@ -148,26 +152,37 @@ pub async fn health_check(
     })
 }
 
-// ── Helper: resolve graph name from header or query ─────────────────────────
+// ── Helper: resolve graph name from X-Graph-Name header ─────────────────────
 
-fn resolve_graph(state: &AppState, graph_name: Option<&str>) -> StorageResult<Arc<Graph>> {
-    let name = graph_name.map(|s| s.to_string()).unwrap_or_else(|| state.gm.get_default_name());
+/// Resolve graph name from X-Graph-Name header only, then fall back to default.
+fn resolve_graph_from_request(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+) -> StorageResult<Arc<Graph>> {
+    let name = headers
+        .get("X-Graph-Name")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| state.gm.get_default_name());
     state.gm.get(&name)
 }
+
+/// Serde helper: default value `true` for optional boolean fields.
+fn default_true() -> bool { true }
 
 // ── POST /gremlin2 ──────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 pub struct GremlinParams {
-    pub graph: Option<String>,
 }
 
 pub async fn handle_gremlin(
     State(state): State<AppState>,
     Query(params): Query<GremlinParams>,
+    headers: axum::http::HeaderMap,
     Json(mut query): Json<GremlinQuery>,
 ) -> Json<GremlinResponse> {
-    let graph = match resolve_graph(&state, params.graph.as_deref()) {
+    let graph = match resolve_graph_from_request(&state, &headers) {
         Ok(g) => g,
         Err(e) => {
             return Json(GremlinResponse {
@@ -308,14 +323,14 @@ pub struct SearchParams {
     pub mode: Option<String>,
     pub at: Option<u64>,
     pub limit: Option<u32>,
-    pub graph: Option<String>,
 }
 
 pub async fn handle_search(
     State(state): State<AppState>,
     Query(params): Query<SearchParams>,
+    headers: axum::http::HeaderMap,
 ) -> Json<GremlinResponse> {
-    let graph = match resolve_graph(&state, params.graph.as_deref()) {
+    let graph = match resolve_graph_from_request(&state, &headers) {
         Ok(g) => g,
         Err(e) => {
             return Json(GremlinResponse {
@@ -344,11 +359,6 @@ pub async fn handle_search(
 
 // ── Shared query types ──────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
-pub struct GraphQuery {
-    pub graph: Option<String>,
-}
-
 // ── POST /vertices ─────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -367,10 +377,11 @@ pub struct CreateVertexResponse {
 
 pub async fn create_vertex(
     State(state): State<AppState>,
-    Query(query): Query<GraphQuery>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<CreateVertexBody>,
 ) -> Result<Json<CreateVertexResponse>, StatusCode> {
-    let graph = resolve_graph(&state, query.graph.as_deref()).map_err(|_| StatusCode::NOT_FOUND)?;
+    let graph = resolve_graph_from_request(&state, &headers)
+        .map_err(|_| StatusCode::NOT_FOUND)?;
     let vid = crate::graph::locked::create_vertex_locked(
         &graph,
         &body.name,
@@ -395,10 +406,10 @@ pub struct UpdateVertexBody {
 pub async fn update_vertex(
     State(state): State<AppState>,
     Path(id): Path<u32>,
-    Query(query): Query<GraphQuery>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<UpdateVertexBody>,
 ) -> StatusCode {
-    let graph = match resolve_graph(&state, query.graph.as_deref()) {
+    let graph = match resolve_graph_from_request(&state, &headers) {
         Ok(g) => g,
         Err(_) => return StatusCode::NOT_FOUND,
     };
@@ -422,15 +433,15 @@ pub async fn update_vertex(
 #[derive(Deserialize)]
 pub struct DeleteVertexParams {
     pub force: Option<bool>,
-    pub graph: Option<String>,
 }
 
 pub async fn delete_vertex(
     State(state): State<AppState>,
     Path(id): Path<u32>,
     Query(params): Query<DeleteVertexParams>,
+    headers: axum::http::HeaderMap,
 ) -> StatusCode {
-    let graph = match resolve_graph(&state, params.graph.as_deref()) {
+    let graph = match resolve_graph_from_request(&state, &headers) {
         Ok(g) => g,
         Err(_) => return StatusCode::NOT_FOUND,
     };
@@ -460,8 +471,9 @@ pub async fn delete_vertex(
 pub async fn handle_get_vertex_meta(
     State(state): State<AppState>,
     Path(id): Path<u32>,
+    headers: axum::http::HeaderMap,
 ) -> Json<serde_json::Value> {
-    let graph = match resolve_graph(&state, None) {
+    let graph = match resolve_graph_from_request(&state, &headers) {
         Ok(g) => g,
         Err(e) => return Json(serde_json::json!({"error": e.to_string()})),
     };
@@ -490,6 +502,7 @@ pub async fn handle_get_vertex_meta(
 pub async fn handle_update_vertex_meta(
     State(state): State<AppState>,
     Path(id): Path<u32>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> StatusCode {
     let new_rank = body.get("rank").and_then(|v| v.as_u64()).map(|v| v as u32);
@@ -497,7 +510,7 @@ pub async fn handle_update_vertex_meta(
     if new_rank.is_none() && new_atime.is_none() {
         return StatusCode::BAD_REQUEST;
     }
-    let graph = match resolve_graph(&state, None) {
+    let graph = match resolve_graph_from_request(&state, &headers) {
         Ok(g) => g,
         Err(_) => return StatusCode::NOT_FOUND,
     };
@@ -533,10 +546,11 @@ pub struct CreateEdgeResponse {
 
 pub async fn create_edge(
     State(state): State<AppState>,
-    Query(query): Query<GraphQuery>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<CreateEdgeBody>,
 ) -> Result<Json<CreateEdgeResponse>, StatusCode> {
-    let graph = resolve_graph(&state, query.graph.as_deref()).map_err(|_| StatusCode::NOT_FOUND)?;
+    let graph = resolve_graph_from_request(&state, &headers)
+        .map_err(|_| StatusCode::NOT_FOUND)?;
     let eid = crate::graph::locked::create_edge_locked(
         &graph,
         body.source,
@@ -565,10 +579,10 @@ pub struct UpdateEdgeBody {
 pub async fn update_edge(
     State(state): State<AppState>,
     Path(id): Path<u32>,
-    Query(query): Query<GraphQuery>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<UpdateEdgeBody>,
 ) -> StatusCode {
-    let graph = match resolve_graph(&state, query.graph.as_deref()) {
+    let graph = match resolve_graph_from_request(&state, &headers) {
         Ok(g) => g,
         Err(_) => return StatusCode::NOT_FOUND,
     };
@@ -593,15 +607,15 @@ pub async fn update_edge(
 #[derive(Deserialize)]
 pub struct DeleteEdgeParams {
     pub force: Option<bool>,
-    pub graph: Option<String>,
 }
 
 pub async fn delete_edge(
     State(state): State<AppState>,
     Path(id): Path<u32>,
     Query(params): Query<DeleteEdgeParams>,
+    headers: axum::http::HeaderMap,
 ) -> StatusCode {
-    let graph = match resolve_graph(&state, params.graph.as_deref()) {
+    let graph = match resolve_graph_from_request(&state, &headers) {
         Ok(g) => g,
         Err(_) => return StatusCode::NOT_FOUND,
     };
@@ -631,8 +645,9 @@ pub async fn delete_edge(
 pub async fn handle_get_edge_meta(
     State(state): State<AppState>,
     Path(id): Path<u32>,
+    headers: axum::http::HeaderMap,
 ) -> Json<serde_json::Value> {
-    let graph = match resolve_graph(&state, None) {
+    let graph = match resolve_graph_from_request(&state, &headers) {
         Ok(g) => g,
         Err(e) => return Json(serde_json::json!({"error": e.to_string()})),
     };
@@ -660,6 +675,7 @@ pub async fn handle_get_edge_meta(
 pub async fn handle_update_edge_meta(
     State(state): State<AppState>,
     Path(id): Path<u32>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> StatusCode {
     let new_rank = body.get("rank").and_then(|v| v.as_u64()).map(|v| v as u32);
@@ -667,7 +683,7 @@ pub async fn handle_update_edge_meta(
     if new_rank.is_none() && new_atime.is_none() {
         return StatusCode::BAD_REQUEST;
     }
-    let graph = match resolve_graph(&state, None) {
+    let graph = match resolve_graph_from_request(&state, &headers) {
         Ok(g) => g,
         Err(_) => return StatusCode::NOT_FOUND,
     };
@@ -823,6 +839,52 @@ pub async fn put_graph_config_handler(
     }
 }
 
+// ── POST /batch/load — batch import vertices and edges ────────────
+
+#[derive(Deserialize)]
+pub struct BatchImportBody {
+    #[serde(default)]
+    pub entities: Vec<crate::graph::batch::BatchEntity>,
+    #[serde(default)]
+    pub relations: Vec<crate::graph::batch::BatchRelation>,
+    #[serde(default = "crate::gremlin::default_true")]
+    pub update_existing: bool,
+}
+
+pub async fn handle_batch_import(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<BatchImportBody>,
+) -> Result<Json<crate::graph::batch::BatchImportResult>, StatusCode> {
+    let graph = crate::gremlin::resolve_graph_from_request(&state, &headers)
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let result = crate::graph::batch::batch_import(
+        &graph, &body.entities, &body.relations, "", body.update_existing,
+    );
+    Ok(Json(result))
+}
+
+// ── POST /batch/delete — batch delete vertices and edges ─────────────
+
+#[derive(Deserialize)]
+pub struct BatchDeleteBody {
+    #[serde(default)]
+    pub vertices: Vec<String>,
+    #[serde(default)]
+    pub edges: Vec<crate::graph::batch::BatchDeleteEdge>,
+}
+
+pub async fn handle_batch_delete(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<BatchDeleteBody>,
+) -> Result<Json<crate::graph::batch::BatchDeleteResult>, StatusCode> {
+    let graph = crate::gremlin::resolve_graph_from_request(&state, &headers)
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let result = crate::graph::batch::batch_delete(&graph, &body.vertices, &body.edges);
+    Ok(Json(result))
+}
+
 // ── Document CRUD ───────────────────────────────────────────────────────────
 
 /// List all documents.
@@ -835,7 +897,6 @@ pub async fn list_documents(
 /// Create a new document.
 #[derive(Deserialize)]
 pub struct CreateDocumentBody {
-    pub graph: Option<String>,
     pub title: String,
     pub content: String,
     pub tags: Option<Vec<String>>,
@@ -853,9 +914,11 @@ pub async fn create_document(
     Json(body): Json<CreateDocumentBody>,
 ) -> Json<CreateDocumentResponse> {
     let id = uuid::Uuid::new_v4().to_string();
-    let graph_name = body.graph.unwrap_or_else(|| state.gm.get_default_name());
+    // Documents are created without a graph association.
+    // The graph is assigned during extraction.
+    let graph_name = "";
     let tags = body.tags.unwrap_or_default();
-    state.doc_mgr.add(&id, &body.title, &body.content, &tags, &graph_name);
+    state.doc_mgr.add(&id, &body.title, &body.content, &tags, graph_name);
     Json(CreateDocumentResponse {
         id,
         title: body.title,
@@ -876,7 +939,6 @@ pub async fn get_document(
 pub struct UpdateDocumentBody {
     pub title: Option<String>,
     pub tags: Option<Vec<String>>,
-    pub graph: Option<String>,
 }
 
 pub async fn update_document(
@@ -886,7 +948,8 @@ pub async fn update_document(
 ) -> Json<serde_json::Value> {
     let title = body.title.as_deref().unwrap_or("");
     let tags = body.tags.as_deref().unwrap_or(&[]);
-    match state.doc_mgr.update(&id, title, tags, body.graph.as_deref()) {
+    // Document graph association is set only during extraction, not via update.
+    match state.doc_mgr.update(&id, title, tags, None) {
         Some(_) => Json(serde_json::json!({"status": "ok"})),
         None => Json(serde_json::json!({"status": "error", "message": "not found"})),
     }
@@ -971,7 +1034,6 @@ pub async fn get_document_content(
 #[derive(Deserialize)]
 pub struct SubmitExtractionBody {
     pub document_id: String,
-    pub graph: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -983,10 +1045,14 @@ pub struct SubmitExtractionResponse {
 
 pub async fn submit_extraction(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<SubmitExtractionBody>,
 ) -> Result<Json<SubmitExtractionResponse>, StatusCode> {
     let default_name = state.gm.get_default_name();
-    let graph_name = body.graph.as_deref().unwrap_or(&default_name);
+    let graph_name = headers
+        .get("X-Graph-Name")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or(&default_name);
     let doc_id = body.document_id.clone();
 
     // Verify document exists
@@ -1159,110 +1225,58 @@ Return ONLY valid JSON with this structure:
             }
         };
 
-        // Step 3: Create vertices
+        task_mgr.complete_step(&tid, "Parsing LLM response");
+
+        // Step 3-4: Batch import entities and relations via the shared batch_import function.
         {
             let mut tasks = task_mgr.tasks.lock().unwrap();
             if let Some(task) = tasks.get_mut(&tid) {
-                update_step(&mut task.steps, "Creating graph vertices", "running", 0.0,
-                    Some(&format!("0/{} entities", parsed.entities.len())));
+                update_step(&mut task.steps, "Importing graph data", "running", 0.0,
+                    Some(&format!("0/{} entities, 0/{} relations",
+                        parsed.entities.len(), parsed.relations.len())));
             }
         }
+
+        let batch_entities: Vec<crate::graph::batch::BatchEntity> = parsed.entities.iter().map(|e| {
+            let mut props = e.properties.clone().unwrap_or_default();
+            props.insert("_source_doc_id".to_string(), serde_json::Value::String(doc_id.clone()));
+            crate::graph::batch::BatchEntity {
+                name: e.name.clone().unwrap_or_else(|| "unknown".to_string()),
+                labels: e.labels.clone().unwrap_or_else(|| vec!["entity".to_string()]),
+                keywords: e.keywords.clone().unwrap_or_default(),
+                properties: props,
+            }
+        }).collect();
+
+        let batch_relations: Vec<crate::graph::batch::BatchRelation> = parsed.relations.iter().map(|r| {
+            let mut props = r.properties.clone().unwrap_or_default();
+            props.insert("_source_doc_id".to_string(), serde_json::Value::String(doc_id.clone()));
+            crate::graph::batch::BatchRelation {
+                source: r.source.clone().unwrap_or_default(),
+                target: r.target.clone().unwrap_or_default(),
+                name: r.name.clone().unwrap_or_else(|| "related_to".to_string()),
+                labels: r.labels.clone().unwrap_or_default(),
+                keywords: r.keywords.clone().unwrap_or_default(),
+                strength: r.strength,
+                properties: props,
+            }
+        }).collect();
 
         let total_entities = parsed.entities.len();
-        let mut name_to_vid: HashMap<String, u32> = HashMap::new();
-        let mut vertex_count = 0usize;
-
-        for entity in &parsed.entities {
-            let name = entity.name.as_deref().unwrap_or("unknown");
-            let type_labels = entity.labels.clone().unwrap_or_else(|| vec!["entity".to_string()]);
-            let entity_kw = entity.keywords.clone().unwrap_or_default();
-            let entity_props: HashMap<String, PropertyValue> = entity.properties.as_ref()
-                .map(|p| p.iter().map(|(k, v)| (k.clone(), json_to_property_value(v))).collect())
-                .unwrap_or_default();
-            let mut entity_props = entity_props;
-            entity_props.insert("_source_doc_id".to_string(), PropertyValue::String(doc_id.clone()));
-
-            match crate::graph::locked::create_vertex_locked(
-                &graph_arc, name, &type_labels, &entity_kw, &entity_props,
-            ) {
-                Ok(vid) => {
-                    name_to_vid.insert(name.to_string(), vid);
-                    vertex_count += 1;
-                }
-                Err(e) => {
-                    log::warn!("Failed to create vertex '{}': {}", name, e);
-                }
-            }
-
-            let pct = if total_entities > 0 {
-                (vertex_count as f64 / total_entities as f64) * 100.0
-            } else {
-                100.0
-            };
-            task_mgr.update_task_steps(&tid, {
-                let mut tasks = task_mgr.tasks.lock().unwrap();
-                if let Some(task) = tasks.get_mut(&tid) {
-                    update_step(&mut task.steps, "Creating graph vertices", "running", pct,
-                        Some(&format!("{}/{} vertices created", vertex_count, total_entities)));
-                    task.steps.clone()
-                } else { vec![] }
-            });
-        }
-
-        task_mgr.complete_step(&tid, "Creating graph vertices");
-
-        // Step 4: Create edges
-        {
-            let mut tasks = task_mgr.tasks.lock().unwrap();
-            if let Some(task) = tasks.get_mut(&tid) {
-                update_step(&mut task.steps, "Creating graph edges", "running", 0.0,
-                    Some(&format!("0/{} edges", parsed.relations.len())));
-            }
-        }
-
         let total_relations = parsed.relations.len();
-        let mut edge_count = 0usize;
 
-        for relation in &parsed.relations {
-            let src_name = relation.source.as_deref().unwrap_or("");
-            let tgt_name = relation.target.as_deref().unwrap_or("");
-            let rel_name = relation.name.as_deref().unwrap_or("related_to");
-            let rel_labels = relation.labels.clone().unwrap_or_default();
-            let rel_keywords = relation.keywords.clone().unwrap_or_default();
-            let rel_props: HashMap<String, PropertyValue> = relation.properties.as_ref()
-                .map(|p| p.iter().map(|(k, v)| (k.clone(), json_to_property_value(v))).collect())
-                .unwrap_or_default();
-            let mut rel_props = rel_props;
-            rel_props.insert("_source_doc_id".to_string(), PropertyValue::String(doc_id.clone()));
+        let batch_result = crate::graph::batch::batch_import(
+            &graph_arc, &batch_entities, &batch_relations, &doc_id, true,
+        );
 
-            if let (Some(&src_vid), Some(&tgt_vid)) = (name_to_vid.get(src_name), name_to_vid.get(tgt_name)) {
-                match crate::graph::locked::create_edge_locked(
-                    &graph_arc, src_vid, tgt_vid, rel_name, &rel_labels, &rel_keywords, relation.strength, &rel_props,
-                ) {
-                    Ok(_) => edge_count += 1,
-                    Err(e) => log::warn!("Failed to create edge '{}->{}': {}", src_name, tgt_name, e),
-                }
-            }
+        let vertex_count = batch_result.vertices_created + batch_result.vertices_updated;
+        let edge_count = batch_result.edges_created + batch_result.edges_updated;
 
-            let pct = if total_relations > 0 {
-                (edge_count as f64 / total_relations as f64) * 100.0
-            } else {
-                100.0
-            };
-            task_mgr.update_task_steps(&tid, {
-                let mut tasks = task_mgr.tasks.lock().unwrap();
-                if let Some(task) = tasks.get_mut(&tid) {
-                    update_step(&mut task.steps, "Creating graph edges", "running", pct,
-                        Some(&format!("{}/{} edges created", edge_count, total_relations)));
-                    task.steps.clone()
-                } else { vec![] }
-            });
-        }
+        task_mgr.complete_step(&tid, "Importing graph data");
 
-        // Write extracted tags back to the document metadata.
-        if !parsed.tags.is_empty() {
-            doc_mgr.update(&doc_id, &doc_title, &parsed.tags, Some(&gname));
-        }
+        // Write extracted tags back to the document metadata and
+        // associate the document with the target graph.
+        doc_mgr.update(&doc_id, &doc_title, &parsed.tags, Some(&gname));
 
         // Mark task as completed
         {
@@ -1337,12 +1351,13 @@ pub async fn extract_document_handler(
     // Resolve the graph
     let _graph = state.gm.get(graph_name).map_err(|_| StatusCode::NOT_FOUND)?;
 
-    // Forward to submit_extraction logic
+    // Forward to submit_extraction logic, passing the original headers
+    // so graph name is derived from X-Graph-Name consistently.
     submit_extraction(
         State(state),
+        headers,
         Json(SubmitExtractionBody {
             document_id,
-            graph: Some(graph_name.to_string()),
         }),
     ).await
 }

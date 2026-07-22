@@ -207,10 +207,10 @@ export async function listDocuments() {
   return api('/documents');
 }
 
-export async function addDocument(title, content, tags = [], graphName = '') {
+export async function addDocument(title, content, tags = []) {
   return api('/documents', {
     method: 'POST',
-    body: JSON.stringify({ title, content, tags, graph: graphName }),
+    body: JSON.stringify({ title, content, tags }),
   });
 }
 
@@ -224,10 +224,10 @@ export async function getDocumentContent(id) {
   return res.text();
 }
 
-export async function updateDocument(id, title, tags = [], graphName) {
+export async function updateDocument(id, title, tags = []) {
   return api(`/documents/${encodeURIComponent(id)}`, {
     method: 'PUT',
-    body: JSON.stringify({ title, tags, graph: graphName || undefined }),
+    body: JSON.stringify({ title, tags }),
   });
 }
 

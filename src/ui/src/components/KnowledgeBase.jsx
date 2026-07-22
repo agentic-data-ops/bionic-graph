@@ -192,7 +192,7 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
     addStep({ label: 'Adding document...', status: 'running', detail: '' });
     let docId;
     try {
-      const doc = await addDocument(title, content, [], graphName);
+      const doc = await addDocument(title, content, []);
       docId = doc.id;
       addStep({ label: `Document saved: ${title}`, status: 'done', detail: docId });
     } catch (e) {

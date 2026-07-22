@@ -36,12 +36,12 @@ Create a living knowledge graph that captures a person's identity, personality, 
 │  └──────────────────────────────────────┘                    │
 │                                                              │
 │  plan                                                        │
-│  Search graph → LLM generates plans (5 dimensions)           │
-│  → log/plan-<timestamp>.json → loaded into graph             │
+│  Search "my plan interest task activity" → LLM generates plans │
+│  → log/plan_<timestamp>.json → loaded into graph              │
 │                                                              │
 │  act                                                         │
 │  Fetch plans sorted by priority → LLM simulates top-N       │
-│  → log/activity-<timestamp>.json → loaded into graph        │
+│  → log/activity_<timestamp>.json → loaded into graph         │
 │  → plan status updated                                       │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -86,8 +86,8 @@ examples/self_awareness/
 ├── graph_utils.py         # Graph utility functions
 ├── self_soul.json         # [generated] Extracted KG from load phase
 ├── log/                   # [generated] Timestamped output files
-│   ├── plan-<timestamp>.json
-│   └── activity-<timestamp>.json
+│   ├── plan_<timestamp>.json
+│   └── activity_<timestamp>.json
 └── .gitignore             # log/ is gitignored
 ```
 
@@ -111,7 +111,7 @@ Commands:
            Options:
              --graph TEXT           Graph name (default: self-awareness)
              --model TEXT           LLM model name (default: settings default_model)
-             --output PATH          Output file path (default: log/plan-<timestamp>.json)
+             --output PATH          Output file path (default: log/plan_<timestamp>.json)
              --base-url TEXT        Backend URL (default: http://127.0.0.1:8080)
 
   act    Execute top-N activities sorted by priority
@@ -119,7 +119,7 @@ Commands:
              --count N             Number of activities to simulate (default: 3)
              --graph TEXT           Graph name (default: self-awareness)
              --model TEXT           LLM model name (default: settings default_model)
-             --output PATH          Output file path (default: log/activity-<timestamp>.json)
+             --output PATH          Output file path (default: log/activity_<timestamp>.json)
              --base-url TEXT        Backend URL (default: http://127.0.0.1:8080)
 
 Global options:
@@ -179,9 +179,9 @@ A complete example is provided in the bundled `self_soul.md`, which describes a 
                 │         ▼
 self_soul.md ──►  extraction  ──► self_soul.json ──► Graph
                                               │
-                     Graph state ──► LLM ──► plan.json ──► Graph
+                     Graph state ──► LLM ──► log/plan_<timestamp>.json ──► Graph
                                               │
-                     Plans ──► LLM ──► activity.json ──► Graph
+                     Plans ──► LLM ──► log/activity_<timestamp>.json ──► Graph
                                                             │
                                               Plan statuses updated
 ```

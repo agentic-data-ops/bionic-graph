@@ -1,4 +1,4 @@
-"""Graph utility functions for the Self-Awareness CLI pipeline.
+"""Graph utility functions for the Social Activities CLI pipeline.
 
 Handles graph lifecycle, dedup vertex loading, search, and plan updates.
 All operations use the Bionic-Graph Python SDK client.
@@ -10,6 +10,15 @@ import json
 from typing import Any, Optional
 
 from bionic_graph import Client
+
+
+def _to_dict(item) -> dict:
+    """Convert a Gremlin response item (Pydantic model or dict) to a plain dict."""
+    if isinstance(item, dict):
+        return item
+    if hasattr(item, "model_dump"):
+        return item.model_dump()
+    return dict(item)
 
 
 def ensure_graph(client: Client, graph_name: str) -> bool:
@@ -27,25 +36,16 @@ def ensure_graph(client: Client, graph_name: str) -> bool:
         if g.name == graph_name:
             print(f"  Using existing graph '{graph_name}'")
             return False
-    client.create_graph(name=graph_name, description="Self-awareness knowledge graph")
+    client.create_graph(name=graph_name, description="Social activities knowledge graph")
     print(f"  Created graph '{graph_name}'")
     return True
 
 
-def _to_dict(item) -> dict:
-    """Convert a Gremlin response item (Pydantic model or dict) to a plain dict."""
-    if isinstance(item, dict):
-        return item
-    if hasattr(item, 'model_dump'):
-        return item.model_dump()
-    return dict(item)
-
-
 def get_all_vertex_names(client: Client, graph_name: str) -> dict[str, int]:
-    """Get a mapping of vertex name → vertex ID for all vertices in the graph.
+    """Get a mapping of vertex name -> vertex ID for all vertices in the graph.
 
     Uses a Gremlin query to fetch all vertices with their names.
-    Returns a dict like {"self": 1, "Vancouver": 2, ...}.
+    Returns a dict like {"Zhang Wei": 1, "Wang Qiang": 2, ...}.
     """
     name_to_id: dict[str, int] = {}
     try:
@@ -96,12 +96,12 @@ def load_json_to_graph(client: Client, graph_name: str, data: dict) -> dict[str,
     for entity in entities:
         ename = entity.get("name", "")
         if not ename:
-            print("  ⚠️  Skipping entity with empty name")
+            print("  Skipping entity with empty name")
             continue
         if ename in name_to_id:
-            print(f"  ⏭️  Skip '{ename}' — already exists (id={name_to_id[ename]})")
+            print(f"  Skip '{ename}' — already exists (id={name_to_id[ename]})")
         else:
-            print(f"  ✅ Created '{ename}'")
+            print(f"  Created '{ename}'")
 
     # Batch load via SDK (upserts by name, no manual per-item calls needed)
     result = client.batch_load(entities, relations, graph=graph_name)
@@ -116,12 +116,12 @@ def load_json_to_graph(client: Client, graph_name: str, data: dict) -> dict[str,
         rel_name = rel.get("name", "")
 
         if src_name not in name_to_id:
-            print(f"  ⚠️  Skip relation '{rel_name}': source '{src_name}' not found")
+            print(f"  Skip relation '{rel_name}': source '{src_name}' not found")
             continue
         if tgt_name not in name_to_id:
-            print(f"  ⚠️  Skip relation '{rel_name}': target '{tgt_name}' not found")
+            print(f"  Skip relation '{rel_name}': target '{tgt_name}' not found")
             continue
-        print(f"  🔗 Created edge '{rel_name}'  {src_name} -> {tgt_name}")
+        print(f"  Created edge '{rel_name}'  {src_name} -> {tgt_name}")
 
     # Build stats from batch_load response
     stats = {
@@ -169,7 +169,6 @@ def search_graph(client: Client, query: str, graph_name: str, limit: int = 30) -
     try:
         resp = client.search(text=query, mode="greedy", limit=limit, graph=graph_name)
         if resp.success:
-            # Convert Pydantic model items to plain dicts
             return [_to_dict(item) for item in resp.data]
     except Exception as e:
         print(f"  Warning: search failed: {e}")
@@ -187,7 +186,6 @@ def update_plan_statuses(client: Client, graph_name: str, plan_updates: list[dic
     Returns:
         Number of successfully updated vertices.
     """
-    # Get current name → id mapping
     name_to_id = get_all_vertex_names(client, graph_name)
     updated = 0
 
@@ -196,35 +194,35 @@ def update_plan_statuses(client: Client, graph_name: str, plan_updates: list[dic
         props = update.get("properties", {})
         vid = name_to_id.get(pname)
         if vid is None:
-            print(f"  ⚠️  Plan '{pname}' not found for status update")
+            print(f"  Plan '{pname}' not found for status update")
             continue
         try:
             client.update_vertex(vid=vid, properties=props, graph=graph_name)
-            print(f"  📝 Updated plan '{pname}' (id={vid}): {json.dumps(props)}")
+            print(f"  Updated plan '{pname}' (id={vid}): {json.dumps(props)}")
             updated += 1
         except Exception as e:
-            print(f"  ⚠️  Failed to update plan '{pname}': {e}")
+            print(f"  Failed to update plan '{pname}': {e}")
 
     return updated
 
 
-def fetch_plans_sorted_by_rank(client: Client, graph_name: str) -> list[dict]:
-    """Fetch plans by searching 'my task', sorted by priority property descending.
+def fetch_plans_sorted_by_priority(client: Client, graph_name: str) -> list[dict]:
+    """Fetch plans by searching 'activity plan', sorted by priority descending.
 
     Returns:
-        List of plan vertex dicts, each with id, name, labels, properties, rank, priority.
+        List of plan vertex dicts, each with id, name, labels, properties, rank.
     """
     plans: list[dict] = []
     try:
-        # Search using "my task" keyword
-        resp = client.search(text="my task", mode="greedy", limit=50, graph=graph_name)
+        # Search using "activity plan" keyword
+        resp = client.search(text="activity plan", mode="greedy", limit=50, graph=graph_name)
         if resp.success and resp.data:
             for item in resp.data:
                 d = _to_dict(item)
                 if d.get("type") == "vertex":
                     plans.append(d)
 
-        # Fallback: if search returned nothing, scan all vertices for "plan" label
+        # Fallback: scan all vertices for "plan" label
         if not plans:
             steps = [{"step": "V"}]
             resp2 = client.execute_gremlin(steps, graph=graph_name)
@@ -236,8 +234,7 @@ def fetch_plans_sorted_by_rank(client: Client, graph_name: str) -> list[dict]:
                         if "plan" in labels:
                             plans.append(d)
 
-        # Sort by priority property descending (higher priority = more important)
-        # priority can be in properties.priority as int or float
+        # Sort by priority property descending, fallback to rank
         def _priority(p: dict) -> float:
             props = p.get("properties", {})
             val = props.get("priority", 0)

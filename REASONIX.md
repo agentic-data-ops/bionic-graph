@@ -46,6 +46,7 @@ src/
 │   ├── mod.rs               # Re-exports
 │   ├── graph.rs             # Graph struct (facade), GraphConfig, lifecycle
 │   ├── graph_registry.rs    # Graph metadata registry (persistent, multi-graph)
+│   ├── batch.rs             # Batch import/delete (upsert by name)
 │   ├── crud.rs              # Vertex/Edge CRUD with WAL + token extraction + rank
 │   ├── gremlin.rs           # Gremlin pipeline step engine (24 steps)
 │   ├── locked.rs            # Lock-safe CRUD wrappers
@@ -54,7 +55,7 @@ src/
 │   ├── rank_decay.rs        # Periodic rank decay background task
 │   └── tests.rs             # #[cfg(test)] integration tests (90+)
 ├── gremlin/                 # REST API routes + handlers (axum)
-│   ├── mod.rs               # AppState, build_router (44 routes), handlers
+│   ├── mod.rs               # AppState, build_router (50+ routes), handlers
 │   ├── settings.rs          # GET/PUT /settings/search, /settings/llm, /settings/rank, /settings/tokenizer
 │   └── tokenizer_settings.rs # Custom tokenizer dictionary words CRUD
 ├── graph_manager.rs         # Multi-graph manager (HashMap<String, Arc<Graph>>), close_all()
@@ -77,7 +78,19 @@ src/
 │   ├── node.rs              # NodeRegistry (master/worker)
 │   ├── forward.rs           # Write forwarding (worker → master)
 │   └── replication.rs       # Redo-log replication
-└── ui_serve.rs              # Embedded static file serving (rust-embed)
+├── ui_serve.rs              # Embedded static file serving (rust-embed)
+
+### Examples
+
+```
+examples/
+├── self_awareness/          # Self-awareness KG pipeline (load/plan/act)
+│   ├── cli.py, llm.py, prompts.py, graph_utils.py
+│   └── self_soul.md         # Detailed self-description document
+└── social_activities/       # Social activities KG pipeline
+    ├── cli.py, llm.py, prompts.py, graph_utils.py
+    └── social_activities.md # Group social activity document
+```
 ```
 
 ### Python SDK
@@ -88,8 +101,8 @@ sdk/python/
 ├── SKILL.md                # CLI usage guide
 ├── bionic_graph/
 │   ├── __init__.py         # Client + type exports
-│   ├── client.py           # Full REST API client (httpx, pydantic)
-│   ├── cli.py              # CLI entry point: bgcli (click, 11 topics)
+│   ├── client.py           # Full REST API client (httpx, pydantic) — CRUD, batch, extraction
+│   ├── cli.py              # CLI entry point: bgcli (click, 12 topics: health/graph/batch/vertex/edge/...)
 │   ├── models.py           # 18 Pydantic data models
 │   └── exceptions.py       # Error classes
 └── tests/
@@ -218,8 +231,11 @@ App.jsx
 | POST | `/documents/:id/extract` | Extract from document by ID |
 | GET | `/tasks/:task_id` | Task polling |
 | GET | `/tasks` | List tasks |
+| POST | `/batch/load` | Batch import vertices/edges (upsert by name) |
+| POST | `/batch/delete` | Batch delete vertices/edges by name |
 
-> Default graph: `"graph0"` when `?graph=` omitted. DELETE supports `?force=true`.
+> Graph selection via `X-Graph-Name` header (all CRUD + Gremlin + search + batch + document endpoints).
+> No `?graph=` query parameter support. Default graph: `"graph0"` when header omitted.
 
 ## WebSearchConfig
 
@@ -339,7 +355,7 @@ Decay ←─ spawn_rank_decay (background, every period secs)        │
 - **Route params**: axum 0.7.9 requires `:param` syntax.
 - **Data dir**: `<data_dir>/graphs/<name>/` with files: `data`, `bitmap`, `index`, `config.json`, `redo_*`.
 - **Default graph**: `"graph0"` when `?graph=` omitted.
-- **POST /vertices**: top-level `name` (String), optional `keywords`, `labels`, `properties`.
+- **POST /vertices**: top-level `name` (String), optional `keywords`, `labels`, `properties`. Properties must be flat (no nested dicts, arrays of strings/numbers/booleans only).
 - **POST /edges**: requires `source`, `target`, `name` (String). Optional `labels`, `keywords`, `strength` (f32, default 1.0), `properties`.
 - **DELETE ?force=true**: hard delete; without force: soft delete.
 - **Search step**: takes `text` (raw string), tokenized by jieba-rs.
@@ -351,11 +367,15 @@ Decay ←─ spawn_rank_decay (background, every period secs)        │
 - **Properties as JSON strings** inside binary blob (bincode incompatibility).
 - **Token strings**: `[u8; 43]` inline — >43 chars truncated.
 - **`touch src/ui_serve.rs`** needed after frontend changes.
-- **Extraction**: SYSTEM_PROMPT tells LLM to output `name`, `labels`, `keywords`, `properties` for entities; and `source`, `target`, `name`, `labels`, `keywords`, `strength`, `properties` for relations.
+- **Extraction**: uses `crate::graph::batch::batch_import()` internally — upserts vertices by name, edges by (source_name, target_name, name). SYSTEM_PROMPT tells LLM to output `name`, `labels`, `keywords`, `properties` for entities; and `source`, `target`, `name`, `labels`, `keywords`, `strength`, `properties` for relations.
 - **WAL batch writer**: `append()` sends via `mpsc::channel` to background thread. Caller blocks on Condvar until durability confirmed.
 - **SIGINT/SIGTERM**: server calls `GraphManager::close_all()` → flushes dirty blocks + checkpoints all WALs.
 - **`Graph::close()`**: calls `flush()` + `sync()` + `renew()`.
 - **Cluster mode**: requires `"role": "master"` or `"role": "worker"` in settings. Heartbeat every 5s by default.
+- **Document lifecycle**: created without graph association. Graph assigned during extraction via `X-Graph-Name` header.
+- **Batch API**: `/batch/load` upserts vertices by `name`, edges by `(source_name, target_name, name)`. `update_existing` (default true) controls upsert vs append. `/batch/delete` cascades to connected edges.
+- **ID isolation**: each graph has independent ID space. Counters computed from index max at startup (no longer in config.json).
+- **Graph name resolution**: via `X-Graph-Name` header on all CRUD/Gremlin/search/batch/document endpoints. No `?graph=` query parameter.
 
 ## Implemented Plans
 - `100-graph-rearch-design.md` — Block-based storage architecture
@@ -364,10 +384,12 @@ Decay ←─ spawn_rank_decay (background, every period secs)        │
 - `201-sdk-python-test-plan.md` — Python SDK CLI full test coverage (57 tests)
 - `--- task-module.md` — Generic task module extracted from extraction pipeline
 - `--- proxy-api-restructure.md` — Unified `/proxy/*` API paths, CLI theme restructure
+- `300-self-awareness-plan.md` — Self-awareness KG Python CLI pipeline
+- `301-example-social-activity-plan.md` — Social activities KG Python CLI pipeline
 
 ## TODO
 1. **前端测试** — 使用 Playwright 对前端交互进行端到端测试
-2. **构建个体自我意识图谱模板** — 设计并实现个体自我意识的知识图谱模板
+2. **构建个体自我意识图谱模板** — 设计并实现个体自我意识的知识图谱模板（已完成示例）
 3. **设计个体自我行为机制** — 在 GraphAgent 框架中实现个体自主行为决策机制
-4. **构建社会图谱** — 构建多个体间的社会关系图谱
+4. **构建社会图谱** — 构建多个体间的社会关系图谱（已完成示例）
 5. **设计社会行为机制** — 实现群体层面的社会行为机制
