@@ -277,7 +277,7 @@ curl -X POST localhost:8080/proxy/web-search \
 # Specify a different provider
 curl -X POST localhost:8080/proxy/web-search \
   -H 'Content-Type: application/json' \
-  -d '{"query":"winterfell","provider_name":"Bing"}'
+  -d '{"query":"winterfell","provider":"Bing"}'
 
 # List available LLM models
 curl localhost:8080/proxy/openai/v1/models

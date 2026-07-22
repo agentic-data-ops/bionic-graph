@@ -661,12 +661,12 @@ def proxy():
 
 @proxy.command("web-search")
 @click.option("--query", required=True, help="Search query text")
-@click.option("--provider-name", help="Web search provider name (default from settings)")
+@click.option("--provider", help="Web search provider name (default from settings)")
 @click.pass_context
-def proxy_web_search(ctx, query, provider_name):
+def proxy_web_search(ctx, query, provider):
     """Execute a web search via the configured proxy."""
     c = _client(ctx)
-    data = c.web_search_proxy(query, provider_name)
+    data = c.web_search_proxy(query, provider)
     if _fmt(ctx) == "json":
         _output({"data": data[:500]}, "json")
     else:

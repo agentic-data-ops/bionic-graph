@@ -273,7 +273,7 @@ bgcli document extract d1                                 # Background extractio
 bgcli task list                                           # Async tasks
 bgcli task get --task-id t1                                # Task status
 bgcli task wait --task-id t1                               # Wait for task
-bgcli proxy web-search --query "AI" --provider-name "Baidu"           # Web search
+bgcli proxy web-search --query "AI" --provider "Baidu"           # Web search
 bgcli proxy openai-models                                  # List LLM models
 bgcli proxy openai-chat --messages '...'                   # LLM chat
 
