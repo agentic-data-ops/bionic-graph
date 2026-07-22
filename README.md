@@ -8,58 +8,58 @@
 
 ## What it is
 
-Bionic-Graph is a **AI graph engine** built entirely in Rust. It combines a custom block-based storage engine, token-indexed full-text search, and a Gremlin-compatible query pipeline — served with a chat-based AI interface and a React frontend.
+Bionic-Graph is an **AI graph engine** built entirely in Rust. It combines a custom block-based storage engine, token-indexed full-text search, and a Gremlin-compatible query pipeline — served with a chat-based AI interface and a React frontend.
 
-Unlike relational or document databases, Bionic-Graph is optimized for **full-text search and attention based traverse**, which is a typical use case of AI Agent memory recall. The **full-text search** is implemented with a token-indexed inverted index, which is more efficient than graph engines build on top of relational database. The **attention based traverse** is implemented with a Bionic Neuronal Spreads Traverse, the entity activation and relation spread is based on the attention scores calculated from relation strength and traverse depth, just like what happens in your brain when recalling memory.
+Unlike relational or document databases, Bionic-Graph is optimized for **full-text search and attention-based traverse**, which is a typical use case of AI Agent memory recall. The **full-text search** is implemented with a token-indexed inverted index, which is more efficient than graph engines built on top of relational databases. The **attention-based traverse** is implemented with a Bionic Neuronal Spread Traverse, where the entity activation and relation spread are based on the attention scores calculated from relation strength and traverse depth, just like what happens in your brain when recalling memory.
 
-Like human brain, Bionic-Graph is **self-updating**. A **self-update ranking merchanism** is implemented with a rank-ordered index, which is updated in real-time when a vertex or edge is accessed or updated. 
+Like the human brain, Bionic-Graph is **self-updating**. A **self-update ranking mechanism** is implemented with a rank-ordered index, which is updated in real-time when a vertex or edge is accessed or updated. 
 
-Unlike humain brain, Bionic-Graph supports **time travel**, which means you can access history memories at any time point, like a brain memory snapshot. The time travel search and traverse only happens on the time point data.
+Unlike the human brain, Bionic-Graph supports **time travel**, which means you can access historical memories at any point in time, like a brain memory snapshot. The time travel search and traverse only happen on the data at that point in time.
 
-There are two examples implemented in the project, one is **self-awareness** example, which simulated a soul of a human being, the other is **social activity** example, which simulates the activities of a group people. Both example support **plan** and **act**, which is designed to simulate the think and act process of a human or a community.
+There are two examples implemented in the project: one is the **self-awareness** example, which simulates the soul of a human being; the other is the **social activity** example, which simulates the activities of a group of people. Both examples support **plan** and **act**, which are designed to simulate the thinking and acting processes of a human or a community.
 
 ### System Architecture
 
-Bionic-Graph is build from the ground with Rust, with a storage engine based on block-based storage, a graph engine based on token-indexed query, and a frontend with a Chat UI for easily interacting with the graph.
+Bionic-Graph is built from the ground up with Rust, organized in five layers from frontend to storage.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                    React Frontend (vis-network)               │
-│  Chat interface  |  Knowledge Base  |  Graph Visualization   │
-│  LLM Chat (SSE)  |  Semantic Search  |  Document Extraction  │
+│            React Frontend (vis-network)                      │
+│  Chat UI  |  Graph Visualization  |  KB                      │
+│  LLM Chat (SSE)  |  Document Extraction                      │
 ├──────────────────────────────────────────────────────────────┤
-│                   REST API + Proxy (axum, embedded)           │
-│  /gremlin  |  /vertices  |  /edges  |  /documents  |  /search │
-│  /proxy/openai/v1/models | /proxy/openai/v1/chat/completions  │
-│  /proxy/web-search | /tasks  | /tasks/:task_id                │
-│  /batch/load | /batch/delete                                  │
-│  /settings/graph/search | /settings/graph/rank | /settings/llm │
-│  /settings/web-search | /settings/tokenizer                    │
-│  /extract  |  /graphs  |  /documents/:id/extract               │
+│            REST API + Proxy (axum)                           │
+│  /gremlin  |  /vertices  |  /edges  |  /search               │
+│  /proxy/openai/*  |  /proxy/web-search                       │
+│  /batch/*  |  /documents  |  /extract                        │
+│  /settings/*  |  /graphs  |  /tasks                          │
 ├──────────────────────────────────────────────────────────────┤
-│              Graph Engine (token-indexed query)                │
-│  Gremlin pipeline (24 steps)  |  BFS+DFS traversal            │
-│  Lock-safe CRUD  |  jieba-rs tokenizer  |  rank/atime tracking│
+│            Graph Engine (token-indexed)                      │
+│  Gremlin (23 steps)  |  BFS+DFS Traversal                    │
+│  jieba-rs Tokenizer  |  Lock-safe CRUD                       │
+│  Rank/Atime Tracking  |  Time Travel                         │
 ├──────────────────────────────────────────────────────────────┤
-│              In-Memory Index (rebuild at startup)              │
-│  BTreeMap (vertex/edge by ID)  |  TokenMap (prefix + word)    │
-│  RankIndex (rank-ordered)  |  AdjacencyIndex (bidirectional)  │
+│            In-Memory Index (rebuild on startup)              │
+│  BTreeMap (by ID)  |  TokenMap (prefix+word)                 │
+│  RankIndex  |  AdjacencyIndex                                │
 ├──────────────────────────────────────────────────────────────┤
-│              Storage Engine (block-based, 16KB blocks)         │
-│  DataFile + Bitmap  |  IndexFile (64B records)                 │
-│  LRU BlockCache (64MB)  |  WAL redo log                        │
-│  LockManager (striped RwLock pools, deadlock-free ordering)   │
+│            Storage Engine (block-based, 16KB)                │
+│  DataFile + Bitmap  |  IndexFile (64B)                       │
+│  LRU BlockCache (64MB)  |  WAL Redo Log                      │
+│  LockManager (striped RwLock pools)                          │
 └──────────────────────────────────────────────────────────────┘
 ```
 
 ### Layers
 
-| Layer | Module | What it does |
+| Layer | Module | Key Features |
 |-------|--------|-------------|
-| **Frontend** | `src/ui/` | React 19 + Vite 8 + Tailwind CSS 4. Chat interface, knowledge base management, graph visualization via vis-network (Canvas 2D, no WebGL). All LLM calls go through backend MaaS proxy. |
-| **Graph Engine** | `src/graph/` | `Graph` struct (facade), CRUD operations, Gremlin pipeline (25 steps), jieba-rs tokenizer, bincode serialize. Lock-safe wrappers in `locked.rs`. |
-| **Gremlin API** | `src/gremlin/` | REST routes (45+ endpoints) including graph CRUD, search, rank, LLM, web search, and tokenizer settings. Proxy services at `/proxy/*` (web search, OpenAI-compatible LLM). Generic async task tracking at `/tasks/*`. Auto-injects `match_mode` and `traverse` step from graph search config. |
-| **Python SDK** | `sdk/python/` | Full REST API client library (`pip install git+...`). CLI tool `bgcli` with 11 topics, 45+ actions, interactive chat mode supporting web + graph search. |
+| **Frontend** | `src/ui/` | React 19 + vis-network. Chat UI, graph visualization, knowledge base management. All LLM calls proxied through backend. |
+| **REST API** | `src/gremlin/` | 45+ axum routes: graph CRUD, Gremlin queries, settings, document extraction, OpenAI-compatible proxy, web search proxy, async task tracking. |
+| **Graph Engine** | `src/graph/` | Gremlin pipeline (23 steps), jieba-rs tokenizer, lock-safe CRUD with WAL, rank/atime tracking, time travel. |
+| **In-Memory Index** | `src/storage/` | BTreeMap (by ID), TokenMap (prefix+word), RankIndex, AdjacencyIndex. Rebuilt from disk at startup. |
+| **Storage Engine** | `src/storage/` | 16KB block-based, 64B fixed records, LRU BlockCache (64MB), WAL redo log with crash recovery, deadlock-free RwLock pools. |
+| **Python SDK** | `sdk/python/` | Full REST API client. CLI tool `bgcli` with 12 topics, interactive chat with web + graph search. |
 
 ### How it works — a search flow
 
@@ -126,6 +126,7 @@ After frontend changes, `touch src/ui_serve.rs` is required to force Rust recomp
 | `-H, --host` | from settings | HTTP bind address |
 | `-P, --port` | from settings | HTTP port |
 | `--config` | `~/.config/bionic-graph/settings.json` | Config file path |
+| `--tokenizer-config` | `~/.config/bionic-graph/tokenizer.json` | Tokenizer custom dictionary config path |
 
 ### Settings
 
@@ -138,7 +139,7 @@ Auto-created at `~/.config/bionic-graph/settings.json` if not present. Full refe
     "providers": [{
       "name": "DeepSeek",
       "api_base_url": "https://api.deepseek.com/v1",
-      "api_key": "",
+      "api_key": "<your-api-key>",
       "models": ["deepseek-v4-flash", "deepseek-v4-pro"]
     }],
     "default_model": "DeepSeek/deepseek-v4-flash",
@@ -148,7 +149,9 @@ Auto-created at `~/.config/bionic-graph/settings.json` if not present. Full refe
   },
   "cluster": {
     "enabled": false,
+    "role": "master",
     "bind_addr": "0.0.0.0:9090",
+    "master_addr": null,
     "heartbeat_interval_secs": 5,
     "worker_timeout_secs": 30,
     "forward_writes": true
@@ -159,7 +162,12 @@ Auto-created at `~/.config/bionic-graph/settings.json` if not present. Full refe
       "name": "Baidu",
       "search_url": "https://qianfan.baidubce.com/v2/ai_search/web_search",
       "method": "POST",
-      "body_template": "{\"messages\":[{\"content\":\"{text}\",\"role\":\"user\"}],\"search_source\":\"baidu_search_v2\",\"resource_type_filter\":[{\"type\":\"web\",\"top_k\":5}],\"search_recency_filter\":\"year\"}"
+      "body_template": "{\"messages\":[{\"content\":\"{text}\",\"role\":\"user\"}],\"search_source\":\"baidu_search_v2\",\"resource_type_filter\":[{\"type\":\"web\",\"top_k\":10}],\"search_recency_filter\":\"year\",\"block_websites\":[\"baijiahao.baidu.com\"]}",
+      "params": {},
+      "headers": {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer <your-bce-token>"
+      }
     }]
   },
   "graph": {
@@ -187,6 +195,8 @@ Auto-created at `~/.config/bionic-graph/settings.json` if not present. Full refe
 
 ### Use the API
 
+All CRUD, Gremlin, search, batch, and document endpoints use `X-Graph-Name` HTTP header to specify the graph. Falls back to `graph0` when omitted.
+
 #### Graph management
 
 ```bash
@@ -198,6 +208,16 @@ curl -X POST localhost:8080/graphs \
   -H 'Content-Type: application/json' \
   -d '{"name":"mygraph"}'
 
+# Set default graph
+curl -X PUT localhost:8080/graphs \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"mygraph"}'
+
+# Update graph metadata (description, time_travel)
+curl -X PUT localhost:8080/graphs/mygraph \
+  -H 'Content-Type: application/json' \
+  -d '{"description":"My knowledge graph","time_travel":true}'
+
 # Delete a graph
 curl -X DELETE localhost:8080/graphs/mygraph
 
@@ -205,34 +225,72 @@ curl -X DELETE localhost:8080/graphs/mygraph
 curl localhost:8080/graphs/mygraph/config
 ```
 
-#### Vertex & Edge CRUD
+#### Vertex CRUD
 
 ```bash
-# Create a vertex
+# Create a vertex (returns its ID)
 curl -X POST localhost:8080/vertices \
   -H 'Content-Type: application/json' \
+  -H 'X-Graph-Name: mygraph' \
   -d '{"name":"Alice","keywords":["engineer","manager"],"labels":["person"],"properties":{"department":"Engineering"}}'
 
-# With explicit graph name
-curl -X POST 'localhost:8080/vertices?graph=mygraph' \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"Bob","labels":["person"]}'
-
-# Update vertex
+# Update a vertex
 curl -X PUT localhost:8080/vertices/1 \
   -H 'Content-Type: application/json' \
+  -H 'X-Graph-Name: mygraph' \
   -d '{"name":"Alice Smith","keywords":["engineer","lead"],"labels":["person","employee"]}'
 
-# Delete vertex (soft delete)
-curl -X DELETE localhost:8080/vertices/1
+# Soft delete (requires time travel enabled)
+curl -X DELETE localhost:8080/vertices/1 \
+  -H 'X-Graph-Name: mygraph'
 
 # Hard delete
-curl -X DELETE 'localhost:8080/vertices/1?force=true'
+curl -X DELETE 'localhost:8080/vertices/1?force=true' \
+  -H 'X-Graph-Name: mygraph'
 
-# Create edge
+# Get vertex metadata (status, version, ctime, mtime, atime, rank)
+curl localhost:8080/vertices/1/meta \
+  -H 'X-Graph-Name: mygraph'
+
+# Update vertex metadata (rank, atime)
+curl -X PUT localhost:8080/vertices/1/meta \
+  -H 'Content-Type: application/json' \
+  -H 'X-Graph-Name: mygraph' \
+  -d '{"rank":10,"atime":1718000000}'
+```
+
+#### Edge CRUD
+
+```bash
+# Create an edge (returns its ID)
 curl -X POST localhost:8080/edges \
   -H 'Content-Type: application/json' \
+  -H 'X-Graph-Name: mygraph' \
   -d '{"source":1,"target":2,"name":"works_with","labels":["relationship"],"keywords":["colleague"],"strength":0.8,"properties":{"since":"2024"}}'
+
+# Update an edge
+curl -X PUT localhost:8080/edges/1 \
+  -H 'Content-Type: application/json' \
+  -H 'X-Graph-Name: mygraph' \
+  -d '{"name":"manages","strength":0.9}'
+
+# Delete edge
+curl -X DELETE localhost:8080/edges/1 \
+  -H 'X-Graph-Name: mygraph'
+
+# Hard delete
+curl -X DELETE 'localhost:8080/edges/1?force=true' \
+  -H 'X-Graph-Name: mygraph'
+
+# Get edge metadata
+curl localhost:8080/edges/1/meta \
+  -H 'X-Graph-Name: mygraph'
+
+# Update edge metadata
+curl -X PUT localhost:8080/edges/1/meta \
+  -H 'Content-Type: application/json' \
+  -H 'X-Graph-Name: mygraph' \
+  -d '{"rank":5}'
 ```
 
 #### Token search + traversal
@@ -241,13 +299,15 @@ curl -X POST localhost:8080/edges \
 # Search with auto traverse (based on graph search settings)
 curl -X POST localhost:8080/gremlin \
   -H 'Content-Type: application/json' \
+  -H 'X-Graph-Name: mygraph' \
   -d '{"steps":[
     {"step":"search","text":"AI engineer"}
   ]}'
 
-# Advanced pipeline with explicit traverse
+# Advanced pipeline with explicit steps
 curl -X POST localhost:8080/gremlin \
   -H 'Content-Type: application/json' \
+  -H 'X-Graph-Name: mygraph' \
   -d '{"steps":[
     {"step":"search","text":"AI engineer","mode":"greedy"},
     {"step":"out","labels":["works_at"],"depth":2},
@@ -257,6 +317,7 @@ curl -X POST localhost:8080/gremlin \
 # Time travel query (via X-Time-Travel header)
 curl -X POST localhost:8080/gremlin \
   -H 'Content-Type: application/json' \
+  -H 'X-Graph-Name: mygraph' \
   -H 'X-Time-Travel: 1718000000000000' \
   -d '{"steps":[
     {"step":"search","text":"project"}
@@ -265,13 +326,14 @@ curl -X POST localhost:8080/gremlin \
 # Expand vertex (neighbors + edges)
 curl -X POST localhost:8080/gremlin \
   -H 'Content-Type: application/json' \
+  -H 'X-Graph-Name: mygraph' \
   -d '{"steps":[
     {"step":"V","ids":[1]},
     {"step":"expand","depth":1}
   ]}'
 
 # Shorthand search via GET
-curl 'localhost:8080/search?text=AI+engineer&mode=greedy&graph=default'
+curl 'localhost:8080/search?text=AI+engineer&mode=greedy&limit=10'
 ```
 
 #### Web Search & LLM Proxy
@@ -302,6 +364,11 @@ curl -X POST localhost:8080/proxy/openai/v1/chat/completions \
 # Graph search config (greedy/exact modes, traversal settings)
 curl localhost:8080/settings/graph/search
 
+# Update search config
+curl -X PUT localhost:8080/settings/graph/search \
+  -H 'Content-Type: application/json' \
+  -d '{"greedy":{"traverse":true,"match_mode":"prefix","activate":0.2,"decay":0.95,"depth":16,"score":0.1},"exact":{"traverse":true,"match_mode":"word","activate":0.6,"decay":0.8,"depth":4,"score":0.2}}'
+
 # Rank decay config
 curl localhost:8080/settings/graph/rank
 
@@ -314,10 +381,21 @@ curl localhost:8080/settings/web-search
 # Tokenizer custom dictionary
 curl localhost:8080/settings/tokenizer
 
+# Add custom tokenizer word
+curl -X POST localhost:8080/settings/tokenizer/words \
+  -H 'Content-Type: application/json' \
+  -d '{"words":["knowledge-graph","neural-network"]}'
+
+# Remove custom tokenizer word
+curl -X DELETE localhost:8080/settings/tokenizer/words \
+  -H 'Content-Type: application/json' \
+  -d '{"words":["neural-network"]}'
+```
+
 #### Document management
 
 ```bash
-# Add a document
+# Add a document (returns id)
 curl -X POST localhost:8080/documents \
   -H 'Content-Type: application/json' \
   -d '{"title":"my-doc","content":"# Hello\nWorld","tags":["test"]}'
@@ -325,39 +403,110 @@ curl -X POST localhost:8080/documents \
 # List documents
 curl localhost:8080/documents
 
+# Get document metadata
+curl localhost:8080/documents/<id>
+
+# Update document metadata
+curl -X PUT localhost:8080/documents/<id> \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"new-title","tags":["updated"]}'
+
+# Delete document
+curl -X DELETE localhost:8080/documents/<id>
+
 # Get document content
-curl localhost:8080/documents/{id}/content
+curl localhost:8080/documents/<id>/content
+
+# Extract entities/relations from a document
+curl -X POST localhost:8080/documents/<id>/extract \
+  -H 'X-Graph-Name: mygraph'
 ```
 
-#### Other endpoints
+#### Batch operations
+
+```bash
+# Batch import vertices/edges (upsert by name)
+curl -X POST localhost:8080/batch/load \
+  -H 'Content-Type: application/json' \
+  -H 'X-Graph-Name: mygraph' \
+  -d '{"update_existing":true,"vertices":[{"name":"Alice","labels":["person"]},{"name":"Bob","labels":["person"]}],"edges":[{"source":"Alice","target":"Bob","name":"knows"}]}'
+
+# Batch delete by name
+curl -X POST localhost:8080/batch/delete \
+  -H 'Content-Type: application/json' \
+  -H 'X-Graph-Name: mygraph' \
+  -d '{"vertices":["Alice","Bob"],"edges":[{"source":"Alice","target":"Bob","name":"knows"}]}'
+```
+
+#### Extraction tasks
+
+```bash
+# Submit extraction task with raw text
+curl -X POST localhost:8080/extract \
+  -H 'Content-Type: application/json' \
+  -H 'X-Graph-Name: mygraph' \
+  -d '{"text":"Alice works at Acme Corp as an engineer.","mode":"full"}'
+
+# List extraction tasks
+curl localhost:8080/tasks
+
+# Poll task status
+curl localhost:8080/tasks/<task_id>
+```
+
+#### All REST endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/health` | System health |
+| `GET` | `/graphs` | List graphs |
+| `POST` | `/graphs` | Create a graph |
+| `PUT` | `/graphs` | Set default graph |
+| `DELETE` | `/graphs/:name` | Delete a graph |
+| `PUT` | `/graphs/:name` | Update graph metadata |
+| `GET/PUT` | `/graphs/:name/config` | Per-graph storage config |
+| `POST` | `/gremlin` | Gremlin pipeline query |
+| `GET` | `/search` | Token search shortcut (`?text=&mode=&limit=`) |
+| `POST` | `/vertices` | Create a vertex |
+| `PUT` | `/vertices/:id` | Update a vertex |
+| `DELETE` | `/vertices/:id` | Delete a vertex (`?force=true` for hard delete) |
+| `GET/PUT` | `/vertices/:id/meta` | Get/update vertex metadata (rank, atime) |
+| `POST` | `/edges` | Create an edge |
+| `PUT` | `/edges/:id` | Update an edge |
+| `DELETE` | `/edges/:id` | Delete an edge (`?force=true` for hard delete) |
+| `GET/PUT` | `/edges/:id/meta` | Get/update edge metadata (rank, atime) |
 | `GET/PUT` | `/settings/graph/search` | Search settings (greedy/exact config) |
 | `GET/PUT` | `/settings/graph/rank` | Rank decay config |
 | `GET/PUT` | `/settings/llm` | LLM provider config |
+| `GET/PUT` | `/settings/web-search` | Web search provider config |
+| `POST` | `/proxy/web-search` | Web search proxy |
 | `GET` | `/settings/tokenizer` | Tokenizer custom dictionary config |
 | `POST/DELETE` | `/settings/tokenizer/words` | Add / remove custom tokenizer words |
-| `GET/PUT` | `/settings/web-search` | Web search provider config |
-| `POST` | `/proxy/web-search` | Web search proxy (via backend, avoids CORS) |
+| `GET` | `/documents` | List documents |
+| `POST` | `/documents` | Create a document |
+| `GET/PUT/DELETE` | `/documents/:id` | Get/update/delete document metadata |
+| `GET` | `/documents/:id/content` | Get document body |
+| `POST` | `/extract` | Submit extraction task |
+| `POST` | `/documents/:id/extract` | Extract from document by ID |
+| `GET` | `/tasks` | List all tasks |
+| `GET` | `/tasks/:task_id` | Poll task status |
+| `POST` | `/batch/load` | Batch import vertices/edges (upsert by name) |
+| `POST` | `/batch/delete` | Batch delete vertices/edges by name |
 | `GET` | `/proxy/openai/v1/models` | List LLM models |
 | `POST` | `/proxy/openai/v1/chat/completions` | OpenAI-compatible chat proxy (SSE) |
-| `POST` | `/extract` | Submit document extraction (async) |
-| `POST` | `/documents/:id/extract` | Extract from document by ID |
-| `GET` | `/tasks/:task_id` | Poll task status |
-| `GET` | `/tasks` | List all tasks |
-| `POST` | `/batch/load` | Batch import vertices/edges (upsert by name, edges by source/target name) |
-| `POST` | `/batch/delete` | Batch delete vertices (cascade edges) and/or edges by key |
-
-> **Graph name**: all CRUD, Gremlin, search, batch, and document endpoints use `X-Graph-Name` HTTP header.
-> No `?graph=` query parameter. Falls back to default graph (`graph0`) when header omitted.
 
 ### Supported Gremlin steps
 
+All Gremlin queries are sent via `POST /gremlin` with a `steps` array. Two optional HTTP headers control the execution context:
+
+| Header | Description |
+|--------|-------------|
+| `X-Graph-Name` | Target graph name (default: `graph0`) |
+| `X-Time-Travel` | Microsecond timestamp for point-in-time queries. All steps execute against the graph state at that moment. |
+
 | Step | Parameters | Description |
 |------|-----------|-------------|
-| `search` | `text`, `mode?`, `match_mode?`, `limit?`, `min_rank?` | Token-indexed full-text search. `mode` = `"greedy"` (union of any token match) or `"exact"` (intersection — must match all tokens). `match_mode` = `"prefix"` or `"word"`. Auto-injects `match_mode` from graph search settings + optional `traverse` step. Time travel via `X-Time-Travel` header. |
+| `search` | `text`, `mode?`, `match_mode?`, `limit?`, `min_rank?` | Token-indexed full-text search. `mode` = `"greedy"` (union of any token match) or `"exact"` (intersection — must match all tokens). `match_mode` = `"prefix"` or `"word"`. Auto-injects `match_mode` from graph search settings + optional `traverse` step. |
 | `V` | `ids?` | All vertices or filtered by ID array. |
 | `E` | `ids?` | All edges or filtered by ID array. |
 | `has` | `key`, `value` | Filter results by exact property key-value match. `value` supports any JSON type (string, number, boolean, array, object). |
@@ -377,11 +526,9 @@ curl localhost:8080/documents/{id}/content
 | `count` | — | Replace results with a single `{count: N}` item. |
 | `dedup` | — | Deduplicate results by ID (removes duplicate vertices/edges). |
 | `repeat` | `steps`, `times` | Execute sub-pipeline `steps` iteratively `times` times. |
-| `expand` | `depth?`, `label?` | From each vertex, add its neighbor vertices + connecting edges to results (both directions). Optional `label` filters by edge label. Time travel via `X-Time-Travel` header. |
-| `traverse` | `decay?`, `activate?`, `max_depth?`, `min_score?` | BFS activation spread from input vertices. Score = parent_score × `decay` × edge_strength. Stops when score < `activate`. Collects results with score >= `min_score`. Defaults: decay=0.95, activate=0.2, max_depth=16, min_score=0.1. Time travel via `X-Time-Travel` header. Both endpoints of each traversed edge must meet min_score threshold (edge score = average of its endpoints). |
+| `expand` | `depth?`, `label?` | From each vertex, add its neighbor vertices + connecting edges to results (both directions). Optional `label` filters by edge label. |
+| `traverse` | `decay?`, `activate?`, `max_depth?`, `min_score?` | BFS activation spread from input vertices. Score = parent_score × `decay` × edge_strength. Stops when score < `activate`. Collects results with score >= `min_score`. Defaults: decay=0.95, activate=0.2, max_depth=16, min_score=0.1. Both endpoints of each traversed edge must meet min_score threshold (edge score = average of its endpoints). |
 | `rank` | `limit?`, `min?` | Return top results by rank. As source step: iterate rank index descending. As filter step: sort existing results by rank. `min` sets minimum rank threshold (inclusive). |
-
-> **Time travel**: no longer a Gremlin step. Set `X-Time-Travel` HTTP header with microsecond timestamp for point-in-time queries. The header applies to all steps.
 
 ## Project structure
 
@@ -408,7 +555,7 @@ src/
 │   ├── graph.rs               # Graph struct (facade), open/close
 │   ├── graph_registry.rs      # Graph metadata registry
 │   ├── crud.rs                # Vertex/Edge CRUD + WAL + tokenize
-│   ├── gremlin.rs             # Gremlin pipeline (25 steps)
+│   ├── gremlin.rs             # Gremlin pipeline (23 steps)
 │   ├── locked.rs              # Lock-safe CRUD wrappers
 │   ├── serialize.rs           # Bincode + JSON properties
 │   ├── tokenizer.rs           # jieba-rs tokenizer
@@ -425,15 +572,23 @@ src/
 ├── maas/                      # MaaS OpenAI-compatible proxy
 ├── cluster/                   # Master-worker cluster
 ├── ui_serve.rs                # Embedded frontend serving
-└── ui/                        # React frontend
-    ├── src/
-    │   ├── components/
-    │   │   ├── Sidebar.jsx, ChatArea.jsx, MessageList.jsx
-    │   │   ├── ChatInput.jsx, GraphViewer.jsx
-    │   │   ├── GraphManagerDialog.jsx, KnowledgeBase.jsx
-    │   │   ├── SettingsDialog.jsx, PropertyPanel.jsx
-    │   └── api.js, App.jsx, locales/
-    └── dist/                  # Compiled (embedded in binary)
+├── ui/                        # React frontend
+│   ├── src/
+│   │   ├── components/
+│   │   │   ├── Sidebar.jsx, ChatArea.jsx, MessageList.jsx
+│   │   │   ├── ChatInput.jsx, GraphViewer.jsx
+│   │   │   ├── GraphManagerDialog.jsx, KnowledgeBase.jsx
+│   │   │   ├── SettingsDialog.jsx, PropertyPanel.jsx
+│   │   └── api.js, App.jsx, locales/
+│   └── dist/                  # Compiled (embedded in binary)
+├── sdk/
+│   └── python/                # Python SDK (Client + CLI bgcli)
+│       ├── pyproject.toml
+│       ├── bionic_graph/      # Client library + CLI
+│       └── tests/             # SDK unit tests
+└── examples/
+    ├── self_awareness/        # Self-awareness KG pipeline
+    └── social_activities/     # Social activities KG pipeline
 ```
 
 ---
@@ -463,25 +618,79 @@ A complete Python client library and CLI tool are available in `sdk/python/`:
 # Install from GitHub
 pip install git+https://github.com/agentic-data-ops/bionic-graph.git#subdirectory=sdk/python
 
-# CLI usage
+# CLI usage — 12 command groups
 bgcli --base-url http://127.0.0.1:8080 health check
+
+# Graph management
+bgcli graph list
+bgcli graph create --name mygraph
+bgcli graph set-default --name mygraph
+bgcli graph delete --name mygraph
+bgcli graph update-meta --name mygraph --description "My KG" --time-travel
+
+# Vertex CRUD
 bgcli vertex create --name "Eddard Stark" --labels '["person"]' --graph got
-bgcli search --text "Stark" --graph got              # Full-text search (top-level)
-bgcli gremlin execute --steps '[{"step":"V","ids":[1]}]'  # Gremlin pipeline
-bgcli document extract d1                            # Background document extraction
-bgcli task list                                       # List async tasks
-bgcli task get --task-id t1                           # Get task status
-bgcli task wait --task-id t1                          # Wait for task completion
-bgcli proxy web-search --query "AI"                   # Web search proxy
-bgcli proxy openai-models                             # List LLM models
-bgcli proxy openai-chat --messages '...'               # LLM chat (non-interactive)
-bgcli batch load --graph my-graph --data data.json     # Batch load vertices/edges from JSON
-bgcli batch delete --graph my-graph --data delete.json # Batch delete vertices/edges
+bgcli vertex update --id 1 --name "Ned Stark" --graph got
+bgcli vertex delete --id 1 --graph got
+bgcli vertex get-meta --id 1 --graph got
+bgcli vertex update-meta --id 1 --rank 10 --graph got
+
+# Edge CRUD
+bgcli edge create --source 1 --target 2 --name knows --labels '["relationship"]' --graph got
+bgcli edge update --id 1 --name "friends_with" --graph got
+bgcli edge delete --id 1 --graph got
+bgcli edge get-meta --id 1 --graph got
+bgcli edge update-meta --id 1 --rank 5 --graph got
+
+# Full-text search (top-level command)
+bgcli search --text "Stark" --mode greedy --graph got
+
+# Gremlin pipeline
+bgcli gremlin execute --steps '[{"step":"V","ids":[1]}]'
+
+# Document management
+bgcli document list
+bgcli document create --title "my-doc" --content "# Hello" --tags '["test"]'
+bgcli document get --id doc-123
+bgcli document update --id doc-123 --title "new-title"
+bgcli document delete --id doc-123
+bgcli document get-content --id doc-123
+bgcli document extract --doc-id doc-123 --graph got
+
+# Async task tracking
+bgcli task list
+bgcli task get --task-id t1
+bgcli task wait --task-id t1
+
+# Settings
+bgcli settings get-search
+bgcli settings set-search --config '{"greedy":{"match_mode":"prefix"},"exact":{"match_mode":"word"}}'
+bgcli settings get-llm
+bgcli settings set-llm --providers '[{"name":"DeepSeek","api_base_url":"https://api.deepseek.com/v1","api_key":"sk-...","models":["deepseek-v4-flash"]}]'
+bgcli settings get-rank
+bgcli settings set-rank --config '{"auto_inc_rank_when_read":false}'
+bgcli settings get-web-search
+bgcli settings set-web-search --config '{"default_provider":"Baidu","providers":[{"name":"Baidu","search_url":"..."}]}'
+bgcli settings get-tokenizer
+bgcli settings add-tokenizer-words --words '["knowledge-graph"]'
+bgcli settings remove-tokenizer-words --words '["knowledge-graph"]'
+
+# Proxy services
+bgcli proxy web-search --query "Game of Thrones" --provider Baidu
+bgcli proxy openai-models
+bgcli proxy openai-chat --messages '[{"role":"user","content":"Hello"}]' --model "DeepSeek/deepseek-v4-flash"
+
+# Batch operations (JSON file-based)
+bgcli batch load --graph mygraph --data data.json      # entities + relations
+bgcli batch delete --graph mygraph --data delete.json   # vertices + edges
 
 # Interactive chat with web + graph search
-bgcli chat --model "DeepSeek/deepseek-v4-flash"
+bgcli chat --model "DeepSeek/deepseek-v4-flash" --web-search --graph-search
+```
 
-# From Python code
+### From Python code
+
+```python
 from bionic_graph import Client
 client = Client()
 resp = client.create_vertex("Jon Snow", labels=["person", "stark"])
@@ -489,6 +698,62 @@ print(f"Created vertex {resp.id}")
 ```
 
 See `sdk/python/SKILL.md` for full documentation.
+
+---
+
+## Examples
+
+Two example pipelines demonstrating LLM-driven knowledge graph construction and simulation.
+
+### Self-awareness (`examples/self_awareness/`)
+
+Simulates the "soul" of a human being — loads a self-description document, generates life plans, and simulates activities.
+
+```bash
+cd examples/self_awareness
+
+# Phase 1: Load self-description from Markdown into the graph
+python3 cli.py load --md self_soul.md --graph self-awareness --model "DeepSeek/deepseek-v4-flash"
+
+# Phase 2: Reflect on graph state and generate next-phase plans
+python3 cli.py plan --graph self-awareness --model "DeepSeek/deepseek-v4-flash"
+
+# Phase 3: Execute top-N activities sorted by rank
+python3 cli.py act --count 3 --graph self-awareness --model "DeepSeek/deepseek-v4-flash"
+```
+
+| Command | Description | Key Options |
+|---------|-------------|-------------|
+| `load` | Extract entities/relations from Markdown and load into graph | `--md` (default: `self_soul.md`), `--graph`, `--model`, `--force` |
+| `plan` | Search graph for interests, generate plans via LLM, load into graph | `--graph`, `--model` |
+| `act` | Fetch top plans by rank, simulate activities, update statuses | `--count` (default: 3), `--graph`, `--model`, `--force` |
+
+All commands support `--base-url` (default `http://127.0.0.1:8080`) and `--output` for saving results to JSON.
+
+### Social activities (`examples/social_activities/`)
+
+Simulates group social dynamics — loads a group profile, plans joint activities, and simulates execution.
+
+```bash
+cd examples/social_activities
+
+# Phase 1: Load social activity descriptions from Markdown
+python3 cli.py load --md social_activities.md --graph social-graph --model "DeepSeek/deepseek-v4-flash"
+
+# Phase 2: Generate new social activity plans
+python3 cli.py plan --graph social-graph --model "DeepSeek/deepseek-v4-flash"
+
+# Phase 3: Simulate social activity execution
+python3 cli.py act --count 3 --graph social-graph --model "DeepSeek/deepseek-v4-flash"
+```
+
+| Command | Description | Key Options |
+|---------|-------------|-------------|
+| `load` | Extract group profiles and activity templates from Markdown | `--md` (default: `social_activities.md`), `--graph`, `--model`, `--force` |
+| `plan` | Search graph for activity plans, generate new ones via LLM | `--graph`, `--model` |
+| `act` | Fetch top plans by priority, simulate execution, update results | `--count` (default: 3), `--graph`, `--model`, `--force` |
+
+All commands support `--base-url` (default `http://127.0.0.1:8080`) and `--output` for saving results to JSON.
 
 ---
 
