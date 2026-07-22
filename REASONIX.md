@@ -244,15 +244,14 @@ Settings under `"web_search"` key in settings.json:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `default_provider` | string | `"baidu"` | Default search provider ID |
+| `default_provider` | string | `"Baidu"` | Default search provider name |
 | `providers` | array | — | List of search providers |
 
 ### WebSearchProvider
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `id` | string | — | Unique provider identifier |
-| `name` | string | — | Display name |
+| `name` | string | — | Provider name (used as unique identifier) |
 | `search_url` | string | — | URL template with `{text}` for query |
 | `method` | string | `"GET"` | HTTP method (GET/POST) |
 | `body_template` | string? | null | JSON body for POST, `{text}` replaced |
@@ -274,7 +273,7 @@ bgcli document extract d1                                 # Background extractio
 bgcli task list                                           # Async tasks
 bgcli task get --task-id t1                                # Task status
 bgcli task wait --task-id t1                               # Wait for task
-bgcli proxy web-search --query "AI"                       # Web search
+bgcli proxy web-search --query "AI" --provider-name "Baidu"           # Web search
 bgcli proxy openai-models                                  # List LLM models
 bgcli proxy openai-chat --messages '...'                   # LLM chat
 

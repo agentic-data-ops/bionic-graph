@@ -146,10 +146,9 @@ Auto-created at `~/.config/bionic-graph/settings.json` if not present. Full refe
     "forward_writes": true
   },
   "web_search": {
-    "default_provider": "baidu",
+    "default_provider": "Baidu",
     "providers": [{
-      "id": "baidu",
-      "name": "\u767e\u5ea6\u641c\u7d22",
+      "name": "Baidu",
       "search_url": "https://qianfan.baidubce.com/v2/ai_search/web_search",
       "method": "POST",
       "body_template": "{\"messages\":[{\"content\":\"{text}\",\"role\":\"user\"}],\"search_source\":\"baidu_search_v2\",\"resource_type_filter\":[{\"type\":\"web\",\"top_k\":5}],\"search_recency_filter\":\"year\"}"
@@ -278,7 +277,7 @@ curl -X POST localhost:8080/proxy/web-search \
 # Specify a different provider
 curl -X POST localhost:8080/proxy/web-search \
   -H 'Content-Type: application/json' \
-  -d '{"query":"winterfell","provider_id":"bing"}'
+  -d '{"query":"winterfell","provider_name":"Bing"}'
 
 # List available LLM models
 curl localhost:8080/proxy/openai/v1/models
