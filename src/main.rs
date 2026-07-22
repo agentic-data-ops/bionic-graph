@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Parser;
-use bionic_graph::cluster::node::NodeRegistry;
 use bionic_graph::cluster::server::{build_cluster_router, ClusterAppState};
 use bionic_graph::config::load_or_create_settings_from;
 use bionic_graph::config::NodeRole;

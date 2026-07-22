@@ -84,7 +84,7 @@ fn upsert_vertex(
     keywords: &[String],
     properties: &HashMap<String, serde_json::Value>,
     name_to_vid: &mut HashMap<String, u32>,
-    source_doc_id: &str,
+    _source_doc_id: &str,
 ) -> StorageResult<()> {
     let props: HashMap<String, PropertyValue> = properties.iter()
         .map(|(k, v)| (k.clone(), json_to_property_value(v)))

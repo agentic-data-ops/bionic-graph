@@ -16,12 +16,12 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 
 use crate::config::Settings;
-use crate::documents::{Document, DocumentManager};
+use crate::documents::DocumentManager;
 use crate::graph::graph::Graph;
 use crate::graph::gremlin::{execute_gremlin, GremlinQuery, GremlinResponse, GremlinResult};
 use crate::graph_manager::GraphManager;
 use crate::cluster::node::NodeRegistry;
-use crate::task::{TaskManager, TaskResponse, TaskStatus, TaskStep, default_extraction_steps, update_step, compute_overall_pct};
+use crate::task::{TaskManager, TaskResponse, TaskStatus, default_extraction_steps, update_step, compute_overall_pct};
 
 pub mod settings;
 pub mod tokenizer_settings;
@@ -128,8 +128,6 @@ pub fn build_router(
 
 // ── Health ──────────────────────────────────────────────────────────────────
 
-use std::time::SystemTime;
-
 #[derive(serde::Serialize)]
 pub struct HealthResponse {
     pub status: String,
@@ -178,7 +176,7 @@ pub struct GremlinParams {
 
 pub async fn handle_gremlin(
     State(state): State<AppState>,
-    Query(params): Query<GremlinParams>,
+    Query(_params): Query<GremlinParams>,
     headers: axum::http::HeaderMap,
     Json(mut query): Json<GremlinQuery>,
 ) -> Json<GremlinResponse> {
@@ -1336,7 +1334,7 @@ pub async fn extract_document_handler(
         .unwrap_or(&default_name);
 
     // Verify document exists
-    let doc = state.doc_mgr.get(&document_id).ok_or(StatusCode::NOT_FOUND)?;
+    let _doc = state.doc_mgr.get(&document_id).ok_or(StatusCode::NOT_FOUND)?;
     let _content = state.doc_mgr.get_content(&document_id).ok_or(StatusCode::NOT_FOUND)?;
 
     // Resolve the graph
@@ -1351,19 +1349,4 @@ pub async fn extract_document_handler(
             document_id,
         }),
     ).await
-}
-
-/// Convert serde_json::Value to PropertyValue.
-fn json_to_property_value(val: &serde_json::Value) -> PropertyValue {
-    match val {
-        serde_json::Value::String(s) => PropertyValue::String(s.clone()),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() { PropertyValue::Integer(i) }
-            else if let Some(f) = n.as_f64() { PropertyValue::Float(f) }
-            else { PropertyValue::Null }
-        }
-        serde_json::Value::Bool(b) => PropertyValue::Boolean(*b),
-        serde_json::Value::Array(arr) => PropertyValue::List(arr.iter().map(json_to_property_value).collect()),
-        _ => PropertyValue::String(val.to_string()),
-    }
 }

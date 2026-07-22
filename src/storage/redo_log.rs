@@ -95,6 +95,7 @@ enum WriterMessage {
 
 /// WAL manager with FIFO queue, batched writer, rotation, and replay.
 pub struct RedoLog {
+    #[allow(dead_code)]
     dir: PathBuf,
     /// Channel to send messages to the background writer.
     writer_tx: Sender<WriterMessage>,
@@ -103,6 +104,7 @@ pub struct RedoLog {
     /// Background writer thread handle.
     handle: Option<JoinHandle<()>>,
     /// File size threshold for rotation (bytes).
+    #[allow(dead_code)]
     rotation_threshold: u64,
 }
 

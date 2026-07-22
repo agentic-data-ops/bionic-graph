@@ -60,7 +60,7 @@ async fn handle_heartbeat(
     Json(msg): Json<ClusterMessage>,
 ) -> Result<Json<ClusterMessage>, StatusCode> {
     match msg {
-        ClusterMessage::Heartbeat { node_id, api_addr, cluster_addr, last_acked_seq } => {
+        ClusterMessage::Heartbeat { node_id, api_addr, cluster_addr, last_acked_seq: _ } => {
             let info = WorkerInfo::new(&node_id, &api_addr, &cluster_addr);
             state.registry.register(info);
             Ok(Json(ClusterMessage::HeartbeatAck {

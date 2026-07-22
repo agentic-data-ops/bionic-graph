@@ -810,7 +810,7 @@ fn allocate_chunks(graph: &Graph, chunks_needed: u8) -> StorageResult<(u32, u8)>
 /// Write padded data into the allocated chunks.
 fn write_data_chunks(graph: &Graph, block_idx: u32, chunk_offset: u8, chunks: u8, data: &[u8]) -> StorageResult<()> {
     // Write data into the block through cache, then flush to disk.
-    let block_copy = {
+    let _block_copy = {
         let mut cache = graph.block_cache.write().unwrap();
         cache.with_block(block_idx,
             |idx| graph.data_file.read_block(idx),
@@ -829,7 +829,7 @@ fn write_data_chunks(graph: &Graph, block_idx: u32, chunk_offset: u8, chunks: u8
 
 /// Read data from chunks given the total data length.
 pub(crate) fn read_data_chunks(graph: &Graph, block_idx: u32, chunk_offset: u8, data_len: u16) -> StorageResult<Vec<u8>> {
-    let chunks = BlockAllocator::chunks_needed(data_len as usize);
+    let _chunks = BlockAllocator::chunks_needed(data_len as usize);
     let mut cache = graph.block_cache.write().unwrap();
     let block = cache.get_or_load(block_idx, |idx| {
         graph.data_file.read_block(idx)
@@ -838,7 +838,6 @@ pub(crate) fn read_data_chunks(graph: &Graph, block_idx: u32, chunk_offset: u8, 
     })?;
 
     let start = (chunk_offset as usize) * 64;
-    let end = start + (chunks as usize) * 64;
     let mut data = vec![0u8; data_len as usize];
     let read_len = data_len as usize;
     data.copy_from_slice(&block[start..start + read_len]);
@@ -869,7 +868,7 @@ fn free_data_chunks(graph: &Graph, block_idx: u32, chunk_offset: u8, chunks: u8)
 }
 
 /// Extract tokens from vertex attributes and index them.
-fn tokenize_vertex(graph: &Graph, vid: u32, payload: &VertexPayload, chunks: u8) -> StorageResult<()> {
+fn tokenize_vertex(graph: &Graph, vid: u32, payload: &VertexPayload, _chunks: u8) -> StorageResult<()> {
     let mut attrs = Vec::new();
     attrs.push(("name", payload.name.as_str()));
     for label in &payload.labels {
@@ -1073,7 +1072,7 @@ pub fn read_vertex_by_record(
         if timestamp < rec.ctime {
             return Ok(None); // didn't exist yet
         }
-        let mut payload: VertexPayload = deserialize_vertex(&read_data_payload(
+        let payload: VertexPayload = deserialize_vertex(&read_data_payload(
             graph,
             rec.data_block_idx,
             rec.data_chunk_offset,
@@ -1110,7 +1109,7 @@ pub fn read_vertex_by_record(
     if rec.status == DataStatus::Deleted {
         return Ok(None);
     }
-    let mut payload: VertexPayload = deserialize_vertex(&read_data_payload(
+    let payload: VertexPayload = deserialize_vertex(&read_data_payload(
         graph,
         rec.data_block_idx,
         rec.data_chunk_offset,
@@ -1129,7 +1128,7 @@ pub fn read_edge_by_record(
         if timestamp < rec.ctime {
             return Ok(None);
         }
-        let mut payload: EdgePayload = deserialize_edge(&read_data_payload(
+        let payload: EdgePayload = deserialize_edge(&read_data_payload(
             graph,
             rec.data_block_idx,
             rec.data_chunk_offset,
