@@ -197,7 +197,7 @@
   "time.hour": "hour",
   "time.day": "day",
   "chat.graphSearch": "🔎 Graph Search ·",
-  "chat.webSearch": "🌐 Web Search ·",
+  "chat.webSearchHeader": "🌐 Web Search ·",
   "chat.items": "items",
   "chat.selectedResults": "Selected results:",
   "graphViewer.noData": "No graph data",

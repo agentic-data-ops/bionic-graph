@@ -167,7 +167,7 @@ function ChatMessage({ message, graphRef, onMaximizeRef, theme, onEdit, onSaveTo
       <div className="flex justify-start mb-3 message-enter">
         <div className="w-full max-w-[90%] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-2xl overflow-hidden shadow-sm">
           <div className="px-4 py-3.5">
-            <div className="text-xs text-[var(--accent)] font-semibold mb-2 tracking-tight">{t('chat.webSearch')} <span className="text-[var(--text-tertiary)] font-normal">{message.title}</span></div>
+            <div className="text-xs text-[var(--accent)] font-semibold mb-2 tracking-tight">{t('chat.webSearchHeader')} <span className="text-[var(--text-tertiary)] font-normal">{message.title}</span></div>
             <div className="space-y-0">{(message.steps || []).map((step, i) => <SearchStep key={i} step={step} />)}</div>
             {message.webDetail && (
               <div className="mt-2 text-xs text-[var(--text-tertiary)] leading-relaxed border-t border-[var(--border)] pt-2">

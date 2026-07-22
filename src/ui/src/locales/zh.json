@@ -188,7 +188,7 @@
   "time.hour": "小时",
   "time.day": "天",
   "chat.graphSearch": "🔎 图谱搜索 ·",
-  "chat.webSearch": "🌐 联网搜索 ·",
+  "chat.webSearchHeader": "🌐 联网搜索 ·",
   "chat.items": "条结果",
   "chat.selectedResults": "选择的结果：",
   "graphViewer.noData": "暂无图数据",
