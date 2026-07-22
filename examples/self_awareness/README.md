@@ -24,7 +24,7 @@ Create a living knowledge graph that captures a person's identity, personality, 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  load                                                        │
-│  self_soul.md ──► LLM extraction ──► self_soul.json         │
+│  self_soul.md ──► LLM extraction ──► log/self_soul.json        │
 │       │                           │                         │
 │       │    ┌──────────────────────┘                         │
 │       ▼    ▼                                                 │
@@ -84,8 +84,9 @@ examples/self_awareness/
 ├── llm.py                 # LLM call wrapper (MaaS proxy)
 ├── prompts.py             # Prompt templates
 ├── graph_utils.py         # Graph utility functions
-├── self_soul.json         # [generated] Extracted KG from load phase
+├── self_soul.json         # [generated] Extracted KG from load phase (in log/)
 ├── log/                   # [generated] Timestamped output files
+│   ├── self_soul.json
 │   ├── plan_<timestamp>.json
 │   └── activity_<timestamp>.json
 └── .gitignore             # log/ is gitignored
@@ -103,7 +104,7 @@ Commands:
              --md PATH             Markdown document path (default: self_soul.md)
              --graph TEXT           Graph name (default: self-awareness)
              --model TEXT           LLM model name (default: settings default_model)
-             --output PATH          Output JSON file path (default: self_soul.json)
+             --output PATH          Output file path (default: log/self_soul.json)
              --base-url TEXT        Backend URL (default: http://127.0.0.1:8080)
              --force                Force re-extract and overwrite existing vertices
 

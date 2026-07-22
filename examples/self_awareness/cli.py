@@ -411,8 +411,8 @@ def main() -> None:
                         help="Graph name (default: self-awareness)")
     p_load.add_argument("--model", default=None,
                         help="LLM model name (default: settings default_model)")
-    p_load.add_argument("--output", default="self_soul.json",
-                        help="Output JSON file path (default: self_soul.json)")
+    p_load.add_argument("--output", default="log/self_soul.json",
+                        help="Output file path (default: log/self_soul.json)")
     p_load.add_argument("--base-url", default="http://127.0.0.1:8080",
                         help="Backend URL (default: http://127.0.0.1:8080)")
     p_load.add_argument("--force", action="store_true",
