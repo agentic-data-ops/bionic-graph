@@ -422,8 +422,8 @@ def test_chat_basic(runner, mock):
 def test_chat_with_web_search(runner, mock):
     """Chat with web search enabled."""
     mock.get("/settings/web-search").respond(json={
-        "providers": [{"id": "web", "name": "Web", "search_url": "http://example.com", "method": "GET"}],
-        "default_provider": "web",
+        "providers": [{"name": "Web", "search_url": "http://example.com", "method": "GET"}],
+        "default_provider": "Web",
     })
     mock.post("/proxy/web-search").respond(json={"success": True, "data": "<html>search result</html>"})
     # Keyword extraction (non-stream) and final response (stream) share same URL

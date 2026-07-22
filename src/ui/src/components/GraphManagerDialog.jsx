@@ -93,7 +93,7 @@ export default function GraphManagerDialog({
 
         <div className="space-y-1 max-h-48 overflow-y-auto mb-3">
           {(graphMetas || []).length === 0 && (
-            <p className="text-[var(--text-tertiary)] text-sm text-center py-8">暂无图库</p>
+            <p className="text-[var(--text-tertiary)] text-sm text-center py-8">{t('graph.noGraphs')}</p>
           )}
           {(graphMetas || []).map((meta) => (
             <div key={meta.name} className="flex items-center justify-between py-2 px-3 rounded-xl hover:bg-[var(--bg-tertiary)] transition-all group">
@@ -103,7 +103,7 @@ export default function GraphManagerDialog({
                   <span className="text-xs text-[var(--text-tertiary)] truncate max-w-[120px]">{meta.description}</span>
                 )}
                 {meta.time_travel && (
-                  <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-[#ff9f0a]/20 text-[#ff9f0a] border border-[#ff9f0a]/30 flex-shrink-0">时光</span>
+                  <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-[#ff9f0a]/20 text-[#ff9f0a] border border-[#ff9f0a]/30 flex-shrink-0">{t('graph.timeTravelBadge')}</span>
                 )}
                 {meta.name === backendDefault && (
                   <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-[var(--accent)]/20 text-[var(--accent)] border border-[#0a84ff]/30 flex-shrink-0">{t('settings.defaultGraph')}</span>
@@ -112,15 +112,15 @@ export default function GraphManagerDialog({
               <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 ml-2">
                 {meta.name !== backendDefault && (
                   <button className="px-2 py-1 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] rounded-lg transition-all cursor-pointer"
-                    onClick={() => handleSetDefault(meta.name)}>设为默认</button>
+                    onClick={() => handleSetDefault(meta.name)}>{t('graph.setDefault')}</button>
                 )}
                 <button className="px-2 py-1 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] rounded-lg transition-all cursor-pointer"
                   onClick={() => setEditingMeta({ name: meta.name, description: meta.description || '', time_travel: meta.time_travel || false })}>
-                  编辑
+                  {t('panel.edit')}
                 </button>
                 <button className="px-2 py-1 text-xs text-[var(--danger)] hover:bg-[color-mix(in srgb, var(--bg-hover), var(--danger) 30%)] rounded-lg transition-all cursor-pointer"
                   onClick={() => {
-                    const msg = `确定要删除图库「${meta.name}」吗？\n此操作不可恢复，所有数据将被永久清除。`;
+                    const msg = t('graph.confirmDeleteGraph', { name: meta.name });
                     if (window.confirm(msg)) handleDeleteGraph(meta.name);
                   }}>{t('settings.delete')}</button>
               </div>
@@ -131,21 +131,21 @@ export default function GraphManagerDialog({
         {/* Edit meta dialog */}
         {editingMeta && (
           <div className="space-y-3 mb-3 p-4 bg-[var(--bg-tertiary)] rounded-xl">
-            <div className="text-xs font-medium text-[var(--text-primary)]">编辑图库：{editingMeta.name}</div>
+            <div className="text-xs font-medium text-[var(--text-primary)]">{t('graph.editGraphTitle', { name: editingMeta.name })}</div>
             <input className="w-full px-3.5 py-2 rounded-xl bg-[var(--bg-secondary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-[var(--text-primary)] text-sm placeholder-[var(--text-muted)]"
-              placeholder="描述信息" value={editingMeta.description}
+              placeholder={t('graph.descriptionPlaceholder')} value={editingMeta.description}
               onChange={(e) => setEditingMeta({ ...editingMeta, description: e.target.value })} />
             <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)] cursor-pointer select-none">
               <input type="checkbox" checked={editingMeta.time_travel}
                 onChange={(e) => setEditingMeta({ ...editingMeta, time_travel: e.target.checked })}
                 className="w-3.5 h-3.5 rounded border-[#3a3a3e] bg-[var(--bg-secondary)] checked:bg-[var(--accent)] checked:border-[#0a84ff] focus:ring-0 cursor-pointer" />
-              启用时间旅行
+              {t('modal.addGraphTimeTravel')}
             </label>
             <div className="flex gap-2 justify-end">
               <button className="px-3.5 py-1.5 rounded-xl bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs font-medium transition-all"
                 onClick={() => setEditingMeta(null)}>{t('panel.close')}</button>
               <button className="px-3.5 py-1.5 rounded-xl bg-[var(--accent)] text-white text-xs font-medium hover:bg-[color-mix(in srgb, var(--accent), black 10%)] transition-all shadow-sm"
-                onClick={handleSaveMeta}>保存</button>
+                onClick={handleSaveMeta}>{t('panel.save')}</button>
             </div>
           </div>
         )}
@@ -156,7 +156,7 @@ export default function GraphManagerDialog({
             <input className="w-full px-3.5 py-2 rounded-xl bg-[var(--bg-secondary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-[var(--text-primary)] text-sm placeholder-[var(--text-muted)]"
               placeholder={t('modal.addGraphName')} value={newGraphName} onChange={(e) => setNewGraphName(e.target.value)} />
             <input className="w-full px-3.5 py-2 rounded-xl bg-[var(--bg-secondary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-[var(--text-primary)] text-sm placeholder-[var(--text-muted)]"
-              placeholder="描述（可选）" value={newGraphDesc} onChange={(e) => setNewGraphDesc(e.target.value)} />
+              placeholder={t('graph.descriptionOptionalPlaceholder')} value={newGraphDesc} onChange={(e) => setNewGraphDesc(e.target.value)} />
             <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)] cursor-pointer select-none">
               <input type="checkbox" checked={newGraphTT} onChange={(e) => setNewGraphTT(e.target.checked)}
                 className="w-3.5 h-3.5 rounded border-[#3a3a3e] bg-[var(--bg-secondary)] checked:bg-[var(--accent)] checked:border-[#0a84ff] focus:ring-0 cursor-pointer" />

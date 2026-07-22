@@ -495,7 +495,7 @@ export async function searchWeb(provider, query) {
   const res = await fetch('/proxy/web-search', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, provider_id: provider?.id }),
+    body: JSON.stringify({ query, provider_name: provider?.name }),
   });
   const data = await res.json();
   if (!data.success) throw new Error(data.error || 'search failed');

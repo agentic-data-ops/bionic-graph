@@ -440,10 +440,10 @@ class Client:
     def set_web_search_settings(self, config: dict) -> StatusResponse:
         return StatusResponse.model_validate(self._request("PUT", "/settings/web-search", json=config))
 
-    def web_search_proxy(self, query: str, provider_id: Optional[str] = None) -> str:
+    def web_search_proxy(self, query: str, provider_name: Optional[str] = None) -> str:
         body: dict = {"query": query}
-        if provider_id:
-            body["provider_id"] = provider_id
+        if provider_name:
+            body["provider_name"] = provider_name
         data = self._request("POST", "/proxy/web-search", json=body)
         if data.get("success"):
             return data["data"]

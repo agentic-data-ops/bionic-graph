@@ -616,7 +616,7 @@ def settings_get_web_search(ctx):
 
 @settings.command("set-web-search")
 @click.option("--config", required=True, callback=_parse_json_arg,
-              help='JSON: web search config. Fields: providers: [{id, name, search_url, method, params, headers}], default_provider (string). Example: \'{"default_provider":"bing","providers":[{"id":"bing","name":"Bing","search_url":"https://api.bing.com/search","method":"GET","params":{"q":"{query}"}}]}\'')
+              help='JSON: web search config. Fields: providers: [{name, search_url, method, params, headers}], default_provider (string). Example: \'{"default_provider":"Bing","providers":[{"name":"Bing","search_url":"https://api.bing.com/search","method":"GET","params":{"q":"{query}"}}]}\'')
 @click.pass_context
 def settings_set_web_search(ctx, config):
     """Update web search provider configuration."""
@@ -661,12 +661,12 @@ def proxy():
 
 @proxy.command("web-search")
 @click.option("--query", required=True, help="Search query text")
-@click.option("--provider-id", help="Web search provider ID (default from settings)")
+@click.option("--provider-name", help="Web search provider name (default from settings)")
 @click.pass_context
-def proxy_web_search(ctx, query, provider_id):
+def proxy_web_search(ctx, query, provider_name):
     """Execute a web search via the configured proxy."""
     c = _client(ctx)
-    data = c.web_search_proxy(query, provider_id)
+    data = c.web_search_proxy(query, provider_name)
     if _fmt(ctx) == "json":
         _output({"data": data[:500]}, "json")
     else:
@@ -798,10 +798,10 @@ def chat(ctx, web_search, graph_search, extract_keywords, graph, search_mode, mo
         if web_search:
             try:
                 ws_config = c.get_web_search_settings()
-                provider_id = ws_config.default_provider
+                provider_name = ws_config.default_provider
 
-                click.echo(f"  🌐 Searching web... ({provider_id})", err=True)
-                raw_html = c.web_search_proxy(search_query, provider_id)
+                click.echo(f"  🌐 Searching web... ({provider_name})", err=True)
+                raw_html = c.web_search_proxy(search_query, provider_name)
                 search_context = raw_html[:32000]
             except Exception as e:
                 click.echo(f"  ⚠️ Web search error: {e}", err=True)

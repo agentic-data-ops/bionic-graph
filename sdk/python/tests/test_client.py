@@ -262,7 +262,7 @@ def test_get_web_search_settings(client, mock):
 
 
 def test_web_search_proxy(client, mock):
-    mock.post("/web-search/proxy").respond(json={"success": True, "data": "<html>results</html>"})
+    mock.post("/proxy/web-search").respond(json={"success": True, "data": "<html>results</html>"})
     data = client.web_search_proxy("hello")
     assert "results" in data
 

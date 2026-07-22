@@ -115,7 +115,6 @@ class RankConfig(BaseModel):
 
 
 class WebSearchProvider(BaseModel):
-    id: str
     name: str
     search_url: str
     method: str = "GET"

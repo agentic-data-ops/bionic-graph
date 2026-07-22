@@ -32,20 +32,15 @@ const tabCls = (active) =>
   }`;
 
 // ── Time unit conversion helpers ────────────────────────────────────────────
-const TIME_UNITS = [
-  { label: '秒', value: 1 },
-  { label: '分钟', value: 60 },
-  { label: '小时', value: 3600 },
-  { label: '天', value: 86400 },
-];
+const TIME_UNIT_VALUES = [1, 60, 3600, 86400];
 
 /** Convert seconds to best-fit display value + unit. */
 function secondsToDisplay(secs) {
   if (secs == null || secs <= 0) return { value: 0, unit: 1 };
-  for (let i = TIME_UNITS.length - 1; i >= 0; i--) {
-    const u = TIME_UNITS[i];
-    if (secs >= u.value && secs % u.value === 0) {
-      return { value: secs / u.value, unit: u.value };
+  for (let i = TIME_UNIT_VALUES.length - 1; i >= 0; i--) {
+    const val = TIME_UNIT_VALUES[i];
+    if (secs >= val && secs % val === 0) {
+      return { value: secs / val, unit: val };
     }
   }
   return { value: secs, unit: 1 };
@@ -79,6 +74,12 @@ export default function SettingsDialog({
   const [rankMessage, setRankMessage] = useState('');
   const [rankThreshold, setRankThreshold] = useState({ value: 15, unit: 86400 });
   const [rankPeriod, setRankPeriod] = useState({ value: 1, unit: 86400 });
+  const timeUnits = [
+    { label: t('time.second'), value: 1 },
+    { label: t('time.minute'), value: 60 },
+    { label: t('time.hour'), value: 3600 },
+    { label: t('time.day'), value: 86400 },
+  ];
   const [defaultModelOpen, setDefaultModelOpen] = useState(false);
   const [defaultWebProviderOpen, setDefaultWebProviderOpen] = useState(false);
   const [timeUnitOpen, setTimeUnitOpen] = useState(false);
@@ -92,13 +93,6 @@ export default function SettingsDialog({
     if (open) {
       fetchSearchConfig().then((d) => {
         setSearchConfig(d);
-        // Also sync to localStorage so ChatArea can read it
-        try {
-          const stored = JSON.parse(localStorage.getItem('bgraph-settings') || '{}');
-          stored.greedy = d.greedy;
-          stored.exact = d.exact;
-          localStorage.setItem('bgraph-settings', JSON.stringify(stored));
-        } catch (e) {}
       }).catch(() => {});
       fetchRankConfig().then((d) => {
         setRankConfig(d);
@@ -178,11 +172,11 @@ export default function SettingsDialog({
   return (
     <Modal title={t('settings.title')} onClose={onClose}>
       {/* Tabs */}
-      <div className="flex gap-1.5 mb-5">
+    <div className="flex gap-1.5 mb-5">
         <button className={tabCls(tab === 'providers')} onClick={() => setTab('providers')}>{t('settings.model')}</button>
-        <button className={tabCls(tab === 'search')} onClick={() => setTab('search')}>图谱搜索</button>
-        <button className={tabCls(tab === 'rank')} onClick={() => setTab('rank')}>排序</button>
-        <button className={tabCls(tab === 'websearch')} onClick={() => setTab('websearch')}>联网搜索</button>
+        <button className={tabCls(tab === 'search')} onClick={() => setTab('search')}>{t('settings.searchTab')}</button>
+        <button className={tabCls(tab === 'rank')} onClick={() => setTab('rank')}>{t('settings.rankTab')}</button>
+        <button className={tabCls(tab === 'websearch')} onClick={() => setTab('websearch')}>{t('settings.webSearchTab')}</button>
       </div>
 
       {/* ─── Providers ─── */}
@@ -315,17 +309,17 @@ export default function SettingsDialog({
               { /* ── Greedy ── */ }
               <div className="p-3 rounded-xl bg-[var(--bg-tertiary)]/50">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-medium text-[var(--text-secondary)]">Greedy (贪婪模式)</span>
+                  <span className="text-xs font-medium text-[var(--text-secondary)]">{t('settings.greedyMode')}</span>
                 </div>
                 <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)] cursor-pointer select-none mb-2">
                   <input type="checkbox" checked={searchConfig.greedy.traverse}
                     onChange={(e) => setSearchConfig({ ...searchConfig, greedy: { ...searchConfig.greedy, traverse: e.target.checked } })}
                     className="w-3.5 h-3.5 rounded border-[#3a3a3e] bg-[var(--bg-secondary)] checked:bg-[var(--accent)] checked:border-[#0a84ff] focus:ring-0 cursor-pointer" />
-                  启用数据遍历
+                  {t('settings.enableTraverse')}
                 </label>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="text-[11px] text-[var(--text-muted)]">激活传播阈值</label>
+                    <label className="text-[11px] text-[var(--text-muted)]">{t('settings.activateThreshold')}</label>
                     <div className="flex items-center gap-2">
                       <input className="flex-1 accent-[var(--accent)]" type="range" min="0" max="1" step="0.05"
                         value={searchConfig.greedy.activate}
@@ -334,7 +328,7 @@ export default function SettingsDialog({
                     </div>
                   </div>
                   <div>
-                    <label className="text-[11px] text-[var(--text-muted)]">激活衰减值</label>
+                    <label className="text-[11px] text-[var(--text-muted)]">{t('settings.activateDecay')}</label>
                     <div className="flex items-center gap-2">
                       <input className="flex-1 accent-[var(--accent)]" type="range" min="0" max="1" step="0.05"
                         value={searchConfig.greedy.decay}
@@ -343,13 +337,13 @@ export default function SettingsDialog({
                     </div>
                   </div>
                   <div>
-                    <label className="text-[11px] text-[var(--text-muted)]">探索深度</label>
+                    <label className="text-[11px] text-[var(--text-muted)]">{t('settings.exploreDepth')}</label>
                     <input className="w-full px-3 py-1.5 rounded-xl bg-transparent border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
                       type="number" min="1" max="255" value={searchConfig.greedy.depth}
                       onChange={(e) => setSearchConfig({ ...searchConfig, greedy: { ...searchConfig.greedy, depth: parseInt(e.target.value) || 1 } })} />
                   </div>
                   <div>
-                    <label className="text-[11px] text-[var(--text-muted)]">探索结果分值</label>
+                    <label className="text-[11px] text-[var(--text-muted)]">{t('settings.exploreScore')}</label>
                     <div className="flex items-center gap-2">
                       <input className="flex-1 accent-[var(--accent)]" type="range" min="0" max="1" step="0.05"
                         value={searchConfig.greedy.score}
@@ -363,17 +357,17 @@ export default function SettingsDialog({
               { /* ── Exact ── */ }
               <div className="p-3 rounded-xl bg-[var(--bg-tertiary)]/50">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-medium text-[var(--text-secondary)]">Exact (精确模式)</span>
+                  <span className="text-xs font-medium text-[var(--text-secondary)]">{t('settings.exactMode')}</span>
                 </div>
                 <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)] cursor-pointer select-none mb-2">
                   <input type="checkbox" checked={searchConfig.exact.traverse}
                     onChange={(e) => setSearchConfig({ ...searchConfig, exact: { ...searchConfig.exact, traverse: e.target.checked } })}
                     className="w-3.5 h-3.5 rounded border-[#3a3a3e] bg-[var(--bg-secondary)] checked:bg-[var(--accent)] checked:border-[#0a84ff] focus:ring-0 cursor-pointer" />
-                  启用数据遍历
+                  {t('settings.enableTraverse')}
                 </label>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="text-[11px] text-[var(--text-muted)]">激活传播阈值</label>
+                    <label className="text-[11px] text-[var(--text-muted)]">{t('settings.activateThreshold')}</label>
                     <div className="flex items-center gap-2">
                       <input className="flex-1 accent-[var(--accent)]" type="range" min="0" max="1" step="0.05"
                         value={searchConfig.exact.activate}
@@ -382,7 +376,7 @@ export default function SettingsDialog({
                     </div>
                   </div>
                   <div>
-                    <label className="text-[11px] text-[var(--text-muted)]">激活衰减值</label>
+                    <label className="text-[11px] text-[var(--text-muted)]">{t('settings.activateDecay')}</label>
                     <div className="flex items-center gap-2">
                       <input className="flex-1 accent-[var(--accent)]" type="range" min="0" max="1" step="0.05"
                         value={searchConfig.exact.decay}
@@ -391,13 +385,13 @@ export default function SettingsDialog({
                     </div>
                   </div>
                   <div>
-                    <label className="text-[11px] text-[var(--text-muted)]">探索深度</label>
+                    <label className="text-[11px] text-[var(--text-muted)]">{t('settings.exploreDepth')}</label>
                     <input className="w-full px-3 py-1.5 rounded-xl bg-transparent border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-sm"
                       type="number" min="1" max="255" value={searchConfig.exact.depth}
                       onChange={(e) => setSearchConfig({ ...searchConfig, exact: { ...searchConfig.exact, depth: parseInt(e.target.value) || 1 } })} />
                   </div>
                   <div>
-                    <label className="text-[11px] text-[var(--text-muted)]">探索结果分值</label>
+                    <label className="text-[11px] text-[var(--text-muted)]">{t('settings.exploreScore')}</label>
                     <div className="flex items-center gap-2">
                       <input className="flex-1 accent-[var(--accent)]" type="range" min="0" max="1" step="0.05"
                         value={searchConfig.exact.score}
@@ -417,21 +411,14 @@ export default function SettingsDialog({
                     setSearchMessage('');
                     try {
                       await updateSearchConfig(searchConfig);
-                      // Sync to localStorage
-                      try {
-                        const stored = JSON.parse(localStorage.getItem('bgraph-settings') || '{}');
-                        stored.greedy = searchConfig.greedy;
-                        stored.exact = searchConfig.exact;
-                        localStorage.setItem('bgraph-settings', JSON.stringify(stored));
-                      } catch (e) {}
-                      setSearchMessage('✅ 保存成功');
+                      setSearchMessage(t('settings.saveSuccess'));
                     } catch (e) {
-                      setSearchMessage('❌ 保存失败: ' + e.message);
+                      setSearchMessage(t('settings.saveFail') + e.message);
                     } finally {
                       setSearchSaving(false);
                     }
                   }}>
-                  {searchSaving ? '保存中...' : '保存配置'}
+                  {searchSaving ? t('settings.saving') : t('settings.saveConfig')}
                 </button>
                 {searchMessage && (
                   <span className="text-xs text-[var(--text-secondary)]">{searchMessage}</span>
@@ -439,7 +426,7 @@ export default function SettingsDialog({
               </div>
             </div>
           ) : (
-            <p className="text-[var(--text-tertiary)] text-sm text-center py-8 tracking-tight">加载配置中...</p>
+            <p className="text-[var(--text-tertiary)] text-sm text-center py-8 tracking-tight">{t('settings.loading')}</p>
           )}
         </div>
       )}
@@ -452,24 +439,24 @@ export default function SettingsDialog({
                   <input type="checkbox" checked={rankConfig.auto_inc_rank_when_update}
                     onChange={(e) => setRankConfig({ ...rankConfig, auto_inc_rank_when_update: e.target.checked })}
                     className="w-3.5 h-3.5 rounded border-[#3a3a3e] bg-[var(--bg-secondary)] checked:bg-[var(--accent)]" />
-                  更新时自动增加排序值
+                  {t('settings.autoIncRankUpdate')}
                 </label>
                 <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)] cursor-pointer select-none">
                   <input type="checkbox" checked={rankConfig.auto_inc_rank_when_read}
                     onChange={(e) => setRankConfig({ ...rankConfig, auto_inc_rank_when_read: e.target.checked })}
                     className="w-3.5 h-3.5 rounded border-[#3a3a3e] bg-[var(--bg-secondary)] checked:bg-[var(--accent)]" />
-                  读取时自动增加排序值
+                  {t('settings.autoIncRankRead')}
                 </label>
                 <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)] cursor-pointer select-none">
                   <input type="checkbox" checked={rankConfig.auto_dec_rank_when_inactive}
                     onChange={(e) => setRankConfig({ ...rankConfig, auto_dec_rank_when_inactive: e.target.checked })}
                     className="w-3.5 h-3.5 rounded border-[#3a3a3e] bg-[var(--bg-secondary)] checked:bg-[var(--accent)]" />
-                  不活跃时自动降低排序值
+                  {t('settings.autoDecRankInactive')}
                 </label>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="min-w-0">
-                  <label className="block text-xs text-[var(--text-tertiary)] mb-1">不活跃阈值</label>
+                  <label className="block text-xs text-[var(--text-tertiary)] mb-1">{t('settings.inactiveThreshold')}</label>
                   <div className="flex gap-1">
                     <input type="number" min="1" value={rankThreshold.value}
                       onChange={(e) => setRankThreshold({ ...rankThreshold, value: Number(e.target.value) })}
@@ -479,14 +466,14 @@ export default function SettingsDialog({
                         className="px-2 py-1.5 text-xs rounded-lg bg-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] transition-all font-medium flex items-center gap-1 w-14"
                         onClick={(e) => { e.stopPropagation(); setTimeUnitOpen(!timeUnitOpen); }}
                       >
-                        <span className="flex-1 text-center">{TIME_UNITS.find(u => u.value === rankThreshold.unit)?.label}</span>
+                        <span className="flex-1 text-center">{timeUnits.find(u => u.value === rankThreshold.unit)?.label}</span>
                         <svg className={`w-2.5 h-2.5 flex-shrink-0 transition-transform ${timeUnitOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
                       </button>
                       {timeUnitOpen && (
                         <>
                           <div className="fixed inset-0 z-40" onClick={() => setTimeUnitOpen(false)} />
                           <div className="absolute right-0 bottom-full mb-1 z-50 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-lg overflow-hidden w-full">
-                            {TIME_UNITS.map((u) => (
+                            {timeUnits.map((u) => (
                               <button
                                 key={u.value}
                                 className={`w-full text-left px-2.5 py-2 text-xs font-medium whitespace-nowrap truncate transition-all ${u.value === rankThreshold.unit ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
@@ -500,7 +487,7 @@ export default function SettingsDialog({
                   </div>
                 </div>
                 <div className="min-w-0">
-                  <label className="block text-xs text-[var(--text-tertiary)] mb-1">扫描间隔</label>
+                  <label className="block text-xs text-[var(--text-tertiary)] mb-1">{t('settings.scanInterval')}</label>
                   <div className="flex gap-1">
                     <input type="number" min="1" value={rankPeriod.value}
                       onChange={(e) => setRankPeriod({ ...rankPeriod, value: Number(e.target.value) })}
@@ -510,14 +497,14 @@ export default function SettingsDialog({
                         className="px-2 py-1.5 text-xs rounded-lg bg-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)] border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] transition-all font-medium flex items-center gap-1 w-14"
                         onClick={(e) => { e.stopPropagation(); setPeriodUnitOpen(!periodUnitOpen); }}
                       >
-                        <span className="flex-1 text-center">{TIME_UNITS.find(u => u.value === rankPeriod.unit)?.label}</span>
+                        <span className="flex-1 text-center">{timeUnits.find(u => u.value === rankPeriod.unit)?.label}</span>
                         <svg className={`w-2.5 h-2.5 flex-shrink-0 transition-transform ${periodUnitOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
                       </button>
                       {periodUnitOpen && (
                         <>
                           <div className="fixed inset-0 z-40" onClick={() => setPeriodUnitOpen(false)} />
                           <div className="absolute right-0 bottom-full mb-1 z-50 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-lg overflow-hidden w-full">
-                            {TIME_UNITS.map((u) => (
+                            {timeUnits.map((u) => (
                               <button
                                 key={u.value}
                                 className={`w-full text-left px-2.5 py-2 text-xs font-medium whitespace-nowrap truncate transition-all ${u.value === rankPeriod.unit ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
@@ -543,14 +530,14 @@ export default function SettingsDialog({
                         inactive_rank_update_period: displayToSeconds(rankPeriod.value, rankPeriod.unit),
                       };
                       await updateRankConfig(payload);
-                      setRankMessage('✅ 保存成功');
+                      setRankMessage(t('settings.saveSuccess'));
                     } catch (e) {
-                      setRankMessage('❌ 保存失败: ' + e.message);
+                      setRankMessage(t('settings.saveFail') + e.message);
                     }
                     setRankSaving(false);
                     setTimeout(() => setRankMessage(''), 2000);
                   }}>
-                  {rankSaving ? '保存中...' : '保存配置'}
+                  {rankSaving ? t('settings.saving') : t('settings.saveConfig')}
                 </button>
                 {rankMessage && (
                   <span className="text-xs text-[var(--text-secondary)]">{rankMessage}</span>
@@ -558,7 +545,7 @@ export default function SettingsDialog({
               </div>
             </>
           ) : (
-            <p className="text-[var(--text-tertiary)] text-sm text-center py-8">加载配置中...</p>
+            <p className="text-[var(--text-tertiary)] text-sm text-center py-8">{t('settings.loading')}</p>
           )}
         </div>
       )}
@@ -569,31 +556,31 @@ export default function SettingsDialog({
           {editingWebProvider ? (
             <div className="space-y-3.5">
               <div>
-                <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">名称</label>
+                <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">{t('settings.providerName')}</label>
                 <input className="w-full px-3.5 py-2 rounded-xl bg-transparent border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-[var(--text-primary)] text-sm"
                   type="text" value={editingWebProvider.name}
                   onChange={(e) => setEditingWebProvider({ ...editingWebProvider, name: e.target.value })} />
               </div>
               <div>
-                <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">Search URL <span className="text-[var(--text-muted)]">(用 <code>{'{text}'}</code> 表示搜索词位置)</span></label>
+                <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">{t('settings.webSearchUrl')} <span className="text-[var(--text-muted)]">{t('settings.webSearchUrlHint', { placeholder: '{text}' })}</span></label>
                 <input className="w-full px-3.5 py-2 rounded-xl bg-transparent border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-[var(--text-primary)] text-sm"
                   type="text" value={editingWebProvider.search_url}
                   onChange={(e) => setEditingWebProvider({ ...editingWebProvider, search_url: e.target.value })} />
               </div>
               <div>
-                <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">请求方法 <span className="text-[var(--text-muted)]">(GET 或 POST)</span></label>
+                <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">{t('settings.webSearchMethod')} <span className="text-[var(--text-muted)]">({t('settings.webSearchMethodHint')})</span></label>
                 <input className="w-full px-3.5 py-2 rounded-xl bg-transparent border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-[var(--text-primary)] text-sm"
                   type="text" value={editingWebProvider.method || 'GET'}
                   onChange={(e) => setEditingWebProvider({ ...editingWebProvider, method: e.target.value })} />
               </div>
               <div>
-                <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">请求体模板 <span className="text-[var(--text-muted)]">(POST 时使用，用 <code>{'{text}'}</code> 表示搜索词)</span></label>
+                <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">{t('settings.webSearchBodyTemplate')} <span className="text-[var(--text-muted)]">({t('settings.webSearchBodyHint')})</span></label>
                 <textarea className="w-full h-24 px-3 py-2 rounded-xl bg-transparent border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] text-[var(--text-primary)] text-xs font-mono resize-none"
                   value={editingWebProvider.body_template || ''}
                   onChange={(e) => setEditingWebProvider({ ...editingWebProvider, body_template: e.target.value || null })} />
               </div>
               <div>
-                <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">请求参数</label>
+                <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">{t('settings.webSearchParams')}</label>
                 <div className="space-y-1">
                   {Object.entries(editingWebProvider.params || {}).length === 0 && <div className="text-xs text-[var(--text-muted)] italic">—</div>}
                   {Object.entries(editingWebProvider.params || {}).map(([k, v], idx) => (
@@ -615,11 +602,11 @@ export default function SettingsDialog({
                     </div>
                   ))}
                   <button className="w-full py-1 rounded-lg border border-dashed border-[var(--border)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--accent)] text-xs font-medium transition-all"
-                    onClick={() => setEditingWebProvider({ ...editingWebProvider, params: { ...editingWebProvider.params, '': '' } })}>+ 添加参数</button>
+                    onClick={() => setEditingWebProvider({ ...editingWebProvider, params: { ...editingWebProvider.params, '': '' } })}>{t('settings.addParam')}</button>
                 </div>
               </div>
               <div>
-                <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">请求头</label>
+                <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">{t('settings.webSearchHeaders')}</label>
                 <div className="space-y-1">
                   {Object.entries(editingWebProvider.headers || {}).length === 0 && <div className="text-xs text-[var(--text-muted)] italic">—</div>}
                   {Object.entries(editingWebProvider.headers || {}).map(([k, v], idx) => (
@@ -641,31 +628,31 @@ export default function SettingsDialog({
                     </div>
                   ))}
                   <button className="w-full py-1 rounded-lg border border-dashed border-[var(--border)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--accent)] text-xs font-medium transition-all"
-                    onClick={() => setEditingWebProvider({ ...editingWebProvider, headers: { ...editingWebProvider.headers, '': '' } })}>+ 添加请求头</button>
+                    onClick={() => setEditingWebProvider({ ...editingWebProvider, headers: { ...editingWebProvider.headers, '': '' } })}>{t('settings.addHeader')}</button>
                 </div>
               </div>
               <div className="flex gap-2 justify-end pt-1">
-                <button className="px-4 py-2 rounded-xl bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-sm font-medium transition-all" onClick={() => setEditingWebProvider(null)}>取消</button>
+                <button className="px-4 py-2 rounded-xl bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-sm font-medium transition-all" onClick={() => setEditingWebProvider(null)}>{t('graph.cancel')}</button>
                 <button className="px-4 py-2 rounded-xl bg-[var(--accent)] text-white text-sm font-medium hover:bg-[color-mix(in srgb, var(--accent), black 10%)] transition-all shadow-sm" onClick={() => {
                   if (!editingWebProvider.name || !editingWebProvider.search_url) return;
-                  const existing = webSearchConfig.providers.findIndex((p) => p.id === editingWebProvider.id);
+                  const existing = webSearchConfig.providers.findIndex((p) => p.name === editingWebProvider.name);
                   const updated = existing >= 0
                     ? [...webSearchConfig.providers.slice(0, existing), editingWebProvider, ...webSearchConfig.providers.slice(existing + 1)]
                     : [...webSearchConfig.providers, editingWebProvider];
                   setWebSearchConfig({ ...webSearchConfig, providers: updated });
                   setEditingWebProvider(null);
-                }}>保存</button>
+                }}>{t('panel.save')}</button>
               </div>
             </div>
           ) : (
             <div>
-              <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-2 tracking-tight">默认供应商</label>
+              <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-2 tracking-tight">{t('settings.defaultWebProvider')}</label>
               <div className="relative">
                 <button
                   className="w-full px-3 py-2 rounded-xl bg-transparent text-[var(--text-primary)] text-sm border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] transition-all font-medium flex items-center gap-1 text-left"
                   onClick={(e) => { e.stopPropagation(); setDefaultWebProviderOpen(!defaultWebProviderOpen); }}
                 >
-                  <span className="flex-1 truncate">{webSearchConfig?.providers?.find(p => p.id === webSearchConfig?.default_provider)?.name || '(无)'}</span>
+                  <span className="flex-1 truncate">{webSearchConfig?.providers?.find(p => p.name === webSearchConfig?.default_provider)?.name || t('settings.none')}</span>
                   <svg className={`w-3 h-3 flex-shrink-0 transition-transform ${defaultWebProviderOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
                 </button>
                 {defaultWebProviderOpen && (
@@ -675,12 +662,12 @@ export default function SettingsDialog({
                       <button
                         className={`w-full text-left px-2.5 py-2 text-xs font-medium whitespace-nowrap truncate transition-all ${!webSearchConfig?.default_provider ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
                         onClick={() => { setWebSearchConfig({ ...webSearchConfig, default_provider: '' }); setDefaultWebProviderOpen(false); }}
-                      >(无)</button>
+                      >{t('settings.none')}</button>
                       {(webSearchConfig?.providers || []).map((p) => (
                         <button
-                          key={p.id}
-                          className={`w-full text-left px-2.5 py-2 text-xs font-medium whitespace-nowrap truncate transition-all ${p.id === webSearchConfig?.default_provider ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
-                          onClick={() => { setWebSearchConfig({ ...webSearchConfig, default_provider: p.id }); setDefaultWebProviderOpen(false); }}
+                          key={p.name}
+                          className={`w-full text-left px-2.5 py-2 text-xs font-medium whitespace-nowrap truncate transition-all ${p.name === webSearchConfig?.default_provider ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
+                          onClick={() => { setWebSearchConfig({ ...webSearchConfig, default_provider: p.name }); setDefaultWebProviderOpen(false); }}
                         >{p.name}</button>
                       ))}
                     </div>
@@ -688,21 +675,21 @@ export default function SettingsDialog({
                 )}
               </div>
 
-              <label className="block text-xs text-[var(--text-tertiary)] font-medium mt-4 mb-2 tracking-tight">供应商列表</label>
+              <label className="block text-xs text-[var(--text-tertiary)] font-medium mt-4 mb-2 tracking-tight">{t('settings.webProviderList')}</label>
               {(!webSearchConfig?.providers || webSearchConfig.providers.length === 0) && (
-                <p className="text-[var(--text-tertiary)] text-sm text-center py-8 tracking-tight">暂无供应商</p>
+                <p className="text-[var(--text-tertiary)] text-sm text-center py-8 tracking-tight">{t('settings.noWebProviders')}</p>
               )}
               <div className="space-y-1 max-h-48 overflow-y-auto mb-3">
                 {(webSearchConfig?.providers || []).map((p) => (
-                  <div key={p.id} className="flex items-center justify-between py-2.5 px-3 rounded-xl hover:bg-[var(--bg-tertiary)] transition-all group">
+                  <div key={p.name} className="flex items-center justify-between py-2.5 px-3 rounded-xl hover:bg-[var(--bg-tertiary)] transition-all group">
                     <div>
                       <div className="text-sm text-[var(--text-primary)] font-medium">{p.name}</div>
                       <div className="text-xs text-[var(--text-tertiary)] mt-0.5 truncate max-w-[300px]">{p.search_url}</div>
                     </div>
                     <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button className="px-2.5 py-1 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] rounded-lg transition-all" onClick={() => setEditingWebProvider({ ...p })}>编辑</button>
+                      <button className="px-2.5 py-1 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] rounded-lg transition-all" onClick={() => setEditingWebProvider({ ...p })}>{t('panel.edit')}</button>
                       <button className="px-2.5 py-1 text-xs text-[var(--danger)] hover:bg-[color-mix(in srgb, var(--bg-hover), var(--danger) 30%)] rounded-lg transition-all" onClick={() => {
-                        setWebSearchConfig({ ...webSearchConfig, providers: webSearchConfig.providers.filter((x) => x.id !== p.id) });
+                        setWebSearchConfig({ ...webSearchConfig, providers: webSearchConfig.providers.filter((x) => x.name !== p.name) });
                       }}>删除</button>
                     </div>
                   </div>
@@ -710,7 +697,6 @@ export default function SettingsDialog({
               </div>
               <button className="w-full py-2.5 rounded-xl bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] text-sm font-medium transition-all" onClick={() => {
                 setEditingWebProvider({
-                  id: Date.now().toString(),
                   name: '',
                   search_url: '',
                   method: 'GET',
@@ -718,7 +704,7 @@ export default function SettingsDialog({
                   params: {},
                   headers: {},
                 });
-              }}>+ 添加供应商</button>
+              }}>{t('settings.addWebProvider')}</button>
 
               <div className="flex items-center gap-3 pt-3">
                 <button className="px-4 py-2 rounded-xl bg-[var(--accent)] text-white text-sm font-medium hover:bg-[color-mix(in srgb, var(--accent), black 10%)] transition-all shadow-sm disabled:opacity-40"
@@ -729,15 +715,15 @@ export default function SettingsDialog({
                     setWebSearchMessage('');
                     try {
                       await updateWebSearchConfig(webSearchConfig);
-                      setWebSearchMessage('✅ 保存成功');
+                      setWebSearchMessage(t('settings.saveSuccess'));
                     } catch (e) {
-                      setWebSearchMessage('❌ 保存失败: ' + e.message);
+                      setWebSearchMessage(t('settings.saveFail') + e.message);
                     } finally {
                       setWebSearchSaving(false);
                       setTimeout(() => setWebSearchMessage(''), 2000);
                     }
                   }}>
-                  {webSearchSaving ? '保存中...' : '保存配置'}
+                  {webSearchSaving ? t('settings.saving') : t('settings.saveConfig')}
                 </button>
                 {webSearchMessage && (
                   <span className="text-xs text-[var(--text-secondary)]">{webSearchMessage}</span>

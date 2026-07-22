@@ -22,6 +22,28 @@ function uid() {
   return `m${Date.now()}-${++_idCounter}`;
 }
 
+/** Validate keyword extraction result — reject if it looks like an error/help message instead of actual keywords. */
+function isValidKeywords(text) {
+  if (!text || text.length < 2) return false;
+  const lower = text.toLowerCase();
+  // Reject common failure patterns from LLM
+  const failurePatterns = [
+    'conversation history missing', 'no history', 'no conversation',
+    'no query', 'no context', 'i cannot', 'please provide',
+    'no keywords', 'unable to', 'not enough', 'missing',
+  ];
+  for (const p of failurePatterns) {
+    if (lower.includes(p)) return false;
+  }
+  // Reject full sentences (more than 6 words or words longer than 20 chars)
+  const words = text.split(/\s+/);
+  if (words.length > 8) return false;
+  for (const w of words) {
+    if (w.length > 25) return false;
+  }
+  return true;
+}
+
 /** Extract and format graph search context from `search_progress` messages.
  *  Output uses [Entity] / [Relation] labels in English. */
 function formatGraphContext(items) {
@@ -146,7 +168,7 @@ export default function ChatArea({
       if (useWebSearch) {
         try {
           const wsConfig = await fetchWebSearchConfig();
-          const provider = (wsConfig?.providers || []).find(p => p.id === wsConfig.default_provider) || wsConfig?.providers?.[0];
+          const provider = (wsConfig?.providers || []).find(p => p.name === wsConfig.default_provider) || wsConfig?.providers?.[0];
           if (provider) {
             const wsSteps = [];
             const wsProgressId = uid();
@@ -162,20 +184,21 @@ export default function ChatArea({
               setSearchStream({ ...wsProgressMsg, steps: [...wsSteps] });
 
               try {
-                const recentMsgs = (conv.messages || []).slice(-6).filter(m => m.type === 'user' || m.type === 'assistant');
+                const recentMsgs = (conv.messages || []).filter(m => m.type === 'user').slice(-5);
                 const kwContextMsgs = recentMsgs.map(m => ({
-                  role: m.type === 'user' ? 'user' : 'assistant',
+                  role: 'user',
                   content: m.content || '',
                 }));
                 const kwMessages = [
-                  { role: 'system', content: 'You are a search query optimizer. Based on the conversation history and the latest question, extract 2-5 concise search keywords. Return ONLY the keywords separated by spaces, no punctuation or extra text. Focus on core entities and omit generic words like "介绍", "什么是", "怎么样", "how", "what", "explain".' },
+                  { role: 'system', content: 'Extract 2-5 concise search keywords from the text below. If conversation history exists, use it for context. Return ONLY the keywords separated by spaces, no punctuation, no explanations, no refusal. Focus on core entities and omit generic words like "介绍", "什么是", "怎么样", "how", "what", "explain".' },
                   ...kwContextMsgs,
+                  { role: 'user', content: text },
                 ];
                 const kwRes = await chatCompletionProxy(kwMessages, modelKey, false);
                 const kwData = await kwRes.response;
                 const kwBody = await kwData.json();
                 const kwContent = (kwBody?.choices?.[0]?.message?.content || '').trim();
-                if (kwContent && kwContent.split(' ').length <= 8) searchQuery = kwContent;
+                if (isValidKeywords(kwContent)) searchQuery = kwContent;
               } catch (e) { /* use original text as fallback */ }
 
               wsSteps[wsSteps.length - 1] = { ...wsSteps[wsSteps.length - 1], status: 'done', llmOutput: searchQuery };
@@ -206,8 +229,7 @@ export default function ChatArea({
 
       // ── 2. Graph search ──
       if (useGraph) {
-        const searchStep = { icon: '🔍', name: 'Searching knowledge graph', status: 'running', llmOutput: '' };
-        const steps = [searchStep];
+        const steps = [];
 
         const ttMicros = timeTravel && timeTravelPoint ? localDatetimeToUTC(timeTravelPoint) : null;
         const progressMsgId = uid();
@@ -221,43 +243,49 @@ export default function ChatArea({
         let graphQuery = text;
 
         try {
-          // Check keyword extraction setting
+          // Step 0: Extract search keywords (if enabled)
           if (extractKeywords) {
             steps.push({ icon: '🔑', name: 'Extracting search keywords...', status: 'running', llmOutput: '' });
             setSearchStream({ ...progressMsg, steps: [...steps] });
 
             try {
-              const recentMsgs = (conv.messages || []).slice(-6).filter(m => m.type === 'user' || m.type === 'assistant');
+              const recentMsgs = (conv.messages || []).filter(m => m.type === 'user').slice(-5);
               const kwContextMsgs = recentMsgs.map(m => ({
-                role: m.type === 'user' ? 'user' : 'assistant',
+                role: 'user',
                 content: m.content || '',
               }));
               const kwMessages = [
-                { role: 'system', content: 'You are a search query optimizer. Based on the conversation history and the latest question, extract 2-5 concise search keywords. Return ONLY the keywords separated by spaces, no punctuation or extra text. Focus on core entities and omit generic words.' },
+                { role: 'system', content: 'Extract 2-5 concise search keywords from the text below. If conversation history exists, use it for context. Return ONLY the keywords separated by spaces, no punctuation, no explanations, no refusal. Focus on core entities and omit generic words.' },
                 ...kwContextMsgs,
+                { role: 'user', content: text },
               ];
               const kwRes = await chatCompletionProxy(kwMessages, modelKey, false);
               const kwData = await kwRes.response;
               const kwBody = await kwData.json();
               const kwContent = (kwBody?.choices?.[0]?.message?.content || '').trim();
-              if (kwContent && kwContent.split(' ').length <= 8) graphQuery = kwContent;
+              if (isValidKeywords(kwContent)) graphQuery = kwContent;
             } catch (e) { /* use original text as fallback */ }
 
             steps[steps.length - 1] = { ...steps[steps.length - 1], status: 'done', llmOutput: graphQuery };
             setSearchStream({ ...progressMsg, steps: [...steps] });
           }
 
+          // Step 1: Search knowledge graph
+          steps.push({ icon: '🔍', name: 'Searching knowledge graph...', status: 'running', llmOutput: '' });
+          setSearchStream({ ...progressMsg, steps: [...steps] });
+
           const gremlinSteps = [{ step: 'search', text: graphQuery, mode: kwSearchMode }];
           const res = await gremlin(gremlinSteps, defaultGraph, ttMicros);
           graphData = res;
 
-          const doneSteps = [{ icon: '✅', name: 'Graph search completed', status: 'done', llmOutput: '' }];
-          const ttEnabled2 = (Array.isArray(graphMetas) ? graphMetas.find(g => g.name === defaultGraph)?.time_travel : false) || false;
-          const searchMsg = { ...progressMsg, steps: doneSteps, graphData: res, graphName: defaultGraph, timeTravelEnabled: ttEnabled2, timeTravelAt: ttMicros };
+          steps[steps.length - 1] = { ...steps[steps.length - 1], status: 'done', llmOutput: `${res?.data?.length || 0} items` };
+          const searchMsg = { ...progressMsg, steps: [...steps], graphData: res, graphName: defaultGraph };
           setSearchStream(null);
           allSearchMsgs.push(searchMsg);
         } catch (e) {
           const failedSteps = (steps || []).map((s) => ({ ...s, status: 'failed' }));
+          const lastStep = failedSteps[failedSteps.length - 1];
+          if (lastStep) lastStep.status = 'failed';
           setSearchStream(null);
           allSearchMsgs.push({ ...progressMsg, steps: failedSteps });
           requestAnimationFrame(() => chatInputRef.current?.focus());
@@ -315,6 +343,10 @@ ${graphCtx}`,
 
       const assistantMsg = { id: uid(), type: 'assistant', content: '' };
 
+      // Show "Thinking..." immediately by adding an empty assistant message
+      const msgsWithAssistant = [...allUpdatedMsgs, assistantMsg];
+      onUpdateConv({ ...conv, messages: msgsWithAssistant });
+
       try {
         const { response, abort } = chatCompletionProxy(llmMessages, modelKey);
         abortRef.current = abort;
@@ -325,16 +357,17 @@ ${graphCtx}`,
             fullContent += token;
             onUpdateConv({
               ...conv,
-              messages: [...allUpdatedMsgs, { ...assistantMsg, content: fullContent }],
+              messages: [...msgsWithAssistant.slice(0, -1), { ...assistantMsg, content: fullContent }],
             });
           },
         );
         requestAnimationFrame(() => chatInputRef.current?.focus());
       } catch (e) {
         if (e.name === 'AbortError') return;
+        // Replace the empty "Thinking..." message with error content
         onUpdateConv({
           ...conv,
-          messages: [...allUpdatedMsgs, { ...assistantMsg, content: `**Error**: ${e.message}` }],
+          messages: [...msgsWithAssistant.slice(0, -1), { ...assistantMsg, content: `**Error**: ${e.message}` }],
         });
       } finally {
         abortRef.current = null;
@@ -365,7 +398,7 @@ ${graphCtx}`,
             {langOpen && (
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setLangOpen(false)} />
-                <div className="absolute right-0 bottom-full mb-1 z-50 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-lg overflow-hidden w-max">
+                <div className="absolute right-0 top-full mt-1 z-50 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-lg overflow-hidden w-max">
                   <button
                     className={`w-full text-left px-2.5 py-2 text-xs font-medium whitespace-nowrap transition-all ${language === 'zh' ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
                     onClick={() => { onLanguageToggle('zh'); setLangOpen(false); }}

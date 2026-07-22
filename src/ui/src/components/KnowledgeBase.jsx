@@ -52,7 +52,7 @@ function ModelSelector({ value, onChange }) {
   }, []);
 
   if (!models) {
-    return <div className="text-xs text-[var(--text-tertiary)]">加载中...</div>;
+    return <div className="text-xs text-[var(--text-tertiary)]">{t('graph.loading')}</div>;
   }
 
   const options = models.map(entry => ({
@@ -363,12 +363,12 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
           </div>
 
           <div>
-            <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">文档标题</label>
+            <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.editTitle')}</label>
             <input className="w-full px-3.5 py-2 rounded-xl bg-[var(--bg-secondary)] text-[var(--text-primary)] text-sm border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] placeholder-[var(--text-muted)]"
-              type="text" placeholder="输入文档标题" value={importTitle} onChange={(e) => setImportTitle(e.target.value)} />
+              type="text" placeholder={t('knowledgeBase.docTitlePlaceholder')} value={importTitle} onChange={(e) => setImportTitle(e.target.value)} />
           </div>
           <div>
-            <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tippy">文档内容</label>
+            <label className="block text-xs text-[var(--text-tertiary)] font-medium mb-1.5 tracking-tight">{t('knowledgeBase.docContent')}</label>
             <textarea className="w-full h-28 px-3 py-2 rounded-xl bg-[var(--bg-secondary)] text-[var(--text-primary)] text-sm border-0 outline-none ring-1 ring-[var(--bg-hover)] focus:ring-[var(--accent)] placeholder-[var(--text-muted)] resize-none" placeholder={t('knowledgeBase.import') + '...'} value={importContent} onChange={(e) => setImportContent(e.target.value)} />
           </div>
 
@@ -450,32 +450,32 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
                 ))}
               </div>
             )}
-            <div className="text-xs text-[var(--text-primary)] font-mono whitespace-pre-wrap border border-[var(--border)] rounded-xl p-4 bg-[var(--bg-tertiary)] leading-relaxed max-h-96 overflow-y-auto">{docViewContent || '加载中...'}</div>
+            <div className="text-xs text-[var(--text-primary)] font-mono whitespace-pre-wrap border border-[var(--border)] rounded-xl p-4 bg-[var(--bg-tertiary)] leading-relaxed max-h-96 overflow-y-auto">{docViewContent || t('graph.loading')}</div>
           </div>
         </Modal>
       )}
 
       {/* Delete confirmation dialog */}
       {deleteConfirm && (
-        <Modal title="删除文档" onClose={() => setDeleteConfirm(null)}>
+        <Modal title={t('knowledgeBase.deleteDocTitle')} onClose={() => setDeleteConfirm(null)}>
           <div className="space-y-4">
-            <p className="text-sm text-[var(--text-primary)]">确定删除「{deleteConfirm.title}」？</p>
+            <p className="text-sm text-[var(--text-primary)]">{t('knowledgeBase.confirmDeleteDoc', { title: deleteConfirm.title })}</p>
             <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)] cursor-pointer select-none">
               <input type="checkbox" checked={deleteGraphData} onChange={(e) => setDeleteGraphData(e.target.checked)}
                 className="w-3.5 h-3.5 rounded border-[#3a3a3e] bg-[var(--bg-secondary)] checked:bg-[var(--accent)] checked:border-[#0a84ff] focus:ring-0 cursor-pointer" />
-              同时清理关联的图谱数据（顶点、边、神经元）
+              {t('knowledgeBase.cleanGraphData')}
             </label>
             <div className="flex gap-2 justify-end">
-              <button className="px-4 py-2 rounded-xl bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-sm font-medium transition-all" onClick={() => setDeleteConfirm(null)}>取消</button>
+              <button className="px-4 py-2 rounded-xl bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-sm font-medium transition-all" onClick={() => setDeleteConfirm(null)}>{t('graph.cancel')}</button>
               <button className="px-4 py-2 rounded-xl bg-[var(--danger)] text-white text-sm font-medium hover:bg-[color-mix(in srgb, var(--danger), black 10%)] transition-all shadow-sm" onClick={handleDelete}>
-                删除
+                {t('graph.delete')}
               </button>
             </div>
           </div>
         </Modal>
       )}
 
-      {loading && <div className="text-center text-[var(--text-tertiary)] text-sm py-8">Loading...</div>}
+      {loading && <div className="text-center text-[var(--text-tertiary)] text-sm py-8">{t('graph.loading')}</div>}
 
       {!loading && (
         <>
