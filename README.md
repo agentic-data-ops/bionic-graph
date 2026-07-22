@@ -88,6 +88,38 @@ User query: "AI engineer"
 
 ## How to
 
+### Quick start (from Release)
+
+Download the pre-built binary and start using Bionic-Graph immediately:
+
+```bash
+# 1. Download the binary
+wget https://github.com/agentic-data-ops/bionic-graph/releases/download/v0.1.0/bionic-graph-linux-x64
+chmod +x bionic-graph-linux-x64
+
+# 2. Start the server (config file is auto-created on first run)
+./bionic-graph-linux-x64
+# → Open http://127.0.0.1:8080 to access the chat UI
+```
+
+On first launch, the server automatically creates `~/.config/bionic-graph/settings.json`. Edit this file to configure your LLM provider:
+
+```bash
+nano ~/.config/bionic-graph/settings.json
+```
+
+Set your LLM API key under `llm.providers[0].api_key` (default provider is DeepSeek). You can also change all settings through the UI at **Settings → LLM** tab.
+
+Once the server is running:
+
+1. **Open** http://127.0.0.1:8080 in your browser
+2. **Configure LLM** via Settings dialog (gear icon) → LLM tab, or edit `~/.config/bionic-graph/settings.json` directly
+3. **Import documents** into the Knowledge Base (book icon) → upload or paste content
+4. **Extract entities** from a document by clicking the extract button — this uses the LLM to parse entities and relations into the graph
+5. **Search** the graph using natural language in the chat input — the system performs full-text search and graph traversal, then uses the LLM to answer based on results
+
+> **No Rust toolchain required** — the release binary is a self-contained executable.
+
 ### Clone & build
 
 ```bash
