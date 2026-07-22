@@ -247,10 +247,8 @@ export default function ChatArea({
             setSearchStream({ ...progressMsg, steps: [...steps] });
           }
 
-          const gremlinSteps = [{ step: 'search', text: graphQuery, mode: kwSearchMode, at: ttMicros }];
-          if (ttMicros) gremlinSteps.push({ step: 'timeTravel', at: ttMicros });
-
-          const res = await gremlin(gremlinSteps, defaultGraph);
+          const gremlinSteps = [{ step: 'search', text: graphQuery, mode: kwSearchMode }];
+          const res = await gremlin(gremlinSteps, defaultGraph, ttMicros);
           graphData = res;
 
           const doneSteps = [{ icon: '✅', name: 'Graph search completed', status: 'done', llmOutput: '' }];

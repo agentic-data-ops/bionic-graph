@@ -193,6 +193,12 @@ pub async fn handle_gremlin(
         }
     };
 
+    // Extract time-travel timestamp from header (microseconds since epoch).
+    let time_travel_at: Option<u64> = headers
+        .get("X-Time-Travel")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok());
+
     // Inject match_mode and auto-append traverse step if search with traverse enabled.
     let should_inject = query.steps.last().map_or(false, |s| {
         matches!(s, crate::graph::gremlin::GremlinStep::Search { .. })
@@ -215,34 +221,16 @@ pub async fn handle_gremlin(
         }
 
         if cfg.traverse {
-            // Propagate time-travel at from search step to traverse step
-            let search_at = query.steps.last().and_then(|s| {
-                if let crate::graph::gremlin::GremlinStep::Search { ref at, .. } = s {
-                    *at
-                } else { None }
-            });
             query.steps.push(crate::graph::gremlin::GremlinStep::Traverse {
                 decay: Some(cfg.decay),
                 activate: Some(cfg.activate),
                 max_depth: Some(cfg.depth),
                 min_score: Some(cfg.score),
-                at: search_at,
             });
         }
     }
 
-    // Reject TimeTravel steps if the graph doesn't have time-travel enabled.
-    if !state.gm.time_travel_enabled(&graph.name) {
-        if query.steps.iter().any(|s| matches!(s, crate::graph::gremlin::GremlinStep::TimeTravel { .. })) {
-            return Json(GremlinResponse {
-                success: false,
-                data: vec![],
-                error: Some(format!("图 '{}' 未开启时间旅行，不支持 TimeTravel 查询", graph.name)),
-            });
-        }
-    }
-
-    let response = execute_gremlin(&graph, &query);
+    let response = execute_gremlin(&graph, &query, time_travel_at);
 
     // If this node is a worker in cluster mode, report read vertex/edge IDs
     // to the master so it can update their rank and atime.
@@ -321,7 +309,6 @@ pub async fn handle_gremlin(
 pub struct SearchParams {
     pub text: String,
     pub mode: Option<String>,
-    pub at: Option<u64>,
     pub limit: Option<u32>,
 }
 
@@ -342,18 +329,22 @@ pub async fn handle_search(
     };
 
     use crate::graph::gremlin::GremlinStep;
+    let time_travel_at: Option<u64> = headers
+        .get("X-Time-Travel")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok());
+
     let query = GremlinQuery {
         steps: vec![GremlinStep::Search {
             text: params.text,
             mode: params.mode,
             match_mode: None,
-            at: params.at,
             limit: params.limit,
             min_rank: None,
         }],
     };
 
-    let response = execute_gremlin(&graph, &query);
+    let response = execute_gremlin(&graph, &query, time_travel_at);
     Json(response)
 }
 

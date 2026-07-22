@@ -262,9 +262,28 @@ class Client:
 
     # ── 7. Gremlin ──────────────────────────────────────────────────
 
-    def execute_gremlin(self, steps: list[dict], graph: Optional[str] = None) -> GremlinResponse:
+    def execute_gremlin(
+        self,
+        steps: list[dict],
+        graph: Optional[str] = None,
+        time_travel: Optional[int] = None,
+    ) -> GremlinResponse:
+        """Execute a Gremlin pipeline query.
+
+        Args:
+            steps: List of step dicts.
+            graph: Target graph name (via X-Graph-Name header).
+            time_travel: Optional microsecond timestamp for point-in-time queries
+                            (sent via X-Time-Travel header).
+
+        Returns:
+            GremlinResponse with results.
+        """
+        headers = self._graph_header(graph)
+        if time_travel is not None:
+            headers["X-Time-Travel"] = str(time_travel)
         return GremlinResponse.model_validate(
-            self._request("POST", "/gremlin", json={"steps": steps}, headers=self._graph_header(graph))
+            self._request("POST", "/gremlin", json={"steps": steps}, headers=headers)
         )
 
     def search(
@@ -274,14 +293,31 @@ class Client:
         limit: int = 20,
         min_rank: Optional[int] = None,
         graph: Optional[str] = None,
+        time_travel: Optional[int] = None,
     ) -> GremlinResponse:
+        """Full-text search via the search endpoint.
+
+        Args:
+            text: Search query.
+            mode: "greedy" or "exact".
+            limit: Max results.
+            min_rank: Minimum rank filter.
+            graph: Target graph name.
+            time_travel: Optional microsecond timestamp for point-in-time queries.
+
+        Returns:
+            GremlinResponse with results.
+        """
         params: dict = {"text": text, "mode": mode}
         if limit:
             params["limit"] = str(limit)
         if min_rank is not None:
             params["min_rank"] = str(min_rank)
+        headers = self._graph_header(graph)
+        if time_travel is not None:
+            headers["X-Time-Travel"] = str(time_travel)
         return GremlinResponse.model_validate(
-            self._request("GET", "/search", params=params, headers=self._graph_header(graph))
+            self._request("GET", "/search", params=params, headers=headers)
         )
 
     # ── 9. Documents ────────────────────────────────────────────────

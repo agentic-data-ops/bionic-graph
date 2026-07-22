@@ -27,22 +27,16 @@ pub enum GremlinStep {
         mode: Option<String>,
         /// 关键词匹配模式: "prefix"（前缀匹配）| "word"（分词精确匹配）
         match_mode: Option<String>,
-        #[serde(rename = "at")]
-        at: Option<u64>,
         limit: Option<u32>,
         min_rank: Option<u32>,
     },
     #[serde(rename = "V")]
     V {
         ids: Option<Vec<u32>>,
-        #[serde(rename = "at")]
-        at: Option<u64>,
     },
     #[serde(rename = "E")]
     E {
         ids: Option<Vec<u32>>,
-        #[serde(rename = "at")]
-        at: Option<u64>,
     },
     #[serde(rename = "has")]
     Has {
@@ -102,18 +96,14 @@ pub enum GremlinStep {
         steps: Vec<GremlinStep>,
         times: u8,
     },
-    #[serde(rename = "timeTravel")]
-    TimeTravel { at: u64 },
     #[serde(rename = "expand")]
-    Expand { depth: Option<u8>, label: Option<String>, #[serde(rename = "at")] at: Option<u64> },
+    Expand { depth: Option<u8>, label: Option<String> },
     #[serde(rename = "traverse")]
     Traverse {
         decay: Option<f32>,
         activate: Option<f32>,
         max_depth: Option<u8>,
         min_score: Option<f32>,
-        #[serde(rename = "at")]
-        at: Option<u64>,
     },
     #[serde(rename = "rank")]
     Rank {
@@ -227,16 +217,12 @@ impl GremlinResult {
 // ── Pipeline execution ───────────────────────────────────────────────────────
 
 /// Execute a complete Gremlin query against a graph.
+/// `time_travel_at` comes from the X-Time-Travel header (None means present time).
 pub fn execute(
     graph: &Arc<Graph>,
     query: &GremlinQuery,
+    time_travel_at: Option<u64>,
 ) -> GremlinResponse {
-    // Extract timeTravel at from any step (convention: first TimeTravel step sets the query timestamp)
-    let time_travel_at: Option<u64> = query.steps.iter().find_map(|s| {
-        if let GremlinStep::TimeTravel { at } = s {
-            Some(*at)
-        } else { None }
-    });
 
     let mut current: Vec<GremlinResult> = Vec::new();
 
@@ -256,13 +242,11 @@ fn execute_step(
     input: Vec<GremlinResult>,
     time_travel_at: Option<u64>,
 ) -> StorageResult<Vec<GremlinResult>> {
-    // Inject time_travel_at into steps that support it (if they don't already have at set)
-    let effective_at = |step_at: Option<u64>| step_at.or(time_travel_at);
     match step {
-        GremlinStep::V { ids, at } => step_v(graph, ids.as_deref(), effective_at(*at)),
-        GremlinStep::E { ids, at } => step_e(graph, ids.as_deref(), effective_at(*at)),
-        GremlinStep::Search { text, mode, match_mode, at, limit, min_rank } => {
-            step_search(graph, text, mode.as_deref(), match_mode.as_deref(), effective_at(*at), *limit, *min_rank)
+        GremlinStep::V { ids } => step_v(graph, ids.as_deref(), time_travel_at),
+        GremlinStep::E { ids } => step_e(graph, ids.as_deref(), time_travel_at),
+        GremlinStep::Search { text, mode, match_mode, limit, min_rank } => {
+            step_search(graph, text, mode.as_deref(), match_mode.as_deref(), time_travel_at, *limit, *min_rank)
         }
         GremlinStep::Has { key, value } => step_has(input, key, value),
         GremlinStep::HasNot { key, value } => step_has_not(input, key, value),
@@ -281,15 +265,10 @@ fn execute_step(
         GremlinStep::Count => step_count(input),
         GremlinStep::Dedup => step_dedup(input),
         GremlinStep::Repeat { steps, times } => step_repeat(graph, input, steps, *times),
-        GremlinStep::TimeTravel { at } => Ok(input), // handled by children
-        GremlinStep::Expand { depth, label, at } => step_expand(graph, input, *depth, label.as_deref(), effective_at(*at)),
-        GremlinStep::Traverse {
-            decay,
-            activate,
-            max_depth,
-            min_score,
-            at,
-        } => step_traverse(graph, input, *decay, *activate, *max_depth, *min_score, effective_at(*at)),
+        GremlinStep::Expand { depth, label } => step_expand(graph, input, *depth, label.as_deref(), time_travel_at),
+        GremlinStep::Traverse { decay, activate, max_depth, min_score } => {
+            step_traverse(graph, input, *decay, *activate, *max_depth, *min_score, time_travel_at)
+        }
         GremlinStep::Rank { limit, min } => step_rank(graph, input, *limit, *min),
     }
 }
@@ -1272,6 +1251,6 @@ fn pv_str(pv: &PropertyValue) -> String {
 
 /// Entry point for executing a Gremlin query.
 /// This is the public API used by the REST layer.
-pub fn execute_gremlin(graph: &Arc<Graph>, query: &GremlinQuery) -> GremlinResponse {
-    execute(graph, query)
+pub fn execute_gremlin(graph: &Arc<Graph>, query: &GremlinQuery, time_travel_at: Option<u64>) -> GremlinResponse {
+    execute(graph, query, time_travel_at)
 }

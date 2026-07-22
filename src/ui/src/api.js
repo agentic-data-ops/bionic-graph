@@ -45,10 +45,13 @@ export async function updateGraphMeta(name, description, timeTravel) {
   });
 }
 
-export async function gremlin(steps, graph = 'default') {
+export async function gremlin(steps, graph = '', timeTravelAt) {
+  const headers = {};
+  if (graph) headers['X-Graph-Name'] = graph;
+  if (timeTravelAt) headers['X-Time-Travel'] = timeTravelAt;
   return api('/gremlin', {
     method: 'POST',
-    headers: { 'X-Graph-Name': graph },
+    headers,
     body: JSON.stringify({ steps }),
   });
 }
@@ -57,13 +60,26 @@ export async function graphSearch(text, graph = 'default', mode) {
   return gremlin([{ step: 'search', text, mode }], graph);
 }
 
+/**
+ * Traverse from a vertex by ID.
+ * `timeTravelAt` sets X-Time-Travel header for point-in-time queries.
+ */
+export async function traverse(vid, label = null, graph = 'default', timeTravelAt) {
+  const steps = [
+    { step: 'V', ids: [vid] },
+    { step: 'expand', depth: 1, ...(label ? { label } : {}) },
+  ];
+  return gremlin(steps, graph, timeTravelAt);
+}
 
 // ─── Sync extraction (legacy, still works) ───────────────────────
 
-export async function extractDoc(content, graph = 'default') {
+export async function extractDoc(content, graph = '') {
+  const headers = { 'Content-Type': 'text/markdown' };
+  if (graph) headers['X-Graph-Name'] = graph;
   const res = await fetch(BASE + '/extract', {
     method: 'POST',
-    headers: { 'Content-Type': 'text/markdown', 'X-Graph-Name': graph },
+    headers,
     body: content,
   });
   if (!res.ok) throw new Error(await res.text());
@@ -73,10 +89,12 @@ export async function extractDoc(content, graph = 'default') {
 // ─── Async extraction (task-based) ──────────────────────────────
 
 /** Submit a markdown document for async extraction. Returns { task_id, status } */
-export async function extractDocAsync(content, graph = 'default') {
+export async function extractDocAsync(content, graph = '') {
+  const headers = { 'Content-Type': 'text/markdown' };
+  if (graph) headers['X-Graph-Name'] = graph;
   const res = await fetch(BASE + '/extract', {
     method: 'POST',
-    headers: { 'Content-Type': 'text/markdown', 'X-Graph-Name': graph },
+    headers,
     body: content,
   });
   if (!res.ok) throw new Error(await res.text());
@@ -95,20 +113,6 @@ export async function listExtractTasks() {
   const res = await fetch(BASE + '/tasks');
   if (!res.ok) throw new Error(await res.text());
   return res.json();
-}
-
-export async function traverse(vid, label = null, graph = 'default', at) {
-  const steps = at
-    ? [
-        { step: 'timeTravel', at },
-        { step: 'V', ids: [vid] },
-        { step: 'expand', depth: 1, ...(label ? { label } : {}) },
-      ]
-    : [
-        { step: 'V', ids: [vid] },
-        { step: 'expand', depth: 1, ...(label ? { label } : {}) },
-      ];
-  return gremlin(steps, graph);
 }
 
 export async function getVertex(vid, graph = 'default') {

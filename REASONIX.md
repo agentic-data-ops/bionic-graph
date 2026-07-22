@@ -181,22 +181,23 @@ App.jsx
 └── SettingsDialog.jsx   — 设置弹窗（搜索/排序/LLM 三个页签）
 ```
 
-## Gremlin Steps (25 total)
+## Gremlin Steps (24 total)
 
 | Step | Parameters | Description |
 |------|-----------|-------------|
-| `search` | `text`, `mode?`, `match_mode?`, `at?`, `limit?`, `min_rank?` | Full-text search via token index. Auto-injects `match_mode` + optional `traverse` step. |
-| `V` | `ids?`, `at?` | Vertices by ID |
-| `E` | `ids?`, `at?` | Edges by ID |
+| `search` | `text`, `mode?`, `match_mode?`, `limit?`, `min_rank?` | Full-text search via token index. Auto-injects `match_mode` + optional `traverse` step. Time travel via `X-Time-Travel` header. |
+| `V` | `ids?` | Vertices by ID |
+| `E` | `ids?` | Edges by ID |
 | `has` / `hasNot` / `hasKey` / `hasValue` / `hasLabel` / `hasText` | (6 filter steps) | Property/label filters |
 | `out` / `in` / `both` | `depth?`, `labels?` | Vertex traversal (BFS) |
 | `outE` / `inE` / `bothE` | `labels?` | Edge traversal |
 | `values` / `limit` / `count` / `dedup` | — | Result processing |
 | `repeat` | `steps`, `times` | Loop sub-pipeline |
-| `timeTravel` | `at` | Set query time point |
 | `expand` | `depth?`, `label?` | Add neighbors + edges, optionally filtered by edge label |
 | `traverse` | `decay?`, `activate?`, `max_depth?`, `min_score?` | BFS activation spread |
 | `rank` | `limit?`, `min?` | Return top results by rank (source or filter step) |
+
+> Time travel is no longer a Gremlin step. Use `X-Time-Travel` HTTP header with a microsecond timestamp instead. The header applies to all steps in the query.
 
 ## REST API Endpoints (44 routes)
 
@@ -360,6 +361,7 @@ Decay ←─ spawn_rank_decay (background, every period secs)        │
 - **DELETE ?force=true**: hard delete; without force: soft delete.
 - **Search step**: takes `text` (raw string), tokenized by jieba-rs.
 - **`/gremlin` auto-injects**: `match_mode` from SearchSettings + optionally appends `traverse` step.
+- **Time travel**: via `X-Time-Travel` HTTP header (microsecond timestamp). Applies to all Gremlin steps and search. No longer a dedicated step.
 - **traverse step**: BFS via score * decay * edge_strength; stops when score < activate.
 - **rank step**: source mode iterates rank index descending; filter mode sorts input by rank.
 - **Memory index rebuilt at startup** — includes vertices, edges, tokens, ranks, atime_index, adjacency.

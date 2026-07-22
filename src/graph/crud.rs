@@ -335,13 +335,12 @@ pub fn update_vertex(
     }
 
     // Push old payload to history if requested.
+    // The history entry's timestamp is the old vertex's mtime — the moment
+    // this state snapshot was last current before being superseded.
     if record_history {
         let old_bytes = serialize_vertex(&old_payload)?;
         new_payload.history.push(HistoryRecord {
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_micros() as u64,
+            timestamp: old_rec.mtime,
             data: old_bytes,
         });
     }
@@ -434,7 +433,7 @@ pub fn update_edge(
     if record_history {
         let old_bytes = serialize_edge(&old_payload)?;
         new_payload.history.push(HistoryRecord {
-            timestamp: timestamp_us(),
+            timestamp: old_rec.mtime,
             data: old_bytes,
         });
     }
@@ -1081,17 +1080,30 @@ pub fn read_vertex_by_record(
             rec.data_len as usize,
         )?)?;
 
-        // Walk history: newest entry h where `at < h.timestamp` means h's state was current.
+        // Walk history newest-first. Each history entry's timestamp is the
+        // time this state snapshot became current (its start of validity).
+        // A snapshot is valid for at if:
+        //   h.timestamp <= at < rec.mtime
+        // (rec.mtime is the start time of the current payload, i.e. the
+        //  upper bound for all history entries' validity.)
         for h in payload.history.iter().rev() {
-            if timestamp < h.timestamp {
-                return Ok(Some(deserialize_vertex(&h.data)?));
+            if h.timestamp <= timestamp {
+                if timestamp < rec.mtime {
+                    // This snapshot was valid at the query time.
+                    return Ok(Some(deserialize_vertex(&h.data)?));
+                }
+                // at >= rec.mtime means the current state is the active one.
+                break;
             }
         }
-        // Nothing in history covers this — check deletion time.
+        // Query time falls within the current payload's validity, or
+        // nothing exists yet. Check deletion.
         if rec.status == DataStatus::Deleted && timestamp >= rec.mtime {
-            return Ok(None); // deleted by this time
+            return Ok(None);
         }
-        return Ok(Some(payload));
+        if timestamp >= rec.ctime {
+            return Ok(Some(payload));
+        }
     }
 
     // Normal (non-time-travel) path: deleted vertices are hidden.
@@ -1125,14 +1137,19 @@ pub fn read_edge_by_record(
         )?)?;
 
         for h in payload.history.iter().rev() {
-            if timestamp < h.timestamp {
-                return Ok(Some(deserialize_edge(&h.data)?));
+            if h.timestamp <= timestamp {
+                if timestamp < rec.mtime {
+                    return Ok(Some(deserialize_edge(&h.data)?));
+                }
+                break;
             }
         }
         if rec.status == DataStatus::Deleted && timestamp >= rec.mtime {
             return Ok(None);
         }
-        return Ok(Some(payload));
+        if timestamp >= rec.ctime {
+            return Ok(Some(payload));
+        }
     }
 
     if rec.status == DataStatus::Deleted {

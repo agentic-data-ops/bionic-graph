@@ -395,11 +395,13 @@ def gremlin():
 @click.option("--steps", required=True, callback=_parse_json_arg,
               help='JSON array of pipeline step objects. Steps: V, E, has, hasNot, hasLabel, hasText, hasKey, hasValue, out, in, both, outE, inE, bothE, search, traverse, repeat, expand, limit, count, dedup, values, timeTravel, rank. Example: \'[{"step":"V","ids":[1]},{"step":"out","labels":["married_to"]}]\'')
 @click.option("--graph", help="Target graph (default: graph0)")
+@click.option("--time-travel", type=int, default=None,
+              help="Microsecond timestamp for point-in-time queries (X-Time-Travel header)")
 @click.pass_context
-def gremlin_execute(ctx, steps, graph):
+def gremlin_execute(ctx, steps, graph, time_travel):
     """Execute a Gremlin pipeline query."""
     c = _client(ctx)
-    resp = c.execute_gremlin(steps, graph)
+    resp = c.execute_gremlin(steps, graph, time_travel=time_travel)
     _output(resp.model_dump(), _fmt(ctx))
 
 
@@ -411,11 +413,13 @@ def gremlin_execute(ctx, steps, graph):
 @click.option("--mode", default="greedy", show_default=True, help="Search mode: greedy or exact")
 @click.option("--limit", default=20, type=int, help="Max results")
 @click.option("--graph", help="Graph name (default: graph0)")
+@click.option("--time-travel", type=int, default=None,
+              help="Microsecond timestamp for point-in-time queries (X-Time-Travel header)")
 @click.pass_context
-def search(ctx, text, mode, limit, graph):
+def search(ctx, text, mode, limit, graph, time_travel):
     """Full-text search across vertices and edges."""
     c = _client(ctx)
-    resp = c.search(text, mode, limit, graph=graph)
+    resp = c.search(text, mode, limit, graph=graph, time_travel=time_travel)
     _output(resp.model_dump(), _fmt(ctx))
 
 
