@@ -1,18 +1,26 @@
 # Bionic-Graph
 
-> **Block-based knowledge graph with token-indexed search**
+> **A Graph build for AI Agent**
 >
-> Pure Rust | 16KB block storage | jieba tokenization | Gremlin-compatible API | React frontend
+> Pure Rust | Gremlin API | Chat UI | Full-text Search | Bionic Neuronal Spreads Traverse | Time Travel | Self-update Ranking |
 
 ---
 
 ## What it is
 
-Bionic-Graph is a **high-performance knowledge graph engine** built entirely in Rust. It combines a custom block-based storage engine, token-indexed full-text search, and a Gremlin-compatible query pipeline — served with a chat-based AI interface and a React frontend.
+Bionic-Graph is a **AI graph engine** built entirely in Rust. It combines a custom block-based storage engine, token-indexed full-text search, and a Gremlin-compatible query pipeline — served with a chat-based AI interface and a React frontend.
 
-Unlike relational or document databases, Bionic-Graph is optimized for **graph traversal, multi-hop queries, and hybrid search** (keywords + graph topology). It is designed for scenarios where you need a fast, explainable, always-up-to-date graph index — without GPU costs, without pre-training, and without black-box inference.
+Unlike relational or document databases, Bionic-Graph is optimized for **full-text search and attention based traverse**, which is a typical use case of AI Agent memory recall. The **full-text search** is implemented with a token-indexed inverted index, which is more efficient than graph engines build on top of relational database. The **attention based traverse** is implemented with a Bionic Neuronal Spreads Traverse, the entity activation and relation spread is based on the attention scores calculated from relation strength and traverse depth, just like what happens in your brain when recalling memory.
+
+Like human brain, Bionic-Graph is **self-updating**. A **self-update ranking merchanism** is implemented with a rank-ordered index, which is updated in real-time when a vertex or edge is accessed or updated. 
+
+Unlike humain brain, Bionic-Graph supports **time travel**, which means you can access history memories at any time point, like a brain memory snapshot. The time travel search and traverse only happens on the time point data.
+
+There are two examples implemented in the project, one is **self-awareness** example, which simulated a soul of a human being, the other is **social activity** example, which simulates the activities of a group people. Both example support **plan** and **act**, which is designed to simulate the think and act process of a human or a community.
 
 ### System Architecture
+
+Bionic-Graph is build from the ground with Rust, with a storage engine based on block-based storage, a graph engine based on token-indexed query, and a frontend with a Chat UI for easily interacting with the graph.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -30,7 +38,7 @@ Unlike relational or document databases, Bionic-Graph is optimized for **graph t
 │  /extract  |  /graphs  |  /documents/:id/extract               │
 ├──────────────────────────────────────────────────────────────┤
 │              Graph Engine (token-indexed query)                │
-│  Gremlin pipeline (25 steps)  |  BFS+DFS traversal            │
+│  Gremlin pipeline (24 steps)  |  BFS+DFS traversal            │
 │  Lock-safe CRUD  |  jieba-rs tokenizer  |  rank/atime tracking│
 ├──────────────────────────────────────────────────────────────┤
 │              In-Memory Index (rebuild at startup)              │
@@ -39,7 +47,7 @@ Unlike relational or document databases, Bionic-Graph is optimized for **graph t
 ├──────────────────────────────────────────────────────────────┤
 │              Storage Engine (block-based, 16KB blocks)         │
 │  DataFile + Bitmap  |  IndexFile (64B records)                 │
-│  LRU BlockCache (64MB)  |  WAL (FIFO queue + batch writer, CRC32, rotation, checkpoint)    │
+│  LRU BlockCache (64MB)  |  WAL redo log                        │
 │  LockManager (striped RwLock pools, deadlock-free ordering)   │
 └──────────────────────────────────────────────────────────────┘
 ```
