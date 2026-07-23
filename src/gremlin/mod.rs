@@ -719,17 +719,21 @@ pub struct CreateGraphResponse {
 pub async fn create_graph(
     State(state): State<AppState>,
     Json(params): Json<CreateGraphParams>,
-) -> Json<CreateGraphResponse> {
+) -> Result<Json<CreateGraphResponse>, StatusCode> {
+    // Reject empty or whitespace-only names.
+    if params.name.trim().is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     // Check existence via registry (not dir scan).
     {
         let (graphs, _) = state.gm.get_registry();
         if graphs.iter().any(|g| g.name == params.name) {
-            return Json(CreateGraphResponse {
+            return Ok(Json(CreateGraphResponse {
                 name: params.name,
                 description: params.description,
                 time_travel: params.time_travel,
                 created: false,
-            });
+            }));
         }
     }
     // Opening the graph creates it on disk.
@@ -737,19 +741,19 @@ pub async fn create_graph(
         Ok(_) => {
             // Persist the provided description / time_travel to the registry.
             let _ = state.gm.update_meta(&params.name, &params.description, params.time_travel);
-            Json(CreateGraphResponse {
+            Ok(Json(CreateGraphResponse {
                 name: params.name,
                 description: params.description,
                 time_travel: params.time_travel,
                 created: true,
-            })
+            }))
         },
-        Err(_) => Json(CreateGraphResponse {
+        Err(_) => Ok(Json(CreateGraphResponse {
             name: params.name,
             description: params.description,
             time_travel: params.time_travel,
             created: false,
-        }),
+        })),
     }
 }
 
