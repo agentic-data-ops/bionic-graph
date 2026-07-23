@@ -113,11 +113,8 @@ impl BlockAllocator {
     /// exactly in whole chunks. Returns the padded length.
     pub fn padded_length(data_len: usize) -> usize {
         let chunk_size = 64usize;
-        if data_len % chunk_size == 0 {
-            data_len
-        } else {
-            ((data_len / chunk_size) + 1) * chunk_size
-        }
+        let chunks = data_len.div_ceil(chunk_size).min(255);
+        chunks * chunk_size
     }
 
     /// Number of chunks required to store `data_len` bytes.
