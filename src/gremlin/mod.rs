@@ -1080,7 +1080,11 @@ pub async fn submit_extraction(
         // Step 2: Build ExtractionConfig from settings
         let config = {
             let s = settings.lock().unwrap();
-            crate::extract::config::ExtractionConfig::from_llm_config(&s.llm)
+            crate::extract::config::ExtractionConfig::from_llm_config(
+                &s.llm,
+                s.internet.proxy.clone(),
+                s.internet.ssl_verify,
+            )
         };
         let sys_prompt = r#"You are a knowledge graph extractor. Extract entities and their relationships from the given markdown document.
 

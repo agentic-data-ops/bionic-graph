@@ -145,8 +145,24 @@ pub async fn chat_completions_handler(
     forward_body["model"] = json!(model_name);
     forward_body["stream"] = json!(is_stream);
 
-    // Build reqwest client and forward
-    let client = reqwest::Client::new();
+    // Build reqwest client with proxy and SSL settings
+    let mut client_builder = reqwest::Client::builder();
+
+    {
+        let s = state.settings.lock().unwrap();
+        if let Some(proxy_url) = &s.internet.proxy {
+            if !proxy_url.is_empty() {
+                if let Ok(proxy) = reqwest::Proxy::all(proxy_url) {
+                    client_builder = client_builder.proxy(proxy);
+                }
+            }
+        }
+        if !s.internet.ssl_verify {
+            client_builder = client_builder.danger_accept_invalid_certs(true);
+        }
+    }
+
+    let client = client_builder.build().unwrap_or_else(|_| reqwest::Client::new());
     let forward_url = format!("{}/chat/completions", api_base_url.trim_end_matches('/'));
 
     let mut req_builder = client

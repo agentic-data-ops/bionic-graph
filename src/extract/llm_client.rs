@@ -110,8 +110,29 @@ pub async fn chat_completion(
         stream: false,
     };
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
+    let mut client_builder = reqwest::Client::builder()
+        .timeout(Duration::from_secs(120));
+
+    // Apply proxy if configured
+    if let Some(proxy_url) = &config.proxy {
+        if !proxy_url.is_empty() {
+            match reqwest::Proxy::all(proxy_url) {
+                Ok(proxy) => {
+                    client_builder = client_builder.proxy(proxy);
+                }
+                Err(e) => {
+                    log::warn!("Invalid proxy URL '{}': {}", proxy_url, e);
+                }
+            }
+        }
+    }
+
+    // Apply SSL verification
+    if !config.ssl_verify {
+        client_builder = client_builder.danger_accept_invalid_certs(true);
+    }
+
+    let client = client_builder
         .build()
         .map_err(LlmError::Http)?;
 

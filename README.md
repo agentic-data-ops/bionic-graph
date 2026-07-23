@@ -247,6 +247,11 @@ After frontend changes, `touch src/ui_serve.rs` is required to force Rust recomp
 
 Auto-created at `~/.config/bionic-graph/settings.json` if not present. Full reference in `REASONIX.md`.
 
+| Internet field | Type | Default | Description |
+|-------------|------|---------|-------------|
+| `proxy` | `string` or `null` | `null` | HTTP proxy URL, e.g. `"http://127.0.0.1:7890"`. All LLM and web search requests go through this proxy when set. |
+| `ssl_verify` | `bool` | `true` | Verify SSL certificates for LLM and web search requests. Set to `false` to accept self-signed or untrusted certificates. |
+
 ```json
 {
   "server": { "host": "127.0.0.1", "port": 8080 },
@@ -270,6 +275,10 @@ Auto-created at `~/.config/bionic-graph/settings.json` if not present. Full refe
     "heartbeat_interval_secs": 5,
     "worker_timeout_secs": 30,
     "forward_writes": true
+  },
+  "internet": {
+    "proxy": null,
+    "ssl_verify": true
   },
   "web_search": {
     "default_provider": "Baidu",

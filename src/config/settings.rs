@@ -235,6 +235,28 @@ impl Default for RankConfig {
     }
 }
 
+// ─── Internet ──────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InternetConfig {
+    /// HTTP proxy URL, e.g. "http://127.0.0.1:7890". Leave empty or null for direct access.
+    #[serde(default)]
+    pub proxy: Option<String>,
+    /// Whether to verify SSL certificates when accessing the internet (LLM, web search).
+    /// Set to false to skip certificate verification (e.g. for self-signed certs).
+    #[serde(default = "default_true")]
+    pub ssl_verify: bool,
+}
+
+fn default_true() -> bool { true }
+
+impl Default for InternetConfig {
+    fn default() -> Self {
+        Self { proxy: None, ssl_verify: true }
+    }
+}
+
 // ─── Web Search ──────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -310,6 +332,7 @@ pub struct Settings {
     pub server: ServerConfig,
     pub llm: LlmConfig,
     pub cluster: ClusterConfig,
+    pub internet: InternetConfig,
     pub web_search: WebSearchConfig,
     pub graph: GraphConfig,
 }
@@ -320,6 +343,7 @@ impl Default for Settings {
             server: ServerConfig::default(),
             llm: LlmConfig::default(),
             cluster: ClusterConfig::default(),
+            internet: InternetConfig::default(),
             web_search: WebSearchConfig::default(),
             graph: GraphConfig::default(),
         }
