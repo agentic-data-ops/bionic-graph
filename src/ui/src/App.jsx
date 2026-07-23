@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import Sidebar from './components/Sidebar';
 import ChatArea from './components/ChatArea';
@@ -173,26 +173,6 @@ export default function App() {
     saveSettings(settings);
   }, [settings]);
 
-  // ── Sync provider configs to backend when they change ──
-  // Only syncs provider API configs (keys, URLs, model lists), NOT the active
-  // provider/model selection — those stay in localStorage only.
-  const mounted = useRef(false);
-  useEffect(() => {
-    if (!mounted.current) { mounted.current = true; return; }
-    const providers = settings.providers.map((p) => ({
-      name: p.name,
-      api_base_url: p.apiBase,
-      api_key: p.apiKey || '',
-      models: p.models || [p.model],
-    }));
-    // Also sync the default_model when it changes
-    const defaultModel = settings.defaultModelKey || undefined;
-    if (providers.length > 0) {
-      updateLlmSettings(providers, defaultModel)
-        .catch(() => {});
-    }
-  }, [settings.providers, settings.defaultModelKey]);
-
   // ── Persist conversations on change ──
   useEffect(() => {
     saveConversations(conversations);
@@ -249,9 +229,9 @@ export default function App() {
     setSettings((prev) => ({ ...prev, ...partial }));
   }, []);
 
+  // ── Sync provider configs to backend when user saves/deletes a provider ──
   const handleUpdateProviders = useCallback((providers) => {
     setSettings((prev) => {
-      // Match active provider by name (id from backend may differ)
       const activeProv = providers.find(p => p.name === prev.activeProvider) || providers[0];
       const newDefaultKey = activeProv ? `${activeProv.name}/${activeProv.defaultModel || activeProv.model}` : (prev.defaultModelKey || '');
       return {
@@ -261,6 +241,16 @@ export default function App() {
         activeProvider: activeProv ? activeProv.name : (providers.length > 0 ? providers[0].name : null),
       };
     });
+    // Sync to backend on user action (not on page load)
+    const backendProviders = providers.map((p) => ({
+      name: p.name,
+      api_base_url: p.apiBase,
+      api_key: p.apiKey || '',
+      models: p.models || [p.model],
+    }));
+    if (backendProviders.length > 0) {
+      updateLlmSettings(backendProviders).catch(() => {});
+    }
   }, []);
 
   const handleThemeToggle = useCallback(() => {
