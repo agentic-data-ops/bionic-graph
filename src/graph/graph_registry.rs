@@ -100,6 +100,9 @@ impl GraphRegistry {
 
     /// Ensure a graph exists in the registry, adding it if missing.
     pub fn ensure(&mut self, name: &str, description: &str, time_travel: bool) {
+        if name.trim().is_empty() {
+            return;
+        }
         if !self.graphs.iter().any(|g| g.name == name) {
             self.graphs.push(GraphMetadata {
                 name: name.to_string(),
