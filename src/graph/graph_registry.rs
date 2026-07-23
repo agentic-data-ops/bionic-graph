@@ -135,8 +135,10 @@ impl GraphRegistry {
     pub fn remove(&mut self, name: &str) {
         self.graphs.retain(|g| g.name != name);
         // If the default was removed, pick the first remaining graph.
+        // If no graphs remain, keep the old default name rather than setting
+        // it to "" (which would cause empty-name graph creation on next request).
         if self.default == name {
-            self.default = self.graphs.first().map(|g| g.name.clone()).unwrap_or_default();
+            self.default = self.graphs.first().map(|g| g.name.clone()).unwrap_or(self.default.clone());
         }
     }
 
