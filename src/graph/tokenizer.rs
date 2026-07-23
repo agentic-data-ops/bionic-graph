@@ -24,7 +24,7 @@ pub fn set_config_path(path: PathBuf) {
     let words = load_words_from_config(CONFIG_PATH.get());
     if !words.is_empty() {
         let jieba = jieba();
-        let mut j = jieba.write().unwrap();
+        let mut j = jieba.write().unwrap_or_else(|e| e.into_inner());
         for word in &words {
             j.add_word(word, None, None);
         }
@@ -72,7 +72,7 @@ pub fn add_custom_words(words: &[String]) {
         return;
     }
     let jieba = jieba();
-    let mut j = jieba.write().unwrap();
+    let mut j = jieba.write().unwrap_or_else(|e| e.into_inner());
     for word in words {
         j.add_word(word, None, None);
     }
@@ -96,7 +96,7 @@ pub fn remove_custom_words(words: &[String]) {
         return;
     }
     let jieba = jieba();
-    let mut j = jieba.write().unwrap();
+    let mut j = jieba.write().unwrap_or_else(|e| e.into_inner());
 
     // Get current custom words from config.
     let mut all = load_words_from_config(CONFIG_PATH.get());
@@ -171,7 +171,7 @@ impl Tokenizer {
     fn tokenize(text: &str) -> Vec<String> {
         let lower = text.to_lowercase();
         let jieba = jieba();
-        let j = jieba.read().unwrap();
+        let j = jieba.read().unwrap_or_else(|e| e.into_inner());
         j.cut(&lower, true) // HMM mode for unknown words
             .into_iter()
             .filter(|t| {

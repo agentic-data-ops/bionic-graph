@@ -192,11 +192,11 @@ impl Graph {
         // No need to persist these — on restart, the index is rebuilt from
         // the index file, and max_id + 1 gives the correct next ID.
         let max_vid = {
-            let mi = memory_index.read().unwrap();
+            let mi = memory_index.read().unwrap_or_else(|e| e.into_inner());
             mi.vertices.keys().last().copied().unwrap_or(0)
         };
         let max_eid = {
-            let mi = memory_index.read().unwrap();
+            let mi = memory_index.read().unwrap_or_else(|e| e.into_inner());
             mi.edges.keys().last().copied().unwrap_or(0)
         };
 
@@ -250,7 +250,7 @@ impl Graph {
 
     /// Flush all dirty blocks to disk and sync.
     pub fn flush(&self) -> StorageResult<()> {
-        let mut cache = self.block_cache.write().unwrap();
+        let mut cache = self.block_cache.write().unwrap_or_else(|e| e.into_inner());
         cache.flush_dirty(&|idx, data| {
             self.data_file.write_block(idx, data)?;
             Ok(())

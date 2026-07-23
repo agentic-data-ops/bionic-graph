@@ -960,7 +960,7 @@ pub async fn delete_document(
         if let Ok(graph) = state.gm.get(gname) {
             // Phase 1: Collect all vertex IDs while holding memory_index lock.
             let all_vids: Vec<u32> = {
-                let mi = graph.memory_index.read().unwrap();
+                let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
                 mi.vertices.keys().copied().collect()
             };
 
@@ -980,7 +980,7 @@ pub async fn delete_document(
             if !match_vids.is_empty() {
                 let mut edge_ids: Vec<u32> = Vec::new();
                 {
-                    let mi = graph.memory_index.read().unwrap();
+                    let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
                     for vid in &match_vids {
                         for &(eid, _, _) in mi.adjacency.out_edges(*vid) {
                             edge_ids.push(eid);

@@ -87,31 +87,31 @@ impl NodeRegistry {
 
     /// Register or heartbeat a worker.
     pub fn register(&self, info: WorkerInfo) {
-        let mut workers = self.workers.write().unwrap();
+        let mut workers = self.workers.write().unwrap_or_else(|e| e.into_inner());
         workers.insert(info.node_id.clone(), info);
     }
 
     /// Remove a worker (on shutdown or timeout).
     pub fn remove(&self, node_id: &str) {
-        let mut workers = self.workers.write().unwrap();
+        let mut workers = self.workers.write().unwrap_or_else(|e| e.into_inner());
         workers.remove(node_id);
     }
 
     /// Get a worker by ID.
     pub fn get(&self, node_id: &str) -> Option<WorkerInfo> {
-        let workers = self.workers.read().unwrap();
+        let workers = self.workers.read().unwrap_or_else(|e| e.into_inner());
         workers.get(node_id).cloned()
     }
 
     /// List all workers.
     pub fn list(&self) -> Vec<WorkerInfo> {
-        let workers = self.workers.read().unwrap();
+        let workers = self.workers.read().unwrap_or_else(|e| e.into_inner());
         workers.values().cloned().collect()
     }
 
     /// List alive workers.
     pub fn alive_workers(&self) -> Vec<WorkerInfo> {
-        let workers = self.workers.read().unwrap();
+        let workers = self.workers.read().unwrap_or_else(|e| e.into_inner());
         workers
             .values()
             .filter(|w| w.alive && !w.is_expired(self.timeout))
@@ -122,7 +122,7 @@ impl NodeRegistry {
     /// Purge workers that have timed out.
     pub fn purge_expired(&self) -> Vec<String> {
         let mut expired = Vec::new();
-        let mut workers = self.workers.write().unwrap();
+        let mut workers = self.workers.write().unwrap_or_else(|e| e.into_inner());
         workers.retain(|id, w| {
             if w.is_expired(self.timeout) {
                 expired.push(id.clone());
@@ -141,7 +141,7 @@ impl NodeRegistry {
 
     /// Mark all workers as alive (called by heartbeat handler).
     pub fn mark_all_alive(&self) {
-        let workers = self.workers.read().unwrap();
+        let workers = self.workers.read().unwrap_or_else(|e| e.into_inner());
         for w in workers.values() {
             let _ = w; // alive status tracked via is_expired at query time
         }

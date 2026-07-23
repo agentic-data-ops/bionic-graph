@@ -50,7 +50,7 @@ impl GraphManager {
     /// Get or open a graph by name.
     pub fn get(&self, name: &str) -> StorageResult<Arc<Graph>> {
         {
-            let graphs = self.graphs.read().unwrap();
+            let graphs = self.graphs.read().unwrap_or_else(|e| e.into_inner());
             if let Some(g) = graphs.get(name) {
                 return Ok(g.clone());
             }
@@ -62,14 +62,14 @@ impl GraphManager {
 
         // Ensure the graph is tracked in the registry.
         {
-            let mut reg = self.registry.write().unwrap();
+            let mut reg = self.registry.write().unwrap_or_else(|e| e.into_inner());
             if !reg.exists(name) {
                 reg.ensure(name, "", false);
                 reg.save(&graphs_dir)?;
             }
         }
 
-        let mut graphs = self.graphs.write().unwrap();
+        let mut graphs = self.graphs.write().unwrap_or_else(|e| e.into_inner());
         if let Some(g) = graphs.get(name) {
             return Ok(g.clone());
         }
@@ -92,38 +92,38 @@ impl GraphManager {
 
     /// List all known graph names.
     pub fn list(&self) -> StorageResult<Vec<String>> {
-        let reg = self.registry.read().unwrap();
+        let reg = self.registry.read().unwrap_or_else(|e| e.into_inner());
         Ok(reg.list())
     }
 
     /// Get the default graph name.
     pub fn get_default_name(&self) -> String {
-        let reg = self.registry.read().unwrap();
+        let reg = self.registry.read().unwrap_or_else(|e| e.into_inner());
         reg.get_default().to_string()
     }
 
     /// Get all graph metadata (including the default name).
     pub fn get_registry(&self) -> (Vec<GraphMetadata>, String) {
-        let reg = self.registry.read().unwrap();
+        let reg = self.registry.read().unwrap_or_else(|e| e.into_inner());
         (reg.graphs.clone(), reg.default.clone())
     }
 
     /// Get metadata for a specific graph.
     pub fn get_meta(&self, name: &str) -> Option<GraphMetadata> {
-        let reg = self.registry.read().unwrap();
+        let reg = self.registry.read().unwrap_or_else(|e| e.into_inner());
         reg.get_meta(name).cloned()
     }
 
     /// Check if a graph has time-travel enabled.
     pub fn time_travel_enabled(&self, name: &str) -> bool {
-        let reg = self.registry.read().unwrap();
+        let reg = self.registry.read().unwrap_or_else(|e| e.into_inner());
         reg.time_travel_enabled(name)
     }
 
     /// Set the default graph.
     pub fn set_default(&self, name: &str) -> StorageResult<()> {
         let graphs_dir = self.data_dir.join("graphs");
-        let mut reg = self.registry.write().unwrap();
+        let mut reg = self.registry.write().unwrap_or_else(|e| e.into_inner());
         if !reg.exists(name) {
             return Err(crate::storage::types::StorageError::GraphNotFound(name.to_string()));
         }
@@ -135,7 +135,7 @@ impl GraphManager {
     /// Update a graph's metadata (description, time_travel).
     pub fn update_meta(&self, name: &str, description: &str, time_travel: bool) -> StorageResult<bool> {
         let graphs_dir = self.data_dir.join("graphs");
-        let mut reg = self.registry.write().unwrap();
+        let mut reg = self.registry.write().unwrap_or_else(|e| e.into_inner());
         let found = reg.update(name, description, time_travel);
         if found {
             reg.save(&graphs_dir)?;
@@ -146,7 +146,7 @@ impl GraphManager {
     /// Delete a graph from memory, disk, and registry.
     pub fn delete(&self, name: &str) -> StorageResult<()> {
         {
-            let mut graphs = self.graphs.write().unwrap();
+            let mut graphs = self.graphs.write().unwrap_or_else(|e| e.into_inner());
             if let Some(graph) = graphs.remove(name) {
                 if let Err(e) = graph.close() {
                     log::warn!("Error closing graph '{}': {}", name, e);
@@ -159,7 +159,7 @@ impl GraphManager {
         }
         // Remove from registry.
         let graphs_dir = self.data_dir.join("graphs");
-        let mut reg = self.registry.write().unwrap();
+        let mut reg = self.registry.write().unwrap_or_else(|e| e.into_inner());
         reg.remove(name);
         reg.save(&graphs_dir)?;
         Ok(())
@@ -177,11 +177,11 @@ impl GraphManager {
     /// Close all open graphs.
     pub fn close_all(&self) {
         let names: Vec<String> = {
-            let graphs = self.graphs.read().unwrap();
+            let graphs = self.graphs.read().unwrap_or_else(|e| e.into_inner());
             graphs.keys().cloned().collect()
         };
         for name in &names {
-            if let Some(graph) = self.graphs.read().unwrap().get(name).cloned() {
+            if let Some(graph) = self.graphs.read().unwrap_or_else(|e| e.into_inner()).get(name).cloned() {
                 if let Err(e) = graph.close() {
                     log::warn!("Error closing graph '{}': {}", name, e);
                 }
