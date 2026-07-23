@@ -41,7 +41,22 @@ impl GraphRegistry {
     pub fn load(graphs_dir: &Path) -> Option<Self> {
         let path = Self::path(graphs_dir);
         if path.exists() {
-            std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok())
+            let mut reg: Self = std::fs::read_to_string(&path).ok()
+                .and_then(|s| serde_json::from_str(&s).ok())?;
+            // Clean up any entries with empty names (defensive — may have been
+            // persisted by older versions before name validation was added).
+            reg.graphs.retain(|g| !g.name.is_empty());
+            if reg.graphs.is_empty() {
+                reg.graphs.push(GraphMetadata {
+                    name: "graph0".to_string(),
+                    description: String::new(),
+                    time_travel: false,
+                });
+                reg.default = "graph0".to_string();
+            } else if reg.default.is_empty() || !reg.graphs.iter().any(|g| g.name == reg.default) {
+                reg.default = reg.graphs[0].name.clone();
+            }
+            Some(reg)
         } else {
             None
         }
@@ -66,6 +81,10 @@ impl GraphRegistry {
         if let Ok(entries) = std::fs::read_dir(graphs_dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
+                // Skip hidden directories (starting with ".") and empty names.
+                if name.starts_with('.') || name.is_empty() {
+                    continue;
+                }
                 if entry.file_type().map_or(false, |t| t.is_dir()) && entry.path().join("data").exists() {
                     existing.push(name);
                 }
