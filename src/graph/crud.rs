@@ -780,31 +780,36 @@ fn replay_create_edge(graph: &Graph, payload: &EdgePayload, wal_data: &[u8]) -> 
 fn allocate_chunks(graph: &Graph, chunks_needed: u8) -> StorageResult<(u32, u8)> {
     let mut bf = graph.bitmap_file.write().unwrap();
 
-    let block_idx = bf.alloc_block(|count| {
-        graph.data_file.allocate_blocks(count)
-    })?;
+    loop {
+        let block_idx = bf.alloc_block(|count| {
+            graph.data_file.allocate_blocks(count)
+        })?;
 
-    let (chunk_off, was_full) = {
         let mut cache = graph.block_cache.write().unwrap();
-        cache.with_block(block_idx,
+        let block = cache.get_or_load(block_idx,
             |idx| graph.data_file.read_block(idx),
             &|idx, data| graph.data_file.write_block(idx, data),
-            |block| {
-                let mut header = BlockHeader::decode(block);
-                let off = BlockAllocator::alloc_chunks(&mut header.bitmap, chunks_needed)
-                    .expect("block should have free chunks");
-                header.encode(block);
-                let full = BlockAllocator::is_block_full(&header.bitmap);
-                (off, full)
-            },
-        )?
-    };
+        )?;
 
-    if was_full {
+        let mut header = BlockHeader::decode(block);
+        if let Some(off) = BlockAllocator::alloc_chunks(&mut header.bitmap, chunks_needed) {
+            header.encode(block);
+            let was_full = BlockAllocator::is_block_full(&header.bitmap);
+            cache.mark_dirty(block_idx);
+            drop(cache);
+
+            if was_full {
+                bf.mark_full(block_idx)?;
+            }
+            return Ok((block_idx, off));
+        }
+
+        // This block doesn't have enough contiguous free chunks (fragmented).
+        // Mark it full so alloc_block skips it, then try the next block.
+        drop(cache);
         bf.mark_full(block_idx)?;
+        // Continue loop to try next block
     }
-
-    Ok((block_idx, chunk_off))
 }
 
 /// Write padded data into the allocated chunks.
@@ -846,23 +851,28 @@ pub(crate) fn read_data_chunks(graph: &Graph, block_idx: u32, chunk_offset: u8, 
 
 /// Free previously allocated data chunks.
 fn free_data_chunks(graph: &Graph, block_idx: u32, chunk_offset: u8, chunks: u8) -> StorageResult<()> {
-    let mut cache = graph.block_cache.write().unwrap();
-    if cache.contains(block_idx) {
-        let block = cache.get_or_load(block_idx, |idx| {
-            graph.data_file.read_block(idx)
-        }, &|idx, data| {
-            graph.data_file.write_block(idx, data)
-        })?;
-        let mut header = BlockHeader::decode(block);
-        let was_full = BlockAllocator::is_block_full(&header.bitmap);
-        BlockAllocator::free_chunks(&mut header.bitmap, chunk_offset, chunks);
-        header.encode(block);
-        cache.mark_dirty(block_idx);
-
-        if was_full && !BlockAllocator::is_block_full(&header.bitmap) {
-            let mut bf = graph.bitmap_file.write().unwrap();
-            bf.mark_free(block_idx)?;
+    let was_full = {
+        let mut cache = graph.block_cache.write().unwrap();
+        if cache.contains(block_idx) {
+            let block = cache.get_or_load(block_idx, |idx| {
+                graph.data_file.read_block(idx)
+            }, &|idx, data| {
+                graph.data_file.write_block(idx, data)
+            })?;
+            let mut header = BlockHeader::decode(block);
+            let was_full = BlockAllocator::is_block_full(&header.bitmap);
+            BlockAllocator::free_chunks(&mut header.bitmap, chunk_offset, chunks);
+            header.encode(block);
+            cache.mark_dirty(block_idx);
+            was_full && !BlockAllocator::is_block_full(&header.bitmap)
+        } else {
+            false
         }
+    };
+
+    if was_full {
+        let mut bf = graph.bitmap_file.write().unwrap();
+        bf.mark_free(block_idx)?;
     }
     Ok(())
 }
