@@ -843,9 +843,20 @@ pub(crate) fn read_data_chunks(graph: &Graph, block_idx: u32, chunk_offset: u8, 
     })?;
 
     let start = (chunk_offset as usize) * 64;
-    let mut data = vec![0u8; data_len as usize];
     let read_len = data_len as usize;
-    data.copy_from_slice(&block[start..start + read_len]);
+    // Clamp to block boundary to avoid slice index out of bounds.
+    // This handles index records with inconsistent data_len (e.g. from old
+    // binary crashes) gracefully instead of panicking.
+    let end = (start + read_len).min(BLOCK_SIZE);
+    let avail = end - start;
+    if avail < read_len {
+        log::warn!(
+            "read_data_chunks: truncated read at block={} chunk_offset={}: requested {} bytes, available {}",
+            block_idx, chunk_offset, read_len, avail,
+        );
+    }
+    let mut data = vec![0u8; avail];
+    data.copy_from_slice(&block[start..end]);
     Ok(data)
 }
 
