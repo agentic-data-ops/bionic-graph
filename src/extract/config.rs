@@ -18,11 +18,17 @@ pub struct ExtractionConfig {
     pub concurrent_sections: usize,
     pub pass_section_context: bool,
     pub batch_size: usize,
+
+    // ─── Network ───────────────────────────────────────────────
+    /// HTTP proxy URL for LLM API calls, e.g. "http://127.0.0.1:7890".
+    pub proxy: Option<String>,
+    /// Whether to verify SSL certificates (set to false for self-signed certs).
+    pub ssl_verify: bool,
 }
 
 impl ExtractionConfig {
     /// Build from the backend's `LlmConfig`, resolving "Provider/Model" format.
-    pub fn from_llm_config(llm: &crate::config::LlmConfig) -> Self {
+    pub fn from_llm_config(llm: &crate::config::LlmConfig, proxy: Option<String>, ssl_verify: bool) -> Self {
         let (api_key, api_base_url, model) = llm.resolve_default();
         Self {
             api_base_url,
@@ -35,6 +41,8 @@ impl ExtractionConfig {
             concurrent_sections: 1,
             pass_section_context: true,
             batch_size: 5,
+            proxy,
+            ssl_verify,
         }
     }
 

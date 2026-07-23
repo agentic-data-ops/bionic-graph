@@ -132,9 +132,24 @@ pub async fn web_search_proxy(
 
     let is_post = provider.method.to_uppercase() == "POST";
 
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
+    let mut client_builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15));
+
+    {
+        let s = state.settings.lock().unwrap();
+        if let Some(proxy_url) = &s.internet.proxy {
+            if !proxy_url.is_empty() {
+                if let Ok(proxy) = reqwest::Proxy::all(proxy_url) {
+                    client_builder = client_builder.proxy(proxy);
+                }
+            }
+        }
+        if !s.internet.ssl_verify {
+            client_builder = client_builder.danger_accept_invalid_certs(true);
+        }
+    }
+
+    let client = match client_builder.build()
     {
         Ok(c) => c,
         Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"success": false, "error": "http client error"}))).into_response(),
