@@ -297,7 +297,7 @@ export default function App() {
         onTimeTravelPointChange={(v) => handleUpdateSettings({ timeTravelPoint: v })}
         defaultGraph={settings.defaultGraph}
         onDefaultGraphChange={(g) => handleUpdateSettings({ defaultGraph: g })}
-        graphs={graphs.map(g => g.name || g)}
+        graphs={graphs.map(g => g.name).filter(Boolean)}
         graphMetas={graphs}
         timeTravelGraphs={{}}
         defaultModelKey={settings.defaultModelKey}

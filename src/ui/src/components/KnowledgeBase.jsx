@@ -342,12 +342,12 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => setImportGraphOpen(false)} />
                   <div className="absolute left-0 top-full mt-1 z-50 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl shadow-lg overflow-hidden w-full">
-                    {graphs.map((g) => (
+                    {graphs.filter(g => g.name).map((g) => (
                       <button
-                        key={g.name || g}
-                        className={`w-full text-left px-2.5 py-2 text-xs font-medium whitespace-nowrap truncate transition-all ${(g.name || g) === importGraph ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
-                        onClick={() => { setImportGraph(g.name || g); setImportGraphOpen(false); }}
-                      >{g.name || g}</button>
+                        key={g.name}
+                        className={`w-full text-left px-2.5 py-2 text-xs font-medium whitespace-nowrap truncate transition-all ${g.name === importGraph ? 'text-[var(--accent)] bg-[var(--accent-bg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'}`}
+                        onClick={() => { setImportGraph(g.name); setImportGraphOpen(false); }}
+                      >{g.name}</button>
                     ))}
                   </div>
                 </>
