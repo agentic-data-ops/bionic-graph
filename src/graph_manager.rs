@@ -11,7 +11,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::graph::graph::{Graph, GraphConfig};
 use crate::graph::graph_registry::{GraphMetadata, GraphRegistry};
-use crate::storage::types::StorageResult;
+use crate::storage::types::{StorageError, StorageResult};
 
 /// Manages lifecycle of multiple named graphs.
 pub struct GraphManager {
@@ -49,6 +49,11 @@ impl GraphManager {
 
     /// Get or open a graph by name.
     pub fn get(&self, name: &str) -> StorageResult<Arc<Graph>> {
+        // Reject empty names — they would resolve to the parent directory
+        // and corrupt the storage layout.
+        if name.trim().is_empty() {
+            return Err(StorageError::GraphNotFound(name.to_string()));
+        }
         {
             let graphs = self.graphs.read().unwrap_or_else(|e| e.into_inner());
             if let Some(g) = graphs.get(name) {
