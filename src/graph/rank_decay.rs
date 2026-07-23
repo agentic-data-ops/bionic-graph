@@ -36,7 +36,7 @@ pub fn spawn_rank_decay(
 
             // Collect inactive pointers under a read lock.
             let inactive: Vec<(u64, crate::storage::memory_index::IndexPointer)> = {
-                let mi = graph.memory_index.read().unwrap();
+                let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
                 mi.atime_index.range_up_to(threshold)
             };
 
@@ -75,7 +75,7 @@ fn try_decay(
             .update_vertex_record(ptr.block_idx, ptr.chunk_offset, &rec)
             .map_err(|e| format!("index write: {}", e))?;
 
-        let mut mi = graph.memory_index.write().unwrap();
+        let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
         mi.ranks.remove(old_rank, ptr);
         mi.ranks.insert(rec.rank, *ptr);
         // atime_index unchanged — we only decayed rank, not atime.
@@ -101,7 +101,7 @@ fn try_decay(
             .update_edge_record(ptr.block_idx, ptr.chunk_offset, &rec)
             .map_err(|e| format!("index write: {}", e))?;
 
-        let mut mi = graph.memory_index.write().unwrap();
+        let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
         mi.ranks.remove(old_rank, ptr);
         mi.ranks.insert(rec.rank, *ptr);
 

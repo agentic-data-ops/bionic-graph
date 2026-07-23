@@ -199,7 +199,7 @@ fn build_broadcast_entries(
     match (method.as_str(), req.path.as_str()) {
         ("POST", "/vertices") | ("PUT", "/vertices") => {
             // Use read_vertex_by_record to avoid updating rank/atime.
-            let found = graph.memory_index.read().unwrap().vertices.get(id).copied();
+            let found = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).vertices.get(id).copied();
             if let Some(ptr) = found {
                 if let Ok(rec) = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset) {
                     if let Ok(Some(payload)) = crate::graph::crud::read_vertex_by_record(&graph, &rec, None) {
@@ -216,7 +216,7 @@ fn build_broadcast_entries(
         }
         ("POST", "/edges") | ("PUT", "/edges") => {
             // Read edge payload directly without updating rank/atime.
-            let found = graph.memory_index.read().unwrap().edges.get(id).copied();
+            let found = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).edges.get(id).copied();
             if let Some(ptr) = found {
                 if let Ok(rec) = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset) {
                     if let Ok(data) = crate::graph::crud::read_data_chunks(
@@ -442,7 +442,7 @@ fn build_touch_entries(
             log::debug!("touch vertex {}: {}", vid, e);
             continue;
         }
-        let found = graph.memory_index.read().unwrap().vertices.get(*vid).copied();
+        let found = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).vertices.get(*vid).copied();
         if let Some(ptr) = found {
             if let Ok(rec) = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset) {
                 let mut data = Vec::with_capacity(12);
@@ -462,7 +462,7 @@ fn build_touch_entries(
             log::debug!("touch edge {}: {}", eid, e);
             continue;
         }
-        let found = graph.memory_index.read().unwrap().edges.get(*eid).copied();
+        let found = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).edges.get(*eid).copied();
         if let Some(ptr) = found {
             if let Ok(rec) = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset) {
                 let mut data = Vec::with_capacity(12);

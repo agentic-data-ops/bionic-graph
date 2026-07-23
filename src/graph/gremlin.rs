@@ -280,7 +280,7 @@ fn step_v(
     ids: Option<&[u32]>,
     at: Option<u64>,
 ) -> StorageResult<Vec<GremlinResult>> {
-    let mi = graph.memory_index.read().unwrap();
+    let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
 
     let iter: Vec<u32> = if let Some(ids) = ids {
         ids.to_vec()
@@ -306,7 +306,7 @@ fn step_e(
     ids: Option<&[u32]>,
     at: Option<u64>,
 ) -> StorageResult<Vec<GremlinResult>> {
-    let mi = graph.memory_index.read().unwrap();
+    let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
 
     let iter: Vec<u32> = if let Some(ids) = ids {
         ids.to_vec()
@@ -348,7 +348,7 @@ fn step_search(
         return Ok(vec![]);
     }
 
-    let mi = graph.memory_index.read().unwrap();
+    let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
 
     // For each token, collect matching vertex/edge IDs per token.
     let mut token_vertex_matches: Vec<(String, Vec<u32>)> = Vec::new();
@@ -625,7 +625,7 @@ fn step_out(
     at: Option<u64>,
 ) -> StorageResult<Vec<GremlinResult>> {
     let max_depth = depth.unwrap_or(1) as usize;
-    let mi = graph.memory_index.read().unwrap();
+    let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
 
     let mut results = Vec::new();
     for item in &input {
@@ -673,7 +673,7 @@ fn step_in(
     at: Option<u64>,
 ) -> StorageResult<Vec<GremlinResult>> {
     let max_depth = depth.unwrap_or(1) as usize;
-    let mi = graph.memory_index.read().unwrap();
+    let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
 
     let mut results = Vec::new();
     for item in &input {
@@ -743,7 +743,7 @@ fn step_oute(
     labels: Option<&[String]>,
     at: Option<u64>,
 ) -> StorageResult<Vec<GremlinResult>> {
-    let mi = graph.memory_index.read().unwrap();
+    let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
     let mut results = Vec::new();
 
     for item in &input {
@@ -775,7 +775,7 @@ fn step_ine(
     labels: Option<&[String]>,
     at: Option<u64>,
 ) -> StorageResult<Vec<GremlinResult>> {
-    let mi = graph.memory_index.read().unwrap();
+    let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
     let mut results = Vec::new();
 
     for item in &input {
@@ -1008,7 +1008,7 @@ fn step_traverse(
     let max_depth = max_depth.unwrap_or(1) as usize;
     let min_score = min_score.unwrap_or(0.0);
 
-    let mi = graph.memory_index.read().unwrap();
+    let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
 
     // Seed: input vertices get score = 1.0.
     // If input contains edges, their endpoints also get score = 1.0.
@@ -1154,7 +1154,7 @@ fn step_rank(
 
     if input.is_empty() {
         // Source mode: iterate rank index descending.
-        let mi = graph.memory_index.read().unwrap();
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
         let ptrs = mi.ranks.all_by_rank();
         let mut results = Vec::new();
 
@@ -1185,7 +1185,7 @@ fn step_rank(
         Ok(results)
     } else {
         // Filter mode: rank-sort existing results.
-        let mi = graph.memory_index.read().unwrap();
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
         let mut ranked: Vec<(u32, GremlinResult)> = Vec::new();
 
         for item in input {
