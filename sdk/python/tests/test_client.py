@@ -283,14 +283,14 @@ def test_add_tokenizer_words(client, mock):
 
 
 def test_list_models(client, mock):
-    mock.get("/maas/openai/v1/models").respond(json={"data": [{"id": "model1"}], "defaultModel": "model1"})
+    mock.get("/proxy/openai/v1/models").respond(json={"data": [{"id": "model1"}], "defaultModel": "model1"})
     resp = client.list_models()
     assert len(resp.data) == 1
     assert resp.data[0]["id"] == "model1"
 
 
 def test_chat_completion(client, mock):
-    mock.post("/maas/openai/v1/chat/completions").respond(json={"choices": [{"message": {"content": "Hello"}}]})
+    mock.post("/proxy/openai/v1/chat/completions").respond(json={"choices": [{"message": {"content": "Hello"}}]})
     resp = client.chat_completion([{"role": "user", "content": "Hi"}])
     assert resp["choices"][0]["message"]["content"] == "Hello"
 
