@@ -5,7 +5,7 @@ async function main() {
   const page = await browser.newPage();
 
   // Mock API endpoints
-  await page.route('**/maas/openai/v1/models', (route) => {
+  await page.route('**/proxy/openai/v1/models', (route) => {
     route.fulfill({ status: 200,
       headers: { 'Content-Type': 'application/json', 'x-default-model': 'mock/gpt-4' },
       body: JSON.stringify({ object: 'list', data: [{ id: 'mock/gpt-4', object: 'model', owned_by: 'mock' }] }),

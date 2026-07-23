@@ -20,7 +20,7 @@ async function main() {
   });
 
   // ── Mock backend endpoints ──
-  await page.route('**/maas/openai/v1/models', (route) => {
+  await page.route('**/proxy/openai/v1/models', (route) => {
     route.fulfill({
       status: 200,
       headers: { 'Content-Type': 'application/json', 'x-default-model': 'mock-provider/gpt-4' },
@@ -38,7 +38,7 @@ async function main() {
   });
 
   // Mock chat completion with slow streaming SSE
-  await page.route('**/maas/openai/v1/chat/completions', async (route) => {
+  await page.route('**/proxy/openai/v1/chat/completions', async (route) => {
     const chunks = [
       sseChunk('Hello'),
       sseChunk('! I'),

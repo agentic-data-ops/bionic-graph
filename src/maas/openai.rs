@@ -29,7 +29,7 @@ pub struct ModelEntry {
 
 // ─── Handlers ────────────────────────────────────────────────────
 
-/// `GET /maas/openai/v1/models`
+/// `GET /proxy/openai/v1/models`
 ///
 /// Returns all models from configured providers in OpenAI-compatible format.
 /// Each model id is `"<provider>/<model>"`.
@@ -67,7 +67,7 @@ pub async fn list_models_handler(
     }))
 }
 
-/// `POST /maas/openai/v1/chat/completions`
+/// `POST /proxy/openai/v1/chat/completions`
 ///
 /// Forward an OpenAI-compatible chat completion request to the configured provider.
 /// Accepts all standard OpenAI chat completion fields (via raw JSON passthrough).

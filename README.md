@@ -120,6 +120,89 @@ Once the server is running:
 
 > **No Rust toolchain required** — the release binary is a self-contained executable.
 
+### Quick start (cluster mode)
+
+Bionic-Graph supports a **master-worker cluster** architecture for horizontal read scaling. The master handles both reads and writes; workers serve reads locally and forward write requests to the master. Redo-log entries are replicated from master to workers after each write.
+
+```
+┌─────────┐     ┌─────────┐     ┌─────────┐
+│ Worker 1│     │ Master  │     │ Worker 2│
+│ (read)  │◄────│(R+W)    │────►│ (read)  │
+└────┬────┘     └─────────┘     └────┬────┘
+     │               │               │
+     └─── writes ────┘               │
+          forwarded                  │
+                                     │
+        Redo log replication ────────┘
+```
+
+**Step 1 — Configure the master** (`~/.config/bionic-graph/settings.json`):
+
+```json
+{
+  "server": { "host": "0.0.0.0", "port": 8080 },
+  "cluster": {
+    "enabled": true,
+    "role": "master",
+    "bind_addr": "0.0.0.0:9090",
+    "master_addr": null,
+    "heartbeat_interval_secs": 5,
+    "worker_timeout_secs": 30,
+    "forward_writes": true
+  },
+  ...  // other settings unchanged
+}
+```
+
+**Step 2 — Start the master node** (read + write, accepts worker connections):
+
+```bash
+./bionic-graph-linux-x64
+# Master API → http://0.0.0.0:8080
+# Cluster endpoint → 0.0.0.0:9090 (for worker heartbeats + replication)
+```
+
+**Step 3 — Configure each worker** (`~/.config/bionic-graph/settings.json`):
+
+```json
+{
+  "server": { "host": "0.0.0.0", "port": 8081 },
+  "cluster": {
+    "enabled": true,
+    "role": "worker",
+    "bind_addr": "0.0.0.0:9091",
+    "master_addr": "http://<master-ip>:9090",
+    "heartbeat_interval_secs": 5,
+    "worker_timeout_secs": 30,
+    "forward_writes": true
+  },
+  ...  // other settings unchanged
+}
+```
+
+**Step 4 — Start worker nodes**:
+
+```bash
+# Worker 1 (port 8081)
+./bionic-graph-linux-x64
+
+# Worker 2 (port 8082) — use separate config or CLI flags
+./bionic-graph-linux-x64 -P 8082
+```
+
+**How it works:**
+
+| Aspect | Behavior |
+|--------|----------|
+| **Reads** | Any node (master or worker) can serve read requests (Gremlin, search, vertex/edge queries) |
+| **Writes** | Workers forward write requests to the master automatically via HTTP |
+| **Replication** | After each write, the master pushes the redo-log entry to all connected workers |
+| **Heartbeat** | Workers send periodic heartbeats to the master (every 5s by default) |
+| **Data isolation** | Each node has its own `data/` directory — workers sync via replication, not shared storage |
+| **Rank/Atime sync** | Read access on workers is reported back to the master via `touch` for rank/atime tracking |
+
+> **Note:** The cluster module is functional but not yet optimized for production. Leader election, automatic worker discovery, and cluster-aware routing are planned enhancements. For development and evaluation, start with a single-node setup (`"enabled": false`).
+
 ### Clone & build
 
 ```bash
