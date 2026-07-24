@@ -206,9 +206,10 @@ pub fn batch_import(
         name_to_vid = build_name_to_vid(graph);
         edge_key_to_eid = build_edge_lookup(graph, &name_to_vid);
     } else {
-        // Append mode: start fresh, always create new vertices/edges.
-        // Use only the name→vid mapping built during this batch.
-        name_to_vid = HashMap::new();
+        // Append mode: always create new vertices, but still load existing
+        // name→vid mapping so edges can reference vertices created in prior
+        // batches or separate batch_load calls.
+        name_to_vid = build_name_to_vid(graph);
         edge_key_to_eid = HashMap::new();
     }
 
