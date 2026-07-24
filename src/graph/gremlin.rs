@@ -8,9 +8,9 @@ use std::sync::Arc;
 
 use crate::graph::crud;
 use crate::graph::graph::Graph;
-use crate::storage::index_file::{EdgeIndexRecord, VertexIndexRecord};
+use crate::storage::memory_index::MetaPointer;
 use crate::storage::types::{
-    EdgePayload, PropertyValue, StorageResult, VertexPayload,
+    DataHeader, EdgePayload, PropertyValue, StorageResult, VertexPayload,
 };
 
 // ── Step definitions ────────────────────────────────────────────────────────
@@ -33,10 +33,20 @@ pub enum GremlinStep {
     #[serde(rename = "V")]
     V {
         ids: Option<Vec<u32>>,
+        #[serde(default)]
+        names: Option<Vec<String>>,
+        /// Optional limit — when set, use rank index to fetch top-N vertices.
+        #[serde(default)]
+        limit: Option<u32>,
     },
     #[serde(rename = "E")]
     E {
         ids: Option<Vec<u32>>,
+        #[serde(default)]
+        names: Option<Vec<String>>,
+        /// Optional limit — when set, use rank index to fetch top-N edges.
+        #[serde(default)]
+        limit: Option<u32>,
     },
     #[serde(rename = "has")]
     Has {
@@ -134,7 +144,6 @@ pub enum GremlinResult {
         keywords: Vec<String>,
         properties: HashMap<String, PropertyValue>,
         score: Option<f32>,
-        rank: Option<u32>,
     },
     Edge {
         #[serde(rename = "type")]
@@ -148,7 +157,6 @@ pub enum GremlinResult {
         strength: f32,
         properties: HashMap<String, PropertyValue>,
         score: Option<f32>,
-        rank: Option<u32>,
     },
     Count {
         count: usize,
@@ -184,23 +192,22 @@ impl GremlinResponse {
 // ── Convenience constructors ─────────────────────────────────────────────────
 
 impl GremlinResult {
-    pub fn from_vertex(v: &VertexPayload, index_rec: Option<&VertexIndexRecord>, score: Option<f32>) -> Self {
+    pub fn from_vertex(id: u32, v: &VertexPayload, score: Option<f32>) -> Self {
         GremlinResult::Vertex {
             element_type: "vertex".to_string(),
-            id: v.id,
+            id,
             name: v.name.clone(),
             labels: v.labels.clone(),
             keywords: v.keywords.clone(),
             properties: v.properties.clone(),
             score,
-            rank: index_rec.map(|r| r.rank),
         }
     }
 
-    pub fn from_edge(e: &EdgePayload, index_rec: Option<&EdgeIndexRecord>, score: Option<f32>) -> Self {
+    pub fn from_edge(id: u32, e: &EdgePayload, score: Option<f32>) -> Self {
         GremlinResult::Edge {
             element_type: "edge".to_string(),
-            id: e.id,
+            id,
             name: e.name.clone(),
             labels: e.labels.clone(),
             keywords: e.keywords.clone(),
@@ -209,12 +216,34 @@ impl GremlinResult {
             strength: e.strength,
             properties: e.properties.clone(),
             score,
-            rank: index_rec.map(|r| r.rank),
         }
     }
 }
 
 // ── Pipeline execution ───────────────────────────────────────────────────────
+
+/// Read a DataHeader from the data file at a given MetaPointer.
+/// Used by the Gremlin engine to determine entity type/id from rank index pointers.
+fn read_header_by_ptr(graph: &Graph, ptr: &MetaPointer) -> StorageResult<DataHeader> {
+    let mut buf = [0u8; 64];
+    {
+        let cache = graph.block_cache.read().unwrap_or_else(|e| e.into_inner());
+        if let Some(block) = cache.peek(ptr.block_idx) {
+            let start = (ptr.chunk_offset as usize) * 64;
+            buf.copy_from_slice(&block[start..start + 64]);
+            return Ok(DataHeader::decode(&buf));
+        }
+    }
+    let mut cache = graph.block_cache.write().unwrap_or_else(|e| e.into_inner());
+    let block = cache.get_or_load(
+        ptr.block_idx,
+        |idx| graph.data_file.read_block(idx),
+        &|idx, data| graph.data_file.write_block(idx, data).map_err(|e| e.into()),
+    )?;
+    let start = (ptr.chunk_offset as usize) * 64;
+    buf.copy_from_slice(&block[start..start + 64]);
+    Ok(DataHeader::decode(&buf))
+}
 
 /// Execute a complete Gremlin query against a graph.
 /// `time_travel_at` comes from the X-Time-Travel header (None means present time).
@@ -226,14 +255,105 @@ pub fn execute(
 
     let mut current: Vec<GremlinResult> = Vec::new();
 
-    for step in &query.steps {
-        current = match execute_step(graph, step, current, time_travel_at) {
-            Ok(results) => results,
-            Err(e) => return GremlinResponse::error(format!("Step error: {}", e)),
-        };
+    let steps = &query.steps;
+    let mut skip_next = false;
+    for (i, step) in steps.iter().enumerate() {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+
+        // Peek ahead optimizations for source steps (no input).
+        if current.is_empty() {
+            // Check if next step is Count → shortcut via memory index.
+            if let Some(next) = steps.get(i + 1) {
+                if matches!(next, GremlinStep::Count) {
+                    match step {
+                        GremlinStep::V { ids, .. } => {
+                            current = step_v_count(graph, ids.as_deref());
+                            skip_next = true;
+                            continue;
+                        }
+                        GremlinStep::E { ids, .. } => {
+                            current = step_e_count(graph, ids.as_deref());
+                            skip_next = true;
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            // Check if next step is Limit → propagate limit for early-break.
+            let peek_limit = match step {
+                GremlinStep::V { ids, names, limit } if ids.is_none() && names.is_none() && limit.is_none() => {
+                    steps.get(i + 1).and_then(|next| {
+                        if let GremlinStep::Limit { count } = next {
+                            Some(*count)
+                        } else {
+                            None
+                        }
+                    })
+                }
+                GremlinStep::E { ids, names, limit } if ids.is_none() && names.is_none() && limit.is_none() => {
+                    steps.get(i + 1).and_then(|next| {
+                        if let GremlinStep::Limit { count } = next {
+                            Some(*count)
+                        } else {
+                            None
+                        }
+                    })
+                }
+                _ => None,
+            };
+
+            let step = if let Some(limit) = peek_limit {
+                match step {
+                    GremlinStep::V { ids: _, names: _, limit: _ } => {
+                        &GremlinStep::V { ids: None, names: None, limit: Some(limit) }
+                    }
+                    GremlinStep::E { ids: _, names: _, limit: _ } => {
+                        &GremlinStep::E { ids: None, names: None, limit: Some(limit) }
+                    }
+                    _ => step,
+                }
+            } else {
+                step
+            };
+
+            current = match execute_step(graph, step, current, time_travel_at) {
+                Ok(results) => results,
+                Err(e) => return GremlinResponse::error(format!("Step error: {}", e)),
+            };
+        } else {
+            current = match execute_step(graph, step, current, time_travel_at) {
+                Ok(results) => results,
+                Err(e) => return GremlinResponse::error(format!("Step error: {}", e)),
+            };
+        }
     }
 
     GremlinResponse::success(current)
+}
+
+/// Optimized count for `V` — only reads from in-memory index, zero file I/O.
+fn step_v_count(graph: &Arc<Graph>, ids: Option<&[u32]>) -> Vec<GremlinResult> {
+    let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+    let count = match ids {
+        Some(ids) => ids.iter().filter(|id| mi.vertices.contains(**id)).count(),
+        None => mi.vertices.len(),
+    };
+    vec![GremlinResult::Count { count }]
+}
+
+/// Optimized count for `E` — only reads from in-memory index, zero file I/O.
+fn step_e_count(graph: &Arc<Graph>, ids: Option<&[u32]>) -> Vec<GremlinResult> {
+    let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+    let count = match ids {
+        Some(ids) => ids.iter().filter(|id| mi.edges.contains(**id)).count(),
+        None => mi.edges.len(),
+    };
+    vec![GremlinResult::Count { count }]
 }
 
 fn execute_step(
@@ -243,8 +363,8 @@ fn execute_step(
     time_travel_at: Option<u64>,
 ) -> StorageResult<Vec<GremlinResult>> {
     match step {
-        GremlinStep::V { ids } => step_v(graph, ids.as_deref(), time_travel_at),
-        GremlinStep::E { ids } => step_e(graph, ids.as_deref(), time_travel_at),
+        GremlinStep::V { ids, names, limit } => step_v(graph, ids.as_deref(), names.as_deref(), *limit, time_travel_at),
+        GremlinStep::E { ids, names, limit } => step_e(graph, ids.as_deref(), names.as_deref(), *limit, time_travel_at),
         GremlinStep::Search { text, mode, match_mode, limit, min_rank } => {
             step_search(graph, text, mode.as_deref(), match_mode.as_deref(), time_travel_at, *limit, *min_rank)
         }
@@ -278,24 +398,88 @@ fn execute_step(
 fn step_v(
     graph: &Arc<Graph>,
     ids: Option<&[u32]>,
+    names: Option<&[String]>,
+    limit: Option<u32>,
     at: Option<u64>,
 ) -> StorageResult<Vec<GremlinResult>> {
     let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
 
-    let iter: Vec<u32> = if let Some(ids) = ids {
-        ids.to_vec()
-    } else {
-        mi.vertices.keys().copied().collect()
-    };
+    if let Some(ids) = ids {
+        // Specific IDs requested — collect meta, drop lock, then read.
+        let mut candidates: Vec<(u32, MetaPointer)> = Vec::with_capacity(ids.len());
+        for &vid in ids {
+            if let Some(ptr) = mi.vertices.get(vid) {
+                candidates.push((vid, *ptr));
+            }
+        }
+        drop(mi);
+        let mut results = Vec::with_capacity(candidates.len());
+        for (vid, ptr) in candidates {
+            if let Ok(Some(v)) = crud::read_vertex_by_ptr(graph, ptr, at) {
+                results.push(GremlinResult::from_vertex(vid, &v, None));
+            }
+        }
+        return Ok(results);
+    }
 
-    let mut results = Vec::with_capacity(iter.len());
-    for vid in iter {
-        if let Some(ptr) = mi.vertices.get(vid) {
-            if let Ok(rec) = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset) {
-                if let Ok(Some(v)) = crud::read_vertex_by_record(graph, &rec, at) {
-                    results.push(GremlinResult::from_vertex(&v, Some(&rec), None));
+    if let Some(names) = names {
+        // Specific names requested — look up each name in vertex_names.
+        let mut candidates: Vec<(u32, MetaPointer)> = Vec::with_capacity(names.len());
+        for name in names {
+            if let Some(&vid) = mi.vertex_names.get(name) {
+                if let Some(ptr) = mi.vertices.get(vid) {
+                    candidates.push((vid, *ptr));
                 }
             }
+        }
+        drop(mi);
+        let mut results = Vec::with_capacity(candidates.len());
+        for (vid, ptr) in candidates {
+            if let Ok(Some(v)) = crud::read_vertex_by_ptr(graph, ptr, at) {
+                results.push(GremlinResult::from_vertex(vid, &v, None));
+            }
+        }
+        return Ok(results);
+    }
+
+    // No specific IDs — iterate by rank or full scan.
+    let limit = limit.unwrap_or(u32::MAX) as usize;
+
+    if limit < u32::MAX as usize {
+        // Use rank index descending to fetch top-N vertices.
+        let ptrs = mi.ranks.top_pointers(limit, None);
+
+        let mut results = Vec::with_capacity(limit.min(ptrs.len()));
+        for ptr in &ptrs {
+            // Read DataHeader to determine entity_id and type.
+            if let Ok(dh) = read_header_by_ptr(graph, ptr) {
+                if matches!(dh.chunk_type, crate::storage::types::ChunkType::Vertex) {
+                    if let Ok(Some(v)) = crud::read_vertex_by_ptr(graph, *ptr, at) {
+                        results.push(GremlinResult::from_vertex(dh.entity_id, &v, None));
+                        if results.len() >= limit {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        return Ok(results);
+    }
+
+    // Full scan (no practical limit) — iterate all vertices.
+    let ids: Vec<u32> = mi.vertices.keys().copied().collect();
+    let mut candidates: Vec<(u32, MetaPointer)> = Vec::with_capacity(ids.len());
+    for vid in &ids {
+        if let Some(ptr) = mi.vertices.get(*vid) {
+            candidates.push((*vid, *ptr));
+        }
+    }
+    drop(mi);
+
+    let mut results = Vec::with_capacity(candidates.len());
+    for (vid, ptr) in candidates {
+        if let Ok(Some(v)) = crud::read_vertex_by_ptr(graph, ptr, at) {
+            results.push(GremlinResult::from_vertex(vid, &v, None));
         }
     }
     Ok(results)
@@ -304,24 +488,88 @@ fn step_v(
 fn step_e(
     graph: &Arc<Graph>,
     ids: Option<&[u32]>,
+    names: Option<&[String]>,
+    limit: Option<u32>,
     at: Option<u64>,
 ) -> StorageResult<Vec<GremlinResult>> {
     let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
 
-    let iter: Vec<u32> = if let Some(ids) = ids {
-        ids.to_vec()
-    } else {
-        mi.edges.keys().copied().collect()
-    };
+    if let Some(ids) = ids {
+        // Specific IDs requested — collect ptrs, drop lock, then read.
+        let mut candidates: Vec<(u32, MetaPointer)> = Vec::with_capacity(ids.len());
+        for &eid in ids {
+            if let Some(ptr) = mi.edges.get(eid) {
+                candidates.push((eid, *ptr));
+            }
+        }
+        drop(mi);
+        let mut results = Vec::with_capacity(candidates.len());
+        for (eid, ptr) in candidates {
+            if let Ok(Some(e)) = crud::read_edge_by_ptr(graph, ptr, at) {
+                results.push(GremlinResult::from_edge(eid, &e, None));
+            }
+        }
+        return Ok(results);
+    }
 
-    let mut results = Vec::with_capacity(iter.len());
-    for eid in iter {
-        if let Some(ptr) = mi.edges.get(eid) {
-            if let Ok(rec) = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset) {
-                if let Ok(Some(e)) = crud::read_edge_by_record(graph, &rec, at) {
-                    results.push(GremlinResult::from_edge(&e, Some(&rec), None));
+    if let Some(names) = names {
+        // Specific names requested — look up each name in edge_names.
+        let mut candidates: Vec<(u32, MetaPointer)> = Vec::with_capacity(names.len());
+        for name in names {
+            if let Some(&eid) = mi.edge_names.get(name) {
+                if let Some(ptr) = mi.edges.get(eid) {
+                    candidates.push((eid, *ptr));
                 }
             }
+        }
+        drop(mi);
+        let mut results = Vec::with_capacity(candidates.len());
+        for (eid, ptr) in candidates {
+            if let Ok(Some(e)) = crud::read_edge_by_ptr(graph, ptr, at) {
+                results.push(GremlinResult::from_edge(eid, &e, None));
+            }
+        }
+        return Ok(results);
+    }
+
+    // No specific IDs — iterate by rank or full scan.
+    let limit = limit.unwrap_or(u32::MAX) as usize;
+
+    if limit < u32::MAX as usize {
+        // Use rank index descending to fetch top-N edges.
+        let ptrs = mi.ranks.top_pointers(limit, None);
+
+        let mut results = Vec::with_capacity(limit.min(ptrs.len()));
+        for ptr in &ptrs {
+            // Read DataHeader to determine entity_id and type.
+            if let Ok(dh) = read_header_by_ptr(graph, ptr) {
+                if matches!(dh.chunk_type, crate::storage::types::ChunkType::Edge) {
+                    if let Ok(Some(e)) = crud::read_edge_by_ptr(graph, *ptr, at) {
+                        results.push(GremlinResult::from_edge(dh.entity_id, &e, None));
+                        if results.len() >= limit {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        return Ok(results);
+    }
+
+    // Full scan (no practical limit) — iterate all edges.
+    let ids: Vec<u32> = mi.edges.keys().copied().collect();
+    let mut candidates: Vec<(u32, MetaPointer)> = Vec::with_capacity(ids.len());
+    for eid in &ids {
+        if let Some(ptr) = mi.edges.get(*eid) {
+            candidates.push((*eid, *ptr));
+        }
+    }
+    drop(mi);
+
+    let mut results = Vec::with_capacity(candidates.len());
+    for (eid, ptr) in candidates {
+        if let Ok(Some(e)) = crud::read_edge_by_ptr(graph, ptr, at) {
+            results.push(GremlinResult::from_edge(eid, &e, None));
         }
     }
     Ok(results)
@@ -334,12 +582,11 @@ fn step_search(
     match_mode: Option<&str>,
     at: Option<u64>,
     limit: Option<u32>,
-    min_rank: Option<u32>,
+    _min_rank: Option<u32>,
 ) -> StorageResult<Vec<GremlinResult>> {
     let mode = mode.unwrap_or("greedy");
     let match_mode = match_mode.unwrap_or("prefix");
     let limit = limit.unwrap_or(100) as usize;
-    let min_rank = min_rank.unwrap_or(0);
 
     // Tokenize the raw user text (frontend no longer tokenizes).
     let tokens: Vec<String> = crate::graph::tokenizer::Tokenizer::tokenize_query(text);
@@ -359,7 +606,7 @@ fn step_search(
         let mut vids_for_token = Vec::new();
 
         // Look up matching stored tokens based on match_mode.
-        let matching_tokens: Vec<Vec<crate::storage::memory_index::IndexPointer>> = if match_mode == "word" {
+        let matching_tokens: Vec<Vec<crate::storage::memory_index::MetaPointer>> = if match_mode == "word" {
             // Word mode: exact match on stored token (O(1) HashMap lookup)
             mi.tokens.get(token).map(|ptrs| vec![ptrs.clone()]).unwrap_or_default()
         } else {
@@ -372,13 +619,11 @@ fn step_search(
 
         for ptrs in &matching_tokens {
             for ptr in ptrs {
-                if let Ok(trec) = graph.index_file.read_token_record(ptr.block_idx, ptr.chunk_offset) {
-                    if let Ok(Some(tpay)) = crud::read_token_by_record(graph, &trec) {
+                // Read the DataHeader to get data_len, then read token by ptr.
+                if let Ok(dh) = read_header_by_ptr(graph, ptr) {
+                    if let Ok(Some(tpay)) = crud::read_token_by_ptr(graph, *ptr, dh.payload_len) {
                         for tref in &tpay.refs {
-                            // Time-travel filter: skip refs created after the query timestamp.
-                            if at.map_or(false, |ts| tref.timestamp > ts) {
-                                continue;
-                            }
+                            // Score from this ref (frequency weighting).
                             let score = tref.ref_frequency as f32;
                             if tref.ref_type == 0 {
                                 vids_for_token.push(tref.ref_id);
@@ -420,35 +665,54 @@ fn step_search(
         vertex_scores.keys().copied().collect()
     };
 
-    let mut results = Vec::new();
+    let mut results: Vec<GremlinResult> = Vec::new();
 
     // Helper: check if a token was actually valid in the payload at the query time.
     let token_valid_in_payload = |token: &str, name: &str, labels: &[String], keywords: &[String], properties: &HashMap<String, PropertyValue>| -> bool {
-        name.contains(token)
-            || labels.iter().any(|l| l.contains(token))
-            || keywords.iter().any(|k| k.contains(token))
+        name.to_lowercase().contains(token)
+            || labels.iter().any(|l| l.to_lowercase().contains(token))
+            || keywords.iter().any(|k| k.to_lowercase().contains(token))
             || properties.values().any(|pv| match pv {
-                PropertyValue::String(s) => s.contains(token),
+                PropertyValue::String(s) => s.to_lowercase().contains(token),
                 _ => false,
             })
     };
 
-    // Process vertices.
+    // Process vertices — collect meta, drop lock, then read.
+    let mut v_candidates: Vec<(u32, MetaPointer)> = Vec::new();
     for vid in &include_vertices {
         if let Some(ptr) = mi.vertices.get(*vid) {
-            if let Ok(rec) = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset) {
-                if rec.rank >= min_rank {
-                    if let Ok(Some(v)) = crud::read_vertex_by_record(graph, &rec, at) {
-                        // Verify the payload at query time still matches the search token.
-                        if at.is_some()
-                            && !tokens.iter().any(|t| token_valid_in_payload(t, &v.name, &v.labels, &v.keywords, &v.properties))
-                        {
-                                continue; // false positive — token was removed by this time
-                        }
-                        let score = vertex_scores.get(vid).copied().unwrap_or(0.0);
-                        results.push(GremlinResult::from_vertex(&v, Some(&rec), Some(score)));
-                    }
+            v_candidates.push((*vid, *ptr));
+        }
+    }
+
+    // Process edges — collect ptrs, drop lock, then read.
+    let mut e_candidates: Vec<(u32, MetaPointer, f32)> = Vec::new();
+    for (eid, score) in &edge_scores {
+        if let Some(ptr) = mi.edges.get(*eid) {
+            e_candidates.push((*eid, *ptr, *score));
+        }
+    }
+    drop(mi);
+
+    let mut results = Vec::new();
+
+    for (vid, ptr) in v_candidates {
+        match crud::read_vertex_by_ptr(graph, ptr, at) {
+            Ok(Some(v)) => {
+                // Verify the payload at query time still matches the search token.
+                if at.is_some()
+                    && !tokens.iter().any(|t| token_valid_in_payload(t, &v.name, &v.labels, &v.keywords, &v.properties))
+                {
+                    // false positive — token was removed by this time
+                } else {
+                    let score = vertex_scores.get(&vid).copied().unwrap_or(0.0);
+                    results.push(GremlinResult::from_vertex(vid, &v, Some(score)));
                 }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                log::debug!("search: vid={} error: {}", vid, e);
             }
         }
     }
@@ -457,27 +721,21 @@ fn step_search(
         vertex_scores.len(), edge_scores.len(), include_vertices.len());
 
     // Process edges (greedy only for now — exact mode for edges is analogous).
-    for (eid, score) in &edge_scores {
-        if let Some(ptr) = mi.edges.get(*eid) {
-            if let Ok(rec) = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset) {
-                if rec.rank >= min_rank {
-                    if let Ok(Some(e)) = crud::read_edge_by_record(graph, &rec, at) {
-                        if at.is_some()
-                            && !tokens.iter().any(|t| {
-                                e.name.contains(t)
-                                    || e.labels.iter().any(|l| l.contains(t))
-                                    || e.keywords.iter().any(|k| k.contains(t))
-                                    || e.properties.values().any(|pv| match pv {
-                                        PropertyValue::String(s) => s.contains(t),
-                                        _ => false,
-                                    })
-                            }) {
-                                continue;
-                            }
-                        results.push(GremlinResult::from_edge(&e, Some(&rec), Some(*score)));
-                    }
-                }
+    for (eid, ptr, score) in e_candidates {
+        if let Ok(Some(e)) = crud::read_edge_by_ptr(graph, ptr, at) {
+            if at.is_some()
+                && !tokens.iter().any(|t| {
+                    e.name.to_lowercase().contains(t)
+                        || e.labels.iter().any(|l| l.to_lowercase().contains(t))
+                        || e.keywords.iter().any(|k| k.to_lowercase().contains(t))
+                        || e.properties.values().any(|pv| match pv {
+                            PropertyValue::String(s) => s.to_lowercase().contains(t),
+                            _ => false,
+                        })
+                }) {
+                continue;
             }
+            results.push(GremlinResult::from_edge(eid, &e, Some(score)));
         }
     }
 
@@ -627,7 +885,8 @@ fn step_out(
     let max_depth = depth.unwrap_or(1) as usize;
     let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
 
-    let mut results = Vec::new();
+    // Collect all target vertex IDs discovered during BFS.
+    let mut target_ids: Vec<u32> = Vec::new();
     for item in &input {
         let vid = match item {
             GremlinResult::Vertex { id, .. } => *id,
@@ -644,22 +903,32 @@ fn step_out(
             for (_eid, target, _ptr) in mi.adjacency.out_edges(cur_id) {
                 let target_id = *target;
                 if visited.insert(target_id) {
-                    if let Some(ptr) = mi.vertices.get(target_id) {
-                        if let Ok(rec) = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset) {
-                            if let Ok(Some(v)) = crud::read_vertex_by_record(graph, &rec, at) {
-                                // Check label filter.
-                                if let Some(labels) = labels {
-                                    if !v.labels.iter().any(|l| labels.contains(l)) {
-                                        continue;
-                                    }
-                                }
-                                results.push(GremlinResult::from_vertex(&v, Some(&rec), None));
-                            }
-                        }
-                    }
+                    target_ids.push(target_id);
                     frontier.push((target_id, cur_depth + 1));
                 }
             }
+        }
+    }
+
+    // Collect ptrs for all target vertices, drop lock, then read.
+    let mut candidates: Vec<(u32, MetaPointer)> = Vec::with_capacity(target_ids.len());
+    for &tid in &target_ids {
+        if let Some(ptr) = mi.vertices.get(tid) {
+            candidates.push((tid, *ptr));
+        }
+    }
+    drop(mi);
+
+    let mut results = Vec::new();
+    for (tid, ptr) in candidates {
+        if let Ok(Some(v)) = crud::read_vertex_by_ptr(graph, ptr, at) {
+            // Check label filter.
+            if let Some(labels) = labels {
+                if !v.labels.iter().any(|l| labels.contains(l)) {
+                    continue;
+                }
+            }
+            results.push(GremlinResult::from_vertex(tid, &v, None));
         }
     }
     Ok(results)
@@ -675,7 +944,8 @@ fn step_in(
     let max_depth = depth.unwrap_or(1) as usize;
     let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
 
-    let mut results = Vec::new();
+    // Collect all source vertex IDs discovered during BFS.
+    let mut source_ids: Vec<u32> = Vec::new();
     for item in &input {
         let vid = match item {
             GremlinResult::Vertex { id, .. } => *id,
@@ -692,21 +962,31 @@ fn step_in(
             for (_eid, source, _ptr) in mi.adjacency.in_edges(cur_id) {
                 let source_id = *source;
                 if visited.insert(source_id) {
-                    if let Some(ptr) = mi.vertices.get(source_id) {
-                        if let Ok(rec) = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset) {
-                            if let Ok(Some(v)) = crud::read_vertex_by_record(graph, &rec, at) {
-                                if let Some(labels) = labels {
-                                    if !v.labels.iter().any(|l| labels.contains(l)) {
-                                        continue;
-                                    }
-                                }
-                                results.push(GremlinResult::from_vertex(&v, Some(&rec), None));
-                            }
-                        }
-                    }
+                    source_ids.push(source_id);
                     frontier.push((source_id, cur_depth + 1));
                 }
             }
+        }
+    }
+
+    // Collect ptrs for all source vertices, drop lock, then read.
+    let mut candidates: Vec<(u32, MetaPointer)> = Vec::with_capacity(source_ids.len());
+    for &sid in &source_ids {
+        if let Some(ptr) = mi.vertices.get(sid) {
+            candidates.push((sid, *ptr));
+        }
+    }
+    drop(mi);
+
+    let mut results = Vec::new();
+    for (sid, ptr) in candidates {
+        if let Ok(Some(v)) = crud::read_vertex_by_ptr(graph, ptr, at) {
+            if let Some(labels) = labels {
+                if !v.labels.iter().any(|l| labels.contains(l)) {
+                    continue;
+                }
+            }
+            results.push(GremlinResult::from_vertex(sid, &v, None));
         }
     }
     Ok(results)
@@ -744,26 +1024,33 @@ fn step_oute(
     at: Option<u64>,
 ) -> StorageResult<Vec<GremlinResult>> {
     let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-    let mut results = Vec::new();
 
+    // Collect ptrs for each out-edge, drop lock, then read.
+    let mut candidates: Vec<(u32, MetaPointer)> = Vec::new();
     for item in &input {
         let vid = match item {
             GremlinResult::Vertex { id, .. } => *id,
             _ => continue,
         };
-        for (_eid, _target, ptr) in mi.adjacency.out_edges(vid) {
-            if let Ok(rec) = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset) {
-                if let Some(labels) = labels {
-                    if let Ok(Some(e)) = crud::read_edge_by_record(graph, &rec, at) {
-                        if !labels.iter().any(|l| e.labels.contains(l)) {
-                            continue;
-                        }
-                        results.push(GremlinResult::from_edge(&e, Some(&rec), None));
-                    }
-                } else if let Ok(Some(e)) = crud::read_edge_by_record(graph, &rec, at) {
-                    results.push(GremlinResult::from_edge(&e, Some(&rec), None));
-                }
+        for (eid, _target, _ptr) in mi.adjacency.out_edges(vid) {
+            if let Some(ptr) = mi.edges.get(*eid) {
+                candidates.push((*eid, *ptr));
             }
+        }
+    }
+    drop(mi);
+
+    let mut results = Vec::new();
+    for (eid, ptr) in candidates {
+        if let Some(labels) = labels {
+            if let Ok(Some(e)) = crud::read_edge_by_ptr(graph, ptr, at) {
+                if !labels.iter().any(|l| e.labels.contains(l)) {
+                    continue;
+                }
+                results.push(GremlinResult::from_edge(eid, &e, None));
+            }
+        } else if let Ok(Some(e)) = crud::read_edge_by_ptr(graph, ptr, at) {
+            results.push(GremlinResult::from_edge(eid, &e, None));
         }
     }
     Ok(results)
@@ -776,26 +1063,33 @@ fn step_ine(
     at: Option<u64>,
 ) -> StorageResult<Vec<GremlinResult>> {
     let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-    let mut results = Vec::new();
 
+    // Collect ptrs for each in-edge, drop lock, then read.
+    let mut candidates: Vec<(u32, MetaPointer)> = Vec::new();
     for item in &input {
         let vid = match item {
             GremlinResult::Vertex { id, .. } => *id,
             _ => continue,
         };
-        for (_eid, _source, ptr) in mi.adjacency.in_edges(vid) {
-            if let Ok(rec) = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset) {
-                if let Some(labels) = labels {
-                    if let Ok(Some(e)) = crud::read_edge_by_record(graph, &rec, at) {
-                        if !labels.iter().any(|l| e.labels.contains(l)) {
-                            continue;
-                        }
-                        results.push(GremlinResult::from_edge(&e, Some(&rec), None));
-                    }
-                } else if let Ok(Some(e)) = crud::read_edge_by_record(graph, &rec, at) {
-                    results.push(GremlinResult::from_edge(&e, Some(&rec), None));
-                }
+        for (eid, _source, _ptr) in mi.adjacency.in_edges(vid) {
+            if let Some(ptr) = mi.edges.get(*eid) {
+                candidates.push((*eid, *ptr));
             }
+        }
+    }
+    drop(mi);
+
+    let mut results = Vec::new();
+    for (eid, ptr) in candidates {
+        if let Some(labels) = labels {
+            if let Ok(Some(e)) = crud::read_edge_by_ptr(graph, ptr, at) {
+                if !labels.iter().any(|l| e.labels.contains(l)) {
+                    continue;
+                }
+                results.push(GremlinResult::from_edge(eid, &e, None));
+            }
+        } else if let Ok(Some(e)) = crud::read_edge_by_ptr(graph, ptr, at) {
+            results.push(GremlinResult::from_edge(eid, &e, None));
         }
     }
     Ok(results)
@@ -832,7 +1126,7 @@ fn step_values(
             .into_iter()
             .map(|r| match r {
                 GremlinResult::Vertex {
-                    id, name, labels, keywords, properties, score, rank, ..
+                    id, name, labels, keywords, properties, score, ..
                 } => {
                     let filtered: HashMap<String, PropertyValue> = properties
                         .into_iter()
@@ -846,11 +1140,10 @@ fn step_values(
                         keywords,
                         properties: filtered,
                         score,
-                        rank,
                     }
                 }
                 GremlinResult::Edge {
-                    id, name, labels, keywords, source, target, strength, properties, score, rank, ..
+                    id, name, labels, keywords, source, target, strength, properties, score, ..
                 } => {
                     let filtered: HashMap<String, PropertyValue> = properties
                         .into_iter()
@@ -867,7 +1160,6 @@ fn step_values(
                         strength,
                         properties: filtered,
                         score,
-                        rank,
                     }
                 }
                 other => other,
@@ -1023,7 +1315,45 @@ fn step_traverse(
         }
     }
 
-    // BFS-style activation spreading.
+    // Collect all adjacency edges reachable from seeds into local structures,
+    // along with edge ptrs+metas for strength lookups.
+    let mut adjacency_out: HashMap<u32, Vec<(u32, u32, MetaPointer)>> = HashMap::new();
+    let mut adjacency_in: HashMap<u32, Vec<(u32, u32, MetaPointer)>> = HashMap::new();
+    let mut edge_str_map: HashMap<u32, MetaPointer> = HashMap::new();
+
+    for &(vid, _) in &scored {
+        let out: Vec<(u32, u32, MetaPointer)> = mi.adjacency.out_edges(vid)
+            .iter().map(|&(eid, target, ptr)| (eid, target, ptr))
+            .collect();
+        if !out.is_empty() {
+            adjacency_out.insert(vid, out);
+        }
+        let inp: Vec<(u32, u32, MetaPointer)> = mi.adjacency.in_edges(vid)
+            .iter().map(|&(eid, source, ptr)| (eid, source, ptr))
+            .collect();
+        if !inp.is_empty() {
+            adjacency_in.insert(vid, inp);
+        }
+    }
+
+    // Collect edge ptrs for all reachable edges.
+    for (&eid, &ptr) in mi.edges.iter() {
+        edge_str_map.insert(eid, ptr);
+    }
+    drop(mi);
+
+    // Read all edge strengths.
+    let mut edge_strengths: HashMap<u32, f32> = HashMap::new();
+    for (&eid, &ptr) in &edge_str_map {
+        let strength = if let Ok(Some(epay)) = crud::read_edge_by_ptr(graph, ptr, at) {
+            epay.strength
+        } else {
+            1.0
+        };
+        edge_strengths.insert(eid, strength);
+    }
+
+    // BFS-style activation spreading using local adjacency data.
     let mut results: Vec<(u32, f32)> = scored.clone();
     let mut visited: std::collections::HashMap<u32, f32> = HashMap::new();
     for (id, score) in &scored {
@@ -1045,58 +1375,83 @@ fn step_traverse(
         }
 
         // Spread to outgoing neighbors via edges.
-        for (_eid, target, eptr) in mi.adjacency.out_edges(cur_id) {
-            if let Ok(erec) = graph.index_file.read_edge_record(eptr.block_idx, eptr.chunk_offset) {
-                let edge_strength = if let Ok(Some(epay)) = crud::read_edge_by_record(graph, &erec, at) {
-                    epay.strength
-                } else {
-                    1.0
-                };
+        let out_list: Vec<_> = adjacency_out.get(&cur_id).cloned().unwrap_or_default();
+        for &(eid, target, _eptr) in &out_list {
+            let edge_strength = edge_strengths.get(&eid).copied().unwrap_or(1.0);
+            let new_score = cur_score * decay * edge_strength;
+            if new_score < activate {
+                continue;
+            }
 
-                let new_score = cur_score * decay * edge_strength;
-                if new_score < activate {
-                    continue; // below propagation threshold
+            traversed_edges.push((cur_id, target, eid));
+
+            let prev = visited.entry(target).or_insert(0.0);
+            if new_score > *prev {
+                *prev = new_score;
+                if new_score >= min_score {
+                    results.push((target, new_score));
                 }
+                frontier.push((target, new_score, cur_depth + 1));
 
-                traversed_edges.push((cur_id, *target, *_eid));
-
-                let prev = visited.entry(*target).or_insert(0.0);
-                if new_score > *prev {
-                    *prev = new_score;
-                    if new_score >= min_score {
-                        results.push((*target, new_score));
+                // Collect adjacency for newly discovered vertex.
+                if !adjacency_out.contains_key(&target) {
+                    // Re-acquire mi temporarily to collect more adjacency.
+                    let mi2 = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+                    let out2: Vec<(u32, u32, MetaPointer)> = mi2.adjacency.out_edges(target)
+                        .iter().map(|&(e, t, p)| (e, t, p))
+                        .collect();
+                    if !out2.is_empty() {
+                        adjacency_out.insert(target, out2);
                     }
-                    frontier.push((*target, new_score, cur_depth + 1));
+                    let in2: Vec<(u32, u32, MetaPointer)> = mi2.adjacency.in_edges(target)
+                        .iter().map(|&(e, s, p)| (e, s, p))
+                        .collect();
+                    if !in2.is_empty() {
+                        adjacency_in.insert(target, in2);
+                    }
+                    drop(mi2);
                 }
             }
         }
 
         // Spread to incoming neighbors via edges.
-        for (_eid, source, eptr) in mi.adjacency.in_edges(cur_id) {
-            if let Ok(erec) = graph.index_file.read_edge_record(eptr.block_idx, eptr.chunk_offset) {
-                let edge_strength = if let Ok(Some(epay)) = crud::read_edge_by_record(graph, &erec, at) {
-                    epay.strength
-                } else {
-                    1.0
-                };
-
+        let in_list: Vec<_> = adjacency_in.get(&cur_id).cloned().unwrap_or_default();
+        for &(eid, source, _eptr) in &in_list {
+                let edge_strength = edge_strengths.get(&eid).copied().unwrap_or(1.0);
                 let new_score = cur_score * decay * edge_strength;
                 if new_score < activate {
                     continue;
                 }
 
-                traversed_edges.push((*source, cur_id, *_eid));
+                traversed_edges.push((source, cur_id, eid));
 
-                let prev = visited.entry(*source).or_insert(0.0);
+                let prev = visited.entry(source).or_insert(0.0);
                 if new_score > *prev {
                     *prev = new_score;
                     if new_score >= min_score {
-                        results.push((*source, new_score));
+                        results.push((source, new_score));
                     }
-                    frontier.push((*source, new_score, cur_depth + 1));
+                    frontier.push((source, new_score, cur_depth + 1));
+
+                    // Collect adjacency for newly discovered vertex.
+                    if !adjacency_out.contains_key(&source) {
+                        let mi2 = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+                        let out2: Vec<(u32, u32, MetaPointer)> = mi2.adjacency.out_edges(source)
+                            .iter().map(|&(e, t, p)| (e, t, p))
+                            .collect();
+                        if !out2.is_empty() {
+                            adjacency_out.insert(source, out2);
+                        }
+                        let in2: Vec<(u32, u32, MetaPointer)> = mi2.adjacency.in_edges(source)
+                            .iter().map(|&(e, s, p)| (e, s, p))
+                            .collect();
+                        if !in2.is_empty() {
+                            adjacency_in.insert(source, in2);
+                        }
+                        drop(mi2);
+                    }
                 }
             }
-        }
     }
 
     // Collect non-vertex results (edges from search) to preserve them.
@@ -1108,31 +1463,42 @@ fn step_traverse(
     results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     results.dedup_by_key(|(id, _)| *id);
 
-    for (vid, score) in results {
-        if let Some(ptr) = mi.vertices.get(vid) {
-            if let Ok(rec) = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset) {
-                if let Ok(Some(v)) = crud::read_vertex_by_record(graph, &rec, at) {
-                    gremlin_results.push(GremlinResult::from_vertex(&v, Some(&rec), Some(score)));
-                }
-            }
+    // Collect vertex ptrs and read vertices.
+    let mi3 = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+    let mut v_candidates: Vec<(u32, MetaPointer, f32)> = Vec::new();
+    for (vid, score) in &results {
+        if let Some(ptr) = mi3.vertices.get(*vid) {
+            v_candidates.push((*vid, *ptr, *score));
         }
     }
 
-    // Include traversed edges where both endpoint scores >= min_score.
+    // Collect edge candidates for traversed edges.
+    let mut e_candidates: Vec<(u32, u32, u32, MetaPointer)> = Vec::new();
     traversed_edges.sort();
     traversed_edges.dedup();
     for (src, tgt, eid) in &traversed_edges {
         let src_score = visited.get(src).copied().unwrap_or(0.0);
         let tgt_score = visited.get(tgt).copied().unwrap_or(0.0);
         if src_score >= min_score && tgt_score >= min_score {
-            if let Some(ptr) = mi.edges.get(*eid) {
-                if let Ok(rec) = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset) {
-                    if let Ok(Some(e)) = crud::read_edge_by_record(graph, &rec, at) {
-                        let edge_score = (src_score + tgt_score) / 2.0;
-                        gremlin_results.push(GremlinResult::from_edge(&e, Some(&rec), Some(edge_score)));
-                    }
-                }
+            if let Some(ptr) = mi3.edges.get(*eid) {
+                e_candidates.push((*src, *tgt, *eid, *ptr));
             }
+        }
+    }
+    drop(mi3);
+
+    for (vid, ptr, score) in v_candidates {
+        if let Ok(Some(v)) = crud::read_vertex_by_ptr(graph, ptr, at) {
+            gremlin_results.push(GremlinResult::from_vertex(vid, &v, Some(score)));
+        }
+    }
+
+    for (src, tgt, eid, ptr) in e_candidates {
+        let src_score = visited.get(&src).copied().unwrap_or(0.0);
+        let tgt_score = visited.get(&tgt).copied().unwrap_or(0.0);
+        if let Ok(Some(e)) = crud::read_edge_by_ptr(graph, ptr, at) {
+            let edge_score = (src_score + tgt_score) / 2.0;
+            gremlin_results.push(GremlinResult::from_edge(eid, &e, Some(edge_score)));
         }
     }
 
@@ -1155,28 +1521,27 @@ fn step_rank(
     if input.is_empty() {
         // Source mode: iterate rank index descending.
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-        let ptrs = mi.ranks.all_by_rank();
-        let mut results = Vec::new();
+        let ptrs = mi.ranks.top_pointers(limit, Some(min));
 
-        for &&ptr in ptrs.iter() {
+        let mut results = Vec::new();
+        for ptr in &ptrs {
             if results.len() >= limit {
                 break;
             }
-            // Try vertex first.
-            if let Ok(rec) = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset) {
-                if rec.rank >= min {
-                    if let Ok(Some(v)) = crud::read_vertex_by_record(graph, &rec, None) {
-                        results.push(GremlinResult::from_vertex(&v, Some(&rec), None));
-                        continue;
+            // Read DataHeader to determine entity type and id, and check rank.
+            if let Ok(dh) = read_header_by_ptr(graph, ptr) {
+                if dh.rank >= min {
+                    if matches!(dh.chunk_type, crate::storage::types::ChunkType::Vertex) {
+                        if let Ok(Some(v)) = crud::read_vertex_by_ptr(graph, *ptr, None) {
+                            results.push(GremlinResult::from_vertex(dh.entity_id, &v, None));
+                            continue;
+                        }
                     }
-                }
-            }
-            // Try edge.
-            if results.len() < limit {
-                if let Ok(rec) = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset) {
-                    if rec.rank >= min {
-                        if let Ok(Some(e)) = crud::read_edge_by_record(graph, &rec, None) {
-                            results.push(GremlinResult::from_edge(&e, Some(&rec), None));
+                    if results.len() < limit {
+                        if matches!(dh.chunk_type, crate::storage::types::ChunkType::Edge) {
+                            if let Ok(Some(e)) = crud::read_edge_by_ptr(graph, *ptr, None) {
+                                results.push(GremlinResult::from_edge(dh.entity_id, &e, None));
+                            }
                         }
                     }
                 }
@@ -1184,7 +1549,7 @@ fn step_rank(
         }
         Ok(results)
     } else {
-        // Filter mode: rank-sort existing results.
+        // Filter mode: rank-sort existing results by reading DataHeaders.
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
         let mut ranked: Vec<(u32, GremlinResult)> = Vec::new();
 
@@ -1194,18 +1559,19 @@ fn step_rank(
                 GremlinResult::Edge { id, .. } => id,
                 _ => continue,
             };
-            let rank = match &item {
-                GremlinResult::Vertex { .. } => {
-                    mi.vertices.get(id).and_then(|ptr| {
-                        graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset).ok()
-                    }).map(|r| r.rank).unwrap_or(0)
+            let ptr = match &item {
+                GremlinResult::Vertex { .. } => mi.vertices.get(id).copied(),
+                GremlinResult::Edge { .. } => mi.edges.get(id).copied(),
+                _ => None,
+            };
+            let rank = if let Some(ptr) = ptr {
+                if let Ok(dh) = read_header_by_ptr(graph, &ptr) {
+                    dh.rank
+                } else {
+                    0
                 }
-                GremlinResult::Edge { .. } => {
-                    mi.edges.get(id).and_then(|ptr| {
-                        graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset).ok()
-                    }).map(|r| r.rank).unwrap_or(0)
-                }
-                _ => 0,
+            } else {
+                0
             };
             if rank >= min {
                 ranked.push((rank, item));

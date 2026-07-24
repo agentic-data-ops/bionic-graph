@@ -19,7 +19,6 @@ pub mod block_allocator;
 pub mod block_cache;
 pub mod bitmap_file;
 pub mod data_file;
-pub mod index_file;
 pub mod memory_index;
 pub mod memory_index_builder;
 pub mod redo_log;

@@ -14,7 +14,6 @@ use crate::storage::types::{EdgePayload, HistoryRecord, PropertyValue, StorageRe
 
 #[derive(Serialize, Deserialize)]
 struct StoredVertex {
-    pub id: u32,
     pub name: String,
     pub labels: Vec<String>,
     pub keywords: Vec<String>,
@@ -24,7 +23,6 @@ struct StoredVertex {
 
 #[derive(Serialize, Deserialize)]
 struct StoredEdge {
-    pub id: u32,
     pub name: String,
     pub labels: Vec<String>,
     pub keywords: Vec<String>,
@@ -53,7 +51,6 @@ fn props_from_json(s: &str) -> HashMap<String, PropertyValue> {
 
 fn vertex_to_stored(v: &VertexPayload) -> StoredVertex {
     StoredVertex {
-        id: v.id,
         name: v.name.clone(),
         labels: v.labels.clone(),
         keywords: v.keywords.clone(),
@@ -67,7 +64,6 @@ fn vertex_to_stored(v: &VertexPayload) -> StoredVertex {
 
 fn stored_to_vertex(s: StoredVertex) -> VertexPayload {
     VertexPayload {
-        id: s.id,
         name: s.name,
         labels: s.labels,
         keywords: s.keywords,
@@ -81,7 +77,6 @@ fn stored_to_vertex(s: StoredVertex) -> VertexPayload {
 
 fn edge_to_stored(e: &EdgePayload) -> StoredEdge {
     StoredEdge {
-        id: e.id,
         name: e.name.clone(),
         labels: e.labels.clone(),
         keywords: e.keywords.clone(),
@@ -98,7 +93,6 @@ fn edge_to_stored(e: &EdgePayload) -> StoredEdge {
 
 fn stored_to_edge(s: StoredEdge) -> EdgePayload {
     EdgePayload {
-        id: s.id,
         name: s.name,
         labels: s.labels,
         keywords: s.keywords,

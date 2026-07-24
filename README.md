@@ -670,9 +670,8 @@ src/
 │   ├── block_allocator.rs     # Chunk-level allocator
 │   ├── block_cache.rs         # LRU cache with dirty tracking
 │   ├── redo_log.rs            # WAL: FIFO queue + batch writer, rotation, CRC32, replay
-│   ├── index_file.rs          # On-disk 64B record index
 │   ├── memory_index.rs        # In-memory BTreeMap/HashMap indexes
-│   └── memory_index_builder.rs # Index rebuild at startup
+│   └── memory_index_builder.rs # Index rebuild by scanning data file at startup
 ├── lock/                      # Concurrency lock manager
 │   └── lock_manager.rs        # Striped RwLock pools (parking_lot)
 ├── graph/                     # Graph engine

@@ -143,18 +143,12 @@ fn upsert_edge(
 }
 
 /// Build a name→vid map from the graph's current vertex data.
+///
+/// Uses the `vertex_names` B-tree (built at startup from data file scan)
+/// to avoid reading the full vertex data payload for each vertex.
 pub fn build_name_to_vid(graph: &Arc<Graph>) -> HashMap<String, u32> {
-    let mut map = HashMap::new();
-    let vids: Vec<u32> = {
-        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-        mi.vertices.keys().copied().collect()
-    };
-    for vid in vids {
-        if let Ok(Some(payload)) = crud::get_vertex(graph, vid) {
-            map.insert(payload.name, vid);
-        }
-    }
-    map
+    let mem = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+    mem.vertex_names.iter().map(|(k, v)| (k.clone(), *v)).collect()
 }
 
 /// Build an edge lookup keyed by (src_name, tgt_name, edge_name).
@@ -206,9 +200,10 @@ pub fn batch_import(
         name_to_vid = build_name_to_vid(graph);
         edge_key_to_eid = build_edge_lookup(graph, &name_to_vid);
     } else {
-        // Append mode: start fresh, always create new vertices/edges.
-        // Use only the name→vid mapping built during this batch.
-        name_to_vid = HashMap::new();
+        // Append mode: always create new vertices, but still load existing
+        // name→vid mapping so edges can reference vertices created in prior
+        // batches or separate batch_load calls.
+        name_to_vid = build_name_to_vid(graph);
         edge_key_to_eid = HashMap::new();
     }
 

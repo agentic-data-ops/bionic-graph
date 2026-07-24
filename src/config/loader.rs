@@ -153,14 +153,14 @@ mod tests {
         let parsed: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.server.port, 8080);
         assert_eq!(parsed.llm.default_model, "DeepSeek/deepseek-v4-flash");
-        assert_eq!(parsed.storage.data_dir, "data");
-        assert!(parsed.search.greedy.traverse);
-        assert_eq!(parsed.search.greedy.match_mode, "prefix");
-        assert!((parsed.search.greedy.activate - 0.2).abs() < 0.001);
-        assert!((parsed.search.greedy.decay - 0.95).abs() < 0.001);
-        assert_eq!(parsed.search.greedy.depth, 16);
-        assert!((parsed.search.greedy.score - 0.1).abs() < 0.001);
-        assert_eq!(parsed.search.exact.match_mode, "word");
+        assert_eq!(parsed.graph.storage.data_dir, "data");
+        assert!(parsed.graph.search.greedy.traverse);
+        assert_eq!(parsed.graph.search.greedy.match_mode, "prefix");
+        assert!((parsed.graph.search.greedy.activate - 0.2).abs() < 0.001);
+        assert!((parsed.graph.search.greedy.decay - 0.95).abs() < 0.001);
+        assert_eq!(parsed.graph.search.greedy.depth, 16);
+        assert!((parsed.graph.search.greedy.score - 0.1).abs() < 0.001);
+        assert_eq!(parsed.graph.search.exact.match_mode, "word");
     }
 
     #[test]
