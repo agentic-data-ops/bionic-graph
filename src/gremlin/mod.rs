@@ -496,7 +496,8 @@ pub async fn handle_update_vertex_meta(
 ) -> StatusCode {
     let new_rank = body.get("rank").and_then(|v| v.as_u64()).map(|v| v as u32);
     let new_atime = body.get("atime").and_then(|v| v.as_u64());
-    if new_rank.is_none() && new_atime.is_none() {
+    let new_name = body.get("name").and_then(|v| v.as_str());
+    if new_rank.is_none() && new_atime.is_none() && new_name.is_none() {
         return StatusCode::BAD_REQUEST;
     }
     let graph = match resolve_graph_from_request(&state, &headers) {
@@ -505,7 +506,7 @@ pub async fn handle_update_vertex_meta(
     };
     let _meta = graph.locks.read_metadata();
     let _vlock = graph.locks.write_vertex(id);
-    let result = crate::graph::crud::update_vertex_meta(&graph, id, new_rank, new_atime);
+    let result = crate::graph::crud::update_vertex_meta(&graph, id, new_rank, new_atime, new_name);
     drop(_vlock);
     drop(_meta);
     match result {
@@ -669,7 +670,8 @@ pub async fn handle_update_edge_meta(
 ) -> StatusCode {
     let new_rank = body.get("rank").and_then(|v| v.as_u64()).map(|v| v as u32);
     let new_atime = body.get("atime").and_then(|v| v.as_u64());
-    if new_rank.is_none() && new_atime.is_none() {
+    let new_name = body.get("name").and_then(|v| v.as_str());
+    if new_rank.is_none() && new_atime.is_none() && new_name.is_none() {
         return StatusCode::BAD_REQUEST;
     }
     let graph = match resolve_graph_from_request(&state, &headers) {
@@ -678,7 +680,7 @@ pub async fn handle_update_edge_meta(
     };
     let _meta = graph.locks.read_metadata();
     let _elock = graph.locks.write_edge(id);
-    let result = crate::graph::crud::update_edge_meta(&graph, id, new_rank, new_atime);
+    let result = crate::graph::crud::update_edge_meta(&graph, id, new_rank, new_atime, new_name);
     drop(_elock);
     drop(_meta);
     match result {

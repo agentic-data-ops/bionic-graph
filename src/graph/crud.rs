@@ -213,9 +213,9 @@ pub fn get_edge_index_record(graph: &Graph, eid: u32) -> StorageResult<Option<Ed
     Ok(Some(rec))
 }
 
-/// Update a vertex's metadata (rank and/or atime). Creates an IndexUpdate
+/// Update a vertex's metadata (rank, atime, and/or name). Creates an IndexUpdate
 /// redo log entry. If a field is `None`, its current value is preserved.
-pub fn update_vertex_meta(graph: &Graph, vid: u32, new_rank: Option<u32>, new_atime: Option<u64>) -> StorageResult<()> {
+pub fn update_vertex_meta(graph: &Graph, vid: u32, new_rank: Option<u32>, new_atime: Option<u64>, new_name: Option<&str>) -> StorageResult<()> {
     let ptr = {
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
         mi.vertices.get(vid).copied()
@@ -224,6 +224,7 @@ pub fn update_vertex_meta(graph: &Graph, vid: u32, new_rank: Option<u32>, new_at
     let mut rec = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset)?;
     let old_rank = rec.rank;
     let old_atime = rec.atime;
+    let name_changed = new_name.is_some();
 
     if let Some(r) = new_rank {
         rec.rank = r;
@@ -231,8 +232,11 @@ pub fn update_vertex_meta(graph: &Graph, vid: u32, new_rank: Option<u32>, new_at
     if let Some(a) = new_atime {
         rec.atime = a;
     }
+    if let Some(n) = new_name {
+        rec.set_name(n);
+    }
 
-    if rec.rank == old_rank && rec.atime == old_atime {
+    if rec.rank == old_rank && rec.atime == old_atime && !name_changed {
         return Ok(()); // nothing changed
     }
 
@@ -247,19 +251,23 @@ pub fn update_vertex_meta(graph: &Graph, vid: u32, new_rank: Option<u32>, new_at
         mi.atime_index.remove(old_atime, &ptr);
         mi.atime_index.insert(rec.atime, ptr);
     }
+    drop(mi);
 
-    // Write IndexUpdate redo log entry (always full rank+atime).
-    let mut data = Vec::with_capacity(12);
+    // Write IndexUpdate redo log entry: [rank:4][atime:8] + [name:64] if changed.
+    let mut data = Vec::with_capacity(76);
     data.extend_from_slice(&rec.rank.to_le_bytes());
     data.extend_from_slice(&rec.atime.to_le_bytes());
+    if name_changed {
+        data.extend_from_slice(&rec.name);
+    }
     graph.redo_log.append(OpType::VertexIndexUpdate, vid as u64, &data)?;
 
     Ok(())
 }
 
-/// Update an edge's metadata (rank and/or atime). Creates an IndexUpdate
+/// Update an edge's metadata (rank, atime, and/or name). Creates an IndexUpdate
 /// redo log entry. If a field is `None`, its current value is preserved.
-pub fn update_edge_meta(graph: &Graph, eid: u32, new_rank: Option<u32>, new_atime: Option<u64>) -> StorageResult<()> {
+pub fn update_edge_meta(graph: &Graph, eid: u32, new_rank: Option<u32>, new_atime: Option<u64>, new_name: Option<&str>) -> StorageResult<()> {
     let ptr = {
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
         mi.edges.get(eid).copied()
@@ -268,6 +276,7 @@ pub fn update_edge_meta(graph: &Graph, eid: u32, new_rank: Option<u32>, new_atim
     let mut rec = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset)?;
     let old_rank = rec.rank;
     let old_atime = rec.atime;
+    let name_changed = new_name.is_some();
 
     if let Some(r) = new_rank {
         rec.rank = r;
@@ -275,8 +284,11 @@ pub fn update_edge_meta(graph: &Graph, eid: u32, new_rank: Option<u32>, new_atim
     if let Some(a) = new_atime {
         rec.atime = a;
     }
+    if let Some(n) = new_name {
+        rec.set_name(n);
+    }
 
-    if rec.rank == old_rank && rec.atime == old_atime {
+    if rec.rank == old_rank && rec.atime == old_atime && !name_changed {
         return Ok(());
     }
 
@@ -291,10 +303,14 @@ pub fn update_edge_meta(graph: &Graph, eid: u32, new_rank: Option<u32>, new_atim
         mi.atime_index.remove(old_atime, &ptr);
         mi.atime_index.insert(rec.atime, ptr);
     }
+    drop(mi);
 
-    let mut data = Vec::with_capacity(12);
+    let mut data = Vec::with_capacity(76);
     data.extend_from_slice(&rec.rank.to_le_bytes());
     data.extend_from_slice(&rec.atime.to_le_bytes());
+    if name_changed {
+        data.extend_from_slice(&rec.name);
+    }
     graph.redo_log.append(OpType::EdgeIndexUpdate, eid as u64, &data)?;
 
     Ok(())
@@ -393,8 +409,13 @@ pub fn update_vertex(
     // Re-tokenize if relevant fields changed.
     tokenize_vertex(graph, vid, &new_payload, chunks_needed as u8)?;
 
-    // WAL.
+    // WAL: log data payload update.
     graph.redo_log.append(OpType::VertexUpdate, vid as u64, &padded_data)?;
+
+    // If name changed, log a separate IndexUpdate entry.
+    if name.is_some() {
+        update_vertex_meta(graph, vid, None, None, name)?;
+    }
 
     Ok(())
 }
@@ -481,6 +502,10 @@ pub fn update_edge(
 
     tokenize_edge(graph, eid, &new_payload, chunks_needed as u8)?;
     graph.redo_log.append(OpType::EdgeUpdate, eid as u64, &serialized)?;
+
+    if name.is_some() {
+        update_edge_meta(graph, eid, None, None, name)?;
+    }
 
     Ok(())
 }
@@ -651,10 +676,16 @@ pub fn replay_entry(graph: &Graph, entry: &RedoLogEntry) -> StorageResult<()> {
             }
         }
         OpType::VertexIndexUpdate => {
-            // data = [rank: u32 LE (4)] [atime: u64 LE (8)] — 12 bytes
+            // data = [rank: u32 LE (4)] [atime: u64 LE (8)] [+ name: [u8; 64] when present]
             if entry.data.len() >= 12 {
                 let new_rank = u32::from_le_bytes(entry.data[0..4].try_into().unwrap());
                 let new_atime = u64::from_le_bytes(entry.data[4..12].try_into().unwrap());
+                let new_name: Option<&str> = if entry.data.len() >= 76 {
+                    let end = entry.data[12..76].iter().position(|&b| b == 0).unwrap_or(64);
+                    Some(std::str::from_utf8(&entry.data[12..12+end]).unwrap_or(""))
+                } else {
+                    None
+                };
             // Drop read guard before write guard to avoid RwLock deadlock.
                 let found = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).vertices.get(entry.op_id as u32).copied();
                 if let Some(ptr) = found {
@@ -662,6 +693,9 @@ pub fn replay_entry(graph: &Graph, entry: &RedoLogEntry) -> StorageResult<()> {
                         let old_rank = rec.rank;
                         rec.rank = new_rank;
                         rec.atime = new_atime;
+                        if let Some(n) = new_name {
+                            rec.set_name(n);
+                        }
                         if let Ok(()) = graph.index_file.update_vertex_record(ptr.block_idx, ptr.chunk_offset, &rec) {
                             let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
                             mi.ranks.remove(old_rank, &ptr);
@@ -674,17 +708,25 @@ pub fn replay_entry(graph: &Graph, entry: &RedoLogEntry) -> StorageResult<()> {
             }
         }
         OpType::EdgeIndexUpdate => {
-            // data = [rank: u32 LE (4)] [atime: u64 LE (8)] — 12 bytes
+            // data = [rank: u32 LE (4)] [atime: u64 LE (8)] [+ name: [u8; 64] when present]
             if entry.data.len() >= 12 {
                 let new_rank = u32::from_le_bytes(entry.data[0..4].try_into().unwrap());
                 let new_atime = u64::from_le_bytes(entry.data[4..12].try_into().unwrap());
-                // Drop read guard before write guard to avoid RwLock deadlock.
+                let new_name: Option<&str> = if entry.data.len() >= 76 {
+                    let end = entry.data[12..76].iter().position(|&b| b == 0).unwrap_or(64);
+                    Some(std::str::from_utf8(&entry.data[12..12+end]).unwrap_or(""))
+                } else {
+                    None
+                };
                 let found = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).edges.get(entry.op_id as u32).copied();
                 if let Some(ptr) = found {
                     if let Ok(mut rec) = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset) {
                         let old_rank = rec.rank;
                         rec.rank = new_rank;
                         rec.atime = new_atime;
+                        if let Some(n) = new_name {
+                            rec.set_name(n);
+                        }
                         if let Ok(()) = graph.index_file.update_edge_record(ptr.block_idx, ptr.chunk_offset, &rec) {
                             let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
                             mi.ranks.remove(old_rank, &ptr);
