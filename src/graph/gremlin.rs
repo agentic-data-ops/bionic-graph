@@ -33,10 +33,16 @@ pub enum GremlinStep {
     #[serde(rename = "V")]
     V {
         ids: Option<Vec<u32>>,
+        /// Optional limit — when set, use rank index to fetch top-N vertices.
+        #[serde(default)]
+        limit: Option<u32>,
     },
     #[serde(rename = "E")]
     E {
         ids: Option<Vec<u32>>,
+        /// Optional limit — when set, use rank index to fetch top-N edges.
+        #[serde(default)]
+        limit: Option<u32>,
     },
     #[serde(rename = "has")]
     Has {
@@ -226,14 +232,105 @@ pub fn execute(
 
     let mut current: Vec<GremlinResult> = Vec::new();
 
-    for step in &query.steps {
-        current = match execute_step(graph, step, current, time_travel_at) {
-            Ok(results) => results,
-            Err(e) => return GremlinResponse::error(format!("Step error: {}", e)),
-        };
+    let steps = &query.steps;
+    let mut skip_next = false;
+    for (i, step) in steps.iter().enumerate() {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+
+        // Peek ahead optimizations for source steps (no input).
+        if current.is_empty() {
+            // Check if next step is Count → shortcut via memory index.
+            if let Some(next) = steps.get(i + 1) {
+                if matches!(next, GremlinStep::Count) {
+                    match step {
+                        GremlinStep::V { ids, .. } => {
+                            current = step_v_count(graph, ids.as_deref());
+                            skip_next = true;
+                            continue;
+                        }
+                        GremlinStep::E { ids, .. } => {
+                            current = step_e_count(graph, ids.as_deref());
+                            skip_next = true;
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            // Check if next step is Limit → propagate limit for early-break.
+            let peek_limit = match step {
+                GremlinStep::V { ids, limit } if ids.is_none() && limit.is_none() => {
+                    steps.get(i + 1).and_then(|next| {
+                        if let GremlinStep::Limit { count } = next {
+                            Some(*count)
+                        } else {
+                            None
+                        }
+                    })
+                }
+                GremlinStep::E { ids, limit } if ids.is_none() && limit.is_none() => {
+                    steps.get(i + 1).and_then(|next| {
+                        if let GremlinStep::Limit { count } = next {
+                            Some(*count)
+                        } else {
+                            None
+                        }
+                    })
+                }
+                _ => None,
+            };
+
+            let step = if let Some(limit) = peek_limit {
+                match step {
+                    GremlinStep::V { ids: _, limit: _ } => {
+                        &GremlinStep::V { ids: None, limit: Some(limit) }
+                    }
+                    GremlinStep::E { ids: _, limit: _ } => {
+                        &GremlinStep::E { ids: None, limit: Some(limit) }
+                    }
+                    _ => step,
+                }
+            } else {
+                step
+            };
+
+            current = match execute_step(graph, step, current, time_travel_at) {
+                Ok(results) => results,
+                Err(e) => return GremlinResponse::error(format!("Step error: {}", e)),
+            };
+        } else {
+            current = match execute_step(graph, step, current, time_travel_at) {
+                Ok(results) => results,
+                Err(e) => return GremlinResponse::error(format!("Step error: {}", e)),
+            };
+        }
     }
 
     GremlinResponse::success(current)
+}
+
+/// Optimized count for `V` — only reads from in-memory index, zero file I/O.
+fn step_v_count(graph: &Arc<Graph>, ids: Option<&[u32]>) -> Vec<GremlinResult> {
+    let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+    let count = match ids {
+        Some(ids) => ids.iter().filter(|id| mi.vertices.contains(**id)).count(),
+        None => mi.vertices.len(),
+    };
+    vec![GremlinResult::Count { count }]
+}
+
+/// Optimized count for `E` — only reads from in-memory index, zero file I/O.
+fn step_e_count(graph: &Arc<Graph>, ids: Option<&[u32]>) -> Vec<GremlinResult> {
+    let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+    let count = match ids {
+        Some(ids) => ids.iter().filter(|id| mi.edges.contains(**id)).count(),
+        None => mi.edges.len(),
+    };
+    vec![GremlinResult::Count { count }]
 }
 
 fn execute_step(
@@ -243,8 +340,8 @@ fn execute_step(
     time_travel_at: Option<u64>,
 ) -> StorageResult<Vec<GremlinResult>> {
     match step {
-        GremlinStep::V { ids } => step_v(graph, ids.as_deref(), time_travel_at),
-        GremlinStep::E { ids } => step_e(graph, ids.as_deref(), time_travel_at),
+        GremlinStep::V { ids, limit } => step_v(graph, ids.as_deref(), *limit, time_travel_at),
+        GremlinStep::E { ids, limit } => step_e(graph, ids.as_deref(), *limit, time_travel_at),
         GremlinStep::Search { text, mode, match_mode, limit, min_rank } => {
             step_search(graph, text, mode.as_deref(), match_mode.as_deref(), time_travel_at, *limit, *min_rank)
         }
@@ -278,18 +375,51 @@ fn execute_step(
 fn step_v(
     graph: &Arc<Graph>,
     ids: Option<&[u32]>,
+    limit: Option<u32>,
     at: Option<u64>,
 ) -> StorageResult<Vec<GremlinResult>> {
     let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
 
-    let iter: Vec<u32> = if let Some(ids) = ids {
-        ids.to_vec()
-    } else {
-        mi.vertices.keys().copied().collect()
-    };
+    if let Some(ids) = ids {
+        // Specific IDs requested — iterate them directly.
+        let mut results = Vec::with_capacity(ids.len());
+        for &vid in ids {
+            if let Some(ptr) = mi.vertices.get(vid) {
+                if let Ok(rec) = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset) {
+                    if let Ok(Some(v)) = crud::read_vertex_by_record(graph, &rec, at) {
+                        results.push(GremlinResult::from_vertex(&v, Some(&rec), None));
+                    }
+                }
+            }
+        }
+        return Ok(results);
+    }
 
-    let mut results = Vec::with_capacity(iter.len());
-    for vid in iter {
+    // No specific IDs — iterate by rank or full scan.
+    let limit = limit.unwrap_or(u32::MAX) as usize;
+
+    if limit < u32::MAX as usize {
+        // Use rank index descending to fetch top-N vertices.
+        let ptrs = mi.ranks.top_pointers(limit, None);
+        let mut results = Vec::with_capacity(limit.min(ptrs.len()));
+        for ptr in &ptrs {
+            // Try as vertex.
+            if let Ok(rec) = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset) {
+                if let Ok(Some(v)) = crud::read_vertex_by_record(graph, &rec, at) {
+                    results.push(GremlinResult::from_vertex(&v, Some(&rec), None));
+                    if results.len() >= limit {
+                        break;
+                    }
+                }
+            }
+        }
+        return Ok(results);
+    }
+
+    // Full scan (no practical limit) — iterate all vertices.
+    let ids: Vec<u32> = mi.vertices.keys().copied().collect();
+    let mut results = Vec::with_capacity(ids.len());
+    for vid in ids {
         if let Some(ptr) = mi.vertices.get(vid) {
             if let Ok(rec) = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset) {
                 if let Ok(Some(v)) = crud::read_vertex_by_record(graph, &rec, at) {
@@ -304,18 +434,51 @@ fn step_v(
 fn step_e(
     graph: &Arc<Graph>,
     ids: Option<&[u32]>,
+    limit: Option<u32>,
     at: Option<u64>,
 ) -> StorageResult<Vec<GremlinResult>> {
     let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
 
-    let iter: Vec<u32> = if let Some(ids) = ids {
-        ids.to_vec()
-    } else {
-        mi.edges.keys().copied().collect()
-    };
+    if let Some(ids) = ids {
+        // Specific IDs requested — iterate them directly.
+        let mut results = Vec::with_capacity(ids.len());
+        for &eid in ids {
+            if let Some(ptr) = mi.edges.get(eid) {
+                if let Ok(rec) = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset) {
+                    if let Ok(Some(e)) = crud::read_edge_by_record(graph, &rec, at) {
+                        results.push(GremlinResult::from_edge(&e, Some(&rec), None));
+                    }
+                }
+            }
+        }
+        return Ok(results);
+    }
 
-    let mut results = Vec::with_capacity(iter.len());
-    for eid in iter {
+    // No specific IDs — iterate by rank or full scan.
+    let limit = limit.unwrap_or(u32::MAX) as usize;
+
+    if limit < u32::MAX as usize {
+        // Use rank index descending to fetch top-N edges.
+        let ptrs = mi.ranks.top_pointers(limit, None);
+        let mut results = Vec::with_capacity(limit.min(ptrs.len()));
+        for ptr in &ptrs {
+            // Try as edge.
+            if let Ok(rec) = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset) {
+                if let Ok(Some(e)) = crud::read_edge_by_record(graph, &rec, at) {
+                    results.push(GremlinResult::from_edge(&e, Some(&rec), None));
+                    if results.len() >= limit {
+                        break;
+                    }
+                }
+            }
+        }
+        return Ok(results);
+    }
+
+    // Full scan (no practical limit) — iterate all edges.
+    let ids: Vec<u32> = mi.edges.keys().copied().collect();
+    let mut results = Vec::with_capacity(ids.len());
+    for eid in ids {
         if let Some(ptr) = mi.edges.get(eid) {
             if let Ok(rec) = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset) {
                 if let Ok(Some(e)) = crud::read_edge_by_record(graph, &rec, at) {
@@ -1155,7 +1318,7 @@ fn step_rank(
     if input.is_empty() {
         // Source mode: iterate rank index descending.
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-        let ptrs = mi.ranks.all_by_rank();
+        let ptrs = mi.ranks.top_pointers(limit, Some(min));
         let mut results = Vec::new();
 
         for &&ptr in ptrs.iter() {

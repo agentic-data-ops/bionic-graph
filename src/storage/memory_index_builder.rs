@@ -122,6 +122,9 @@ mod tests {
         idx.update_vertex_record(block, chunk, &deleted_rec).unwrap();
 
         let mem = build_memory_index(&idx).unwrap();
-        assert_eq!(mem.vertices.len(), 0);
+        // Deleted vertices are kept in the vertices index for time-travel support,
+        // but excluded from the rank and atime indexes.
+        assert_eq!(mem.vertices.len(), 1, "deleted vertex kept for time-travel");
+        assert_eq!(mem.ranks.len(), 0, "deleted vertex excluded from rank index");
     }
 }

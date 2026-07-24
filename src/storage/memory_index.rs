@@ -259,6 +259,27 @@ impl RankIndex {
         result
     }
 
+    /// Get up to `limit` pointers from the highest ranks.
+    /// Returns fewer than `limit` if there are fewer total pointers,
+    /// or if `max_rank` is set and no pointers meet the threshold.
+    pub fn top_pointers(&self, limit: usize, min_rank: Option<u32>) -> Vec<&IndexPointer> {
+        if limit == 0 {
+            return vec![];
+        }
+        let mut result = Vec::with_capacity(limit.min(128));
+        for (_rank, ptrs) in self.inner.iter().rev() {
+            for ptr in ptrs {
+                if result.len() >= limit {
+                    return result;
+                }
+                if min_rank.map_or(true, |mr| *_rank >= mr) {
+                    result.push(ptr);
+                }
+            }
+        }
+        result
+    }
+
     /// Number of distinct rank values.
     pub fn len(&self) -> usize {
         self.inner.len()

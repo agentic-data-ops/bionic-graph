@@ -1211,6 +1211,18 @@ fn read_data_payload(
     let padded = BlockAllocator::padded_length(data_len);
     let mut buf = vec![0u8; padded];
 
+    // Fast path: read lock — block may already be cached.
+    {
+        let cache = graph.block_cache.read().unwrap_or_else(|e| e.into_inner());
+        if let Some(block) = cache.peek(block_idx) {
+            let start = (chunk_offset as usize) * 64;
+            let end = start + padded.min(BLOCK_SIZE - start);
+            buf[..(end - start)].copy_from_slice(&block[start..end]);
+            return Ok(buf[..data_len].to_vec());
+        }
+    }
+
+    // Slow path: write lock — load from disk on cache miss.
     let mut cache = graph.block_cache.write().unwrap_or_else(|e| e.into_inner());
     let block = cache.get_or_load(block_idx, |idx| graph.data_file.read_block(idx), &|idx, data| {
         graph.data_file.write_block(idx, data).map_err(|e| e.into())
