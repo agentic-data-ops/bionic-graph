@@ -60,6 +60,7 @@ pub fn create_vertex(
     {
         let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
         mi.vertices.insert(vid, idx_ptr);
+        mi.vertex_names.insert(payload.name.clone(), idx_ptr);
         mi.ranks.insert(idx_rec.rank, idx_ptr);
     }
 
@@ -122,6 +123,7 @@ pub fn create_edge(
     {
         let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
         mi.edges.insert(eid, idx_ptr);
+        mi.edge_names.insert(payload.name.clone(), idx_ptr);
         mi.ranks.insert(idx_rec.rank, idx_ptr);
         mi.adjacency.add_edge(eid, source, target, idx_ptr);
     }
@@ -224,6 +226,7 @@ pub fn update_vertex_meta(graph: &Graph, vid: u32, new_rank: Option<u32>, new_at
     let mut rec = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset)?;
     let old_rank = rec.rank;
     let old_atime = rec.atime;
+    let old_name = rec.get_name().to_string();
     let name_changed = new_name.is_some();
 
     if let Some(r) = new_rank {
@@ -251,6 +254,12 @@ pub fn update_vertex_meta(graph: &Graph, vid: u32, new_rank: Option<u32>, new_at
         mi.atime_index.remove(old_atime, &ptr);
         mi.atime_index.insert(rec.atime, ptr);
     }
+    if name_changed {
+        if let Some(n) = new_name {
+            mi.vertex_names.remove(&old_name);
+            mi.vertex_names.insert(n.to_string(), ptr);
+        }
+    }
     drop(mi);
 
     // Write IndexUpdate redo log entry: [rank:4][atime:8] + [name:64] if changed.
@@ -276,6 +285,7 @@ pub fn update_edge_meta(graph: &Graph, eid: u32, new_rank: Option<u32>, new_atim
     let mut rec = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset)?;
     let old_rank = rec.rank;
     let old_atime = rec.atime;
+    let old_name = rec.get_name().to_string();
     let name_changed = new_name.is_some();
 
     if let Some(r) = new_rank {
@@ -302,6 +312,12 @@ pub fn update_edge_meta(graph: &Graph, eid: u32, new_rank: Option<u32>, new_atim
     if old_atime != rec.atime {
         mi.atime_index.remove(old_atime, &ptr);
         mi.atime_index.insert(rec.atime, ptr);
+    }
+    if name_changed {
+        if let Some(n) = new_name {
+            mi.edge_names.remove(&old_name);
+            mi.edge_names.insert(n.to_string(), ptr);
+        }
     }
     drop(mi);
 
@@ -393,13 +409,17 @@ pub fn update_vertex(
 
     graph.index_file.update_vertex_record(old_ptr.block_idx, old_ptr.chunk_offset, &new_rec)?;
 
-    // Update rank in memory index.
+    // Update rank and name in memory index.
     {
         let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
         mi.ranks.remove(old_rec.rank, &old_ptr);
         mi.ranks.insert(new_rec.rank, old_ptr);
         mi.atime_index.remove(old_rec.atime, &old_ptr);
         mi.atime_index.insert(new_rec.atime, old_ptr);
+        if let Some(n) = name {
+            mi.vertex_names.remove(&old_payload.name);
+            mi.vertex_names.insert(n.to_string(), old_ptr);
+        }
     }
 
     // Free old data chunks.
@@ -556,6 +576,8 @@ pub fn hard_delete_vertex(graph: &Graph, vid: u32) -> StorageResult<()> {
     // Remove from memory index.
     {
         let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+        let name = rec.get_name().to_string();
+        mi.vertex_names.remove(&name);
         mi.vertices.remove(vid);
         mi.ranks.remove(rec.rank, &ptr);
     }
@@ -605,6 +627,8 @@ pub fn hard_delete_edge(graph: &Graph, eid: u32) -> StorageResult<()> {
 
     {
         let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+        let name = rec.get_name().to_string();
+        mi.edge_names.remove(&name);
         mi.edges.remove(eid);
         mi.ranks.remove(rec.rank, &ptr);
         mi.adjacency.remove_edge(rec.source, rec.target, &ptr);
@@ -766,7 +790,8 @@ fn replay_create_vertex(graph: &Graph, payload: &VertexPayload, wal_data: &[u8])
     let (data_block, data_chunk_offset) = allocate_chunks(graph, chunks_needed)?;
     write_data_chunks(graph, data_block, data_chunk_offset, chunks_needed, &padded_data)?;
 
-    let idx_rec = VertexIndexRecord::new(payload.id, data_block, data_chunk_offset, data_len as u16);
+    let mut idx_rec = VertexIndexRecord::new(payload.id, data_block, data_chunk_offset, data_len as u16);
+    idx_rec.set_name(&payload.name);
     let (idx_block, idx_chunk) = {
         let mut buf = [0u8; 128];
         idx_rec.encode(&mut buf);
@@ -776,6 +801,7 @@ fn replay_create_vertex(graph: &Graph, payload: &VertexPayload, wal_data: &[u8])
 
     let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
     mi.vertices.insert(payload.id, idx_ptr);
+    mi.vertex_names.insert(payload.name.clone(), idx_ptr);
     mi.ranks.insert(idx_rec.rank, idx_ptr);
     drop(mi);
 
@@ -805,10 +831,11 @@ fn replay_create_edge(graph: &Graph, payload: &EdgePayload, wal_data: &[u8]) -> 
     let (data_block, data_chunk_offset) = allocate_chunks(graph, chunks_needed)?;
     write_data_chunks(graph, data_block, data_chunk_offset, chunks_needed, &padded_data)?;
 
-    let idx_rec = EdgeIndexRecord::new(
+    let mut idx_rec = EdgeIndexRecord::new(
         payload.id, payload.source, payload.target,
         data_block, data_chunk_offset, data_len as u16,
     );
+    idx_rec.set_name(&payload.name);
     let (idx_block, idx_chunk) = {
         let mut buf = [0u8; 128];
         idx_rec.encode(&mut buf);
@@ -818,6 +845,7 @@ fn replay_create_edge(graph: &Graph, payload: &EdgePayload, wal_data: &[u8]) -> 
 
     let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
     mi.edges.insert(payload.id, idx_ptr);
+    mi.edge_names.insert(payload.name.clone(), idx_ptr);
     mi.ranks.insert(idx_rec.rank, idx_ptr);
     mi.adjacency.add_edge(payload.id, payload.source, payload.target, idx_ptr);
     drop(mi);
