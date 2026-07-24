@@ -28,26 +28,31 @@ pub fn build_memory_index(idx_file: &IndexFile) -> StorageResult<MemoryIndex> {
 
         match chunk_type {
             ChunkType::Vertex => {
-                let rec = VertexIndexRecord::decode(data);
+                let buf: &[u8; 128] = data.try_into().map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "vertex record must be 128 bytes"))?;
+                let rec = VertexIndexRecord::decode(buf);
                 // Keep deleted vertices for time-travel traversal
                 mem.vertices.insert(rec.vertex_id, ptr);
+                mem.vertex_names.insert(rec.get_name().to_string(), ptr);
                 if rec.status != DataStatus::Deleted {
                     mem.ranks.insert(rec.rank, ptr);
                     mem.atime_index.insert(rec.atime, ptr);
                 }
             }
             ChunkType::Edge => {
-                let rec = EdgeIndexRecord::decode(data);
+                let buf: &[u8; 128] = data.try_into().map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "edge record must be 128 bytes"))?;
+                let rec = EdgeIndexRecord::decode(buf);
                 // Always add to adjacency and edges index (even deleted) for time-travel traversal
                 mem.adjacency.add_edge(rec.edge_id, rec.source, rec.target, ptr);
                 mem.edges.insert(rec.edge_id, ptr);
+                mem.edge_names.insert(rec.get_name().to_string(), ptr);
                 if rec.status != DataStatus::Deleted {
                     mem.ranks.insert(rec.rank, ptr);
                     mem.atime_index.insert(rec.atime, ptr);
                 }
             }
             ChunkType::Token => {
-                let rec = TokenIndexRecord::decode(data);
+                let buf: &[u8; 64] = data.try_into().map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "token record must be 64 bytes"))?;
+                let rec = TokenIndexRecord::decode(buf);
                 if rec.status != DataStatus::Deleted {
                     let token_str = rec.token_str().to_string();
                     if !token_str.is_empty() {
@@ -92,9 +97,9 @@ mod tests {
         // Insert some vertex records.
         for vid in 0..5 {
             let rec = VertexIndexRecord::new(vid, 0, 1, 64);
-            let mut buf = [0u8; 64];
+            let mut buf = [0u8; 128];
             rec.encode(&mut buf);
-            idx.alloc_record(&buf).unwrap();
+            idx.alloc_record_128(&buf).unwrap();
         }
 
         let mem = build_memory_index(&idx).unwrap();
@@ -112,9 +117,9 @@ mod tests {
 
         // Insert one record.
         let rec = VertexIndexRecord::new(1, 0, 1, 64);
-        let mut buf = [0u8; 64];
+        let mut buf = [0u8; 128];
         rec.encode(&mut buf);
-        let (block, chunk) = idx.alloc_record(&buf).unwrap();
+        let (block, chunk) = idx.alloc_record_128(&buf).unwrap();
 
         // Mark as deleted in the index record.
         let mut deleted_rec = rec.clone();

@@ -48,7 +48,7 @@ fn vertex_multiple() {
     let (g, _) = setup_graph();
     let a = crud::create_vertex(&g, "A", &[], &[], &HashMap::new()).unwrap();
     let b = crud::create_vertex(&g, "B", &[], &[], &HashMap::new()).unwrap();
-    let ids = vids(&run_steps(&g, vec![GremlinStep::V { ids: None, limit: None }]));
+    let ids = vids(&run_steps(&g, vec![GremlinStep::V { ids: None, names: None, limit: None }]));
     assert!(ids.contains(&a) && ids.contains(&b) && ids.len() == 2);
 }
 
@@ -126,14 +126,14 @@ fn gremlin_v_all() {
     let (g, _) = setup_graph();
     crud::create_vertex(&g, "A", &[], &[], &HashMap::new()).unwrap();
     crud::create_vertex(&g, "B", &[], &[], &HashMap::new()).unwrap();
-    assert_eq!(run_steps(&g, vec![GremlinStep::V { ids: None, limit: None }]).len(), 2);
+    assert_eq!(run_steps(&g, vec![GremlinStep::V { ids: None, names: None, limit: None }]).len(), 2);
 }
 
 #[test]
 fn gremlin_v_by_id() {
     let (g, _) = setup_graph();
     let vid = crud::create_vertex(&g, "A", &[], &[], &HashMap::new()).unwrap();
-    let r = run_steps(&g, vec![GremlinStep::V { ids: Some(vec![vid]), limit: None }]);
+    let r = run_steps(&g, vec![GremlinStep::V { ids: Some(vec![vid]), names: None, limit: None }]);
     assert_eq!(r.len(), 1);
 }
 
@@ -141,7 +141,7 @@ fn gremlin_v_by_id() {
 fn gremlin_count() {
     let (g, _) = setup_graph();
     crud::create_vertex(&g, "A", &[], &[], &HashMap::new()).unwrap();
-    let r = run_steps(&g, vec![GremlinStep::V { ids: None, limit: None }, GremlinStep::Count]);
+    let r = run_steps(&g, vec![GremlinStep::V { ids: None, names: None, limit: None }, GremlinStep::Count]);
     if let GremlinResult::Count { count } = &r[0] { assert_eq!(*count, 1); } else { panic!(); }
 }
 
@@ -151,7 +151,7 @@ fn gremlin_has_label() {
     crud::create_vertex(&g, "A", &["person".into()], &[], &HashMap::new()).unwrap();
     crud::create_vertex(&g, "B", &["animal".into()], &[], &HashMap::new()).unwrap();
     let r = run_steps(&g, vec![
-        GremlinStep::V { ids: None, limit: None },
+        GremlinStep::V { ids: None, names: None, limit: None },
         GremlinStep::HasLabel { label: "person".into() },
     ]);
     assert_eq!(r.len(), 1);
@@ -166,7 +166,7 @@ fn traversal_out() {
     let b = crud::create_vertex(&g, "B", &[], &[], &HashMap::new()).unwrap();
     crud::create_edge(&g, a, b, "e", &[], &[], 0.9, &HashMap::new()).unwrap();
     let ids = vids(&run_steps(&g, vec![
-        GremlinStep::V { ids: Some(vec![a]), limit: None },
+        GremlinStep::V { ids: Some(vec![a]), names: None, limit: None },
         GremlinStep::Out { depth: None, labels: None },
     ]));
     assert!(ids.contains(&b));
@@ -179,7 +179,7 @@ fn traversal_in() {
     let b = crud::create_vertex(&g, "B", &[], &[], &HashMap::new()).unwrap();
     crud::create_edge(&g, a, b, "e", &[], &[], 0.9, &HashMap::new()).unwrap();
     let ids = vids(&run_steps(&g, vec![
-        GremlinStep::V { ids: Some(vec![b]), limit: None },
+        GremlinStep::V { ids: Some(vec![b]), names: None, limit: None },
         GremlinStep::In { depth: None, labels: None },
     ]));
     assert!(ids.contains(&a));
@@ -192,7 +192,7 @@ fn traversal_expand() {
     let b = crud::create_vertex(&g, "B", &[], &[], &HashMap::new()).unwrap();
     crud::create_edge(&g, a, b, "e", &[], &[], 0.9, &HashMap::new()).unwrap();
     let r = run_steps(&g, vec![
-        GremlinStep::V { ids: Some(vec![a]), limit: None },
+        GremlinStep::V { ids: Some(vec![a]), names: None, limit: None },
         GremlinStep::Expand { depth: None, label: None },
     ]);
     assert!(vids(&r).contains(&a) && vids(&r).contains(&b));
@@ -248,7 +248,7 @@ fn activate_basic() {
     let b = crud::create_vertex(&g, "B", &[], &[], &HashMap::new()).unwrap();
     crud::create_edge(&g, a, b, "e", &[], &[], 0.8, &HashMap::new()).unwrap();
     let r = run_steps(&g, vec![
-        GremlinStep::V { ids: Some(vec![a]), limit: None },
+        GremlinStep::V { ids: Some(vec![a]), names: None, limit: None },
         GremlinStep::Traverse { decay: Some(1.0), activate: Some(0.0), max_depth: Some(1), min_score: Some(0.0) },
     ]);
     assert_eq!(vids(&r).len(), 2, "A + B");
@@ -263,11 +263,11 @@ fn activate_depth() {
     crud::create_edge(&g, a, b, "e", &[], &[], 0.8, &HashMap::new()).unwrap();
     crud::create_edge(&g, b, c, "e", &[], &[], 0.6, &HashMap::new()).unwrap();
     assert_eq!(vids(&run_steps(&g, vec![
-        GremlinStep::V { ids: Some(vec![a]), limit: None },
+        GremlinStep::V { ids: Some(vec![a]), names: None, limit: None },
         GremlinStep::Traverse { decay: Some(1.0), activate: Some(0.0), max_depth: Some(1), min_score: Some(0.0) },
     ])).len(), 2, "depth=1: A+B");
     assert_eq!(vids(&run_steps(&g, vec![
-        GremlinStep::V { ids: Some(vec![a]), limit: None },
+        GremlinStep::V { ids: Some(vec![a]), names: None, limit: None },
         GremlinStep::Traverse { decay: Some(1.0), activate: Some(0.0), max_depth: Some(2), min_score: Some(0.0) },
     ])).len(), 3, "depth=2: A+B+C");
 }
@@ -279,7 +279,7 @@ fn activate_min_score() {
     let b = crud::create_vertex(&g, "B", &[], &[], &HashMap::new()).unwrap();
     crud::create_edge(&g, a, b, "e", &[], &[], 0.5, &HashMap::new()).unwrap();
     let r = run_steps(&g, vec![
-        GremlinStep::V { ids: Some(vec![a]), limit: None },
+        GremlinStep::V { ids: Some(vec![a]), names: None, limit: None },
         GremlinStep::Traverse { decay: Some(1.0), activate: Some(0.0), max_depth: Some(1), min_score: Some(0.6) },
     ]);
     assert_eq!(vids(&r).len(), 1, "B score=0.5 should be filtered by min_score=0.6");
@@ -299,7 +299,7 @@ fn data_persistence() {
     }
     {
         let g = Graph::open(dir.path(), "test").unwrap();
-        let r = run_steps(&g, vec![GremlinStep::V { ids: None, limit: None }]);
+        let r = run_steps(&g, vec![GremlinStep::V { ids: None, names: None, limit: None }]);
         assert_eq!(r.len(), 1);
         if let GremlinResult::Vertex { name, properties, .. } = &r[0] {
             assert_eq!(name, "Alice");

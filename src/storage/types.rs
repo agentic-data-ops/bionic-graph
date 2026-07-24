@@ -217,6 +217,8 @@ pub enum PropertyValue {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct VertexPayload {
     pub id: u32,
+    /// In-memory only; not serialized. Stored in the index record.
+    #[serde(skip)]
     pub name: String,
     pub labels: Vec<String>,
     pub keywords: Vec<String>,
@@ -228,7 +230,8 @@ pub struct VertexPayload {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EdgePayload {
     pub id: u32,
-    /// Relationship name between source and target (e.g. "knows", "works_at").
+    /// In-memory only; not serialized. Stored in the index record.
+    #[serde(skip)]
     pub name: String,
     /// Relation type labels (e.g. "social", "professional").
     pub labels: Vec<String>,

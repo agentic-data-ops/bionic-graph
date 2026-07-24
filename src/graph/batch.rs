@@ -143,15 +143,15 @@ fn upsert_edge(
 }
 
 /// Build a name→vid map from the graph's current vertex data.
+///
+/// Uses the `vertex_names` B-tree (built at startup from the index file)
+/// to avoid reading the full vertex data payload for each vertex.
 pub fn build_name_to_vid(graph: &Arc<Graph>) -> HashMap<String, u32> {
     let mut map = HashMap::new();
-    let vids: Vec<u32> = {
-        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-        mi.vertices.keys().copied().collect()
-    };
-    for vid in vids {
-        if let Ok(Some(payload)) = crud::get_vertex(graph, vid) {
-            map.insert(payload.name, vid);
+    let mem = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+    for (name, ptr) in &mem.vertex_names {
+        if let Ok(rec) = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset) {
+            map.insert(name.clone(), rec.vertex_id);
         }
     }
     map

@@ -419,6 +419,10 @@ pub struct MemoryIndex {
     /// ref_type: 0=vertex, 1=edge. Built at startup from token scan and maintained
     /// incrementally by add_token() / remove_entity_token_refs().
     pub entity_tokens: HashMap<(u8, u32), Vec<String>>,
+    /// Name → vertex pointer lookup (built at startup).
+    pub vertex_names: BTreeMap<String, IndexPointer>,
+    /// Name → edge pointer lookup (built at startup).
+    pub edge_names: BTreeMap<String, IndexPointer>,
 }
 
 impl MemoryIndex {
@@ -446,5 +450,23 @@ impl MemoryIndex {
     /// Returns the list of token strings that were referencing it.
     pub fn remove_entity_token_refs(&mut self, ref_type: u8, ref_id: u32) -> Vec<String> {
         self.entity_tokens.remove(&(ref_type, ref_id)).unwrap_or_default()
+    }
+
+    /// Look up a vertex pointer by name, returning the vertex ID.
+    pub fn get_vertex_id_by_name(&self, name: &str) -> Option<u32> {
+        let ptr = self.vertex_names.get(name)?;
+        self.vertices
+            .iter()
+            .find(|(_, p)| *p == ptr)
+            .map(|(id, _)| *id)
+    }
+
+    /// Look up an edge pointer by name, returning the edge ID.
+    pub fn get_edge_id_by_name(&self, name: &str) -> Option<u32> {
+        let ptr = self.edge_names.get(name)?;
+        self.edges
+            .iter()
+            .find(|(_, p)| *p == ptr)
+            .map(|(id, _)| *id)
     }
 }

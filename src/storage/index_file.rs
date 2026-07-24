@@ -24,7 +24,13 @@ use crate::storage::types::{
 
 // ── Fixed-size index records (each exactly 64 bytes = 1 chunk) ───────────────
 
-/// Index record for a vertex (64 bytes).
+/// Fixed-size index records (vertex/edge = 128 bytes = 2 chunks, token = 64 bytes = 1 chunk).
+///
+/// Vertex/edge records span two consecutive 64-byte chunks:
+///   - Chunk 0: existing compact fields (same layout as before)
+///   - Chunk 1: name (64 bytes, null-terminated)
+
+/// Index record for a vertex (128 bytes = 2 chunks).
 #[derive(Clone, Debug, PartialEq)]
 pub struct VertexIndexRecord {
     pub chunk_type: ChunkType,
@@ -38,7 +44,12 @@ pub struct VertexIndexRecord {
     pub mtime: u64,
     pub atime: u64,
     pub rank: u32,
+    /// 64-byte null-terminated name. Truncated if > 63 bytes.
+    pub name: [u8; 64],
 }
+
+/// Number of chunks used by vertex/edge index records.
+pub const INDEX_RECORD_CHUNKS: u8 = 2;
 
 impl VertexIndexRecord {
     pub fn new(vertex_id: u32, data_block_idx: u32, data_chunk_offset: u8, data_len: u16) -> Self {
@@ -55,10 +66,29 @@ impl VertexIndexRecord {
             mtime: now,
             atime: now,
             rank: 1,
+            name: [0u8; 64],
         }
     }
 
-    pub fn encode(&self, buf: &mut [u8; 64]) {
+    /// Set the name field from a string (truncates to 63 bytes + NUL).
+    pub fn set_name(&mut self, name: &str) {
+        let mut buf = [0u8; 64];
+        let bytes = name.as_bytes();
+        let len = bytes.len().min(63);
+        buf[..len].copy_from_slice(&bytes[..len]);
+        self.name = buf;
+    }
+
+    /// Get the name as a string (up to null terminator).
+    pub fn get_name(&self) -> &str {
+        let end = self.name.iter().position(|&b| b == 0).unwrap_or(64);
+        std::str::from_utf8(&self.name[..end]).unwrap_or("")
+    }
+
+    /// Encode into two consecutive 64-byte chunks.
+    /// `buf` must be exactly 128 bytes.
+    pub fn encode(&self, buf: &mut [u8; 128]) {
+        // Chunk 0: compact fields (same layout as before)
         buf[0] = self.chunk_type as u8;
         buf[1..5].copy_from_slice(&self.vertex_id.to_le_bytes());
         buf[5..9].copy_from_slice(&self.data_block_idx.to_le_bytes());
@@ -70,9 +100,15 @@ impl VertexIndexRecord {
         buf[23..31].copy_from_slice(&self.mtime.to_le_bytes());
         buf[31..39].copy_from_slice(&self.atime.to_le_bytes());
         buf[39..43].copy_from_slice(&self.rank.to_le_bytes());
+        // Chunk 1: name
+        buf[64..128].copy_from_slice(&self.name);
     }
 
-    pub fn decode(buf: &[u8; 64]) -> Self {
+    /// Decode from two consecutive 64-byte chunks.
+    /// `buf` must be exactly 128 bytes.
+    pub fn decode(buf: &[u8; 128]) -> Self {
+        let mut name = [0u8; 64];
+        name.copy_from_slice(&buf[64..128]);
         Self {
             chunk_type: ChunkType::from(buf[0]),
             vertex_id: u32::from_le_bytes(buf[1..5].try_into().unwrap()),
@@ -85,6 +121,7 @@ impl VertexIndexRecord {
             mtime: u64::from_le_bytes(buf[23..31].try_into().unwrap()),
             atime: u64::from_le_bytes(buf[31..39].try_into().unwrap()),
             rank: u32::from_le_bytes(buf[39..43].try_into().unwrap()),
+            name,
         }
     }
 
@@ -94,7 +131,7 @@ impl VertexIndexRecord {
     }
 }
 
-/// Index record for an edge (64 bytes).
+/// Index record for an edge (128 bytes = 2 chunks).
 #[derive(Clone, Debug, PartialEq)]
 pub struct EdgeIndexRecord {
     pub chunk_type: ChunkType,
@@ -110,6 +147,8 @@ pub struct EdgeIndexRecord {
     pub rank: u32,
     pub source: u32,
     pub target: u32,
+    /// 64-byte null-terminated name. Truncated if > 63 bytes.
+    pub name: [u8; 64],
 }
 
 impl EdgeIndexRecord {
@@ -136,10 +175,26 @@ impl EdgeIndexRecord {
             rank: 1,
             source,
             target,
+            name: [0u8; 64],
         }
     }
 
-    pub fn encode(&self, buf: &mut [u8; 64]) {
+    /// Set the name field from a string (truncates to 63 bytes + NUL).
+    pub fn set_name(&mut self, name: &str) {
+        let mut buf = [0u8; 64];
+        let bytes = name.as_bytes();
+        let len = bytes.len().min(63);
+        buf[..len].copy_from_slice(&bytes[..len]);
+        self.name = buf;
+    }
+
+    /// Get the name as a string (up to null terminator).
+    pub fn get_name(&self) -> &str {
+        let end = self.name.iter().position(|&b| b == 0).unwrap_or(64);
+        std::str::from_utf8(&self.name[..end]).unwrap_or("")
+    }
+
+    pub fn encode(&self, buf: &mut [u8; 128]) {
         buf[0] = self.chunk_type as u8;
         buf[1..5].copy_from_slice(&self.edge_id.to_le_bytes());
         buf[5..9].copy_from_slice(&self.data_block_idx.to_le_bytes());
@@ -153,9 +208,13 @@ impl EdgeIndexRecord {
         buf[39..43].copy_from_slice(&self.rank.to_le_bytes());
         buf[43..47].copy_from_slice(&self.source.to_le_bytes());
         buf[47..51].copy_from_slice(&self.target.to_le_bytes());
+        // Chunk 1: name
+        buf[64..128].copy_from_slice(&self.name);
     }
 
-    pub fn decode(buf: &[u8; 64]) -> Self {
+    pub fn decode(buf: &[u8; 128]) -> Self {
+        let mut name = [0u8; 64];
+        name.copy_from_slice(&buf[64..128]);
         Self {
             chunk_type: ChunkType::from(buf[0]),
             edge_id: u32::from_le_bytes(buf[1..5].try_into().unwrap()),
@@ -170,6 +229,7 @@ impl EdgeIndexRecord {
             rank: u32::from_le_bytes(buf[39..43].try_into().unwrap()),
             source: u32::from_le_bytes(buf[43..47].try_into().unwrap()),
             target: u32::from_le_bytes(buf[47..51].try_into().unwrap()),
+            name,
         }
     }
 
@@ -285,6 +345,17 @@ impl IndexFile {
     /// Allocate a new index record (any type). Writes the 64-byte `record`
     /// into a free chunk and returns its location.
     pub fn alloc_record(&self, record: &[u8; 64]) -> StorageResult<(BlockIdx, ChunkOffset)> {
+        self.alloc_chunks(1, record)
+    }
+
+    /// Allocate a multi-chunk (128-byte) index record across 2 consecutive chunks.
+    /// `record` must be exactly 128 bytes.
+    pub fn alloc_record_128(&self, record: &[u8; 128]) -> StorageResult<(BlockIdx, ChunkOffset)> {
+        self.alloc_chunks(2, record)
+    }
+
+    /// Allocate `num_chunks` consecutive chunks and write `data`.
+    fn alloc_chunks(&self, num_chunks: u8, data: &[u8]) -> StorageResult<(BlockIdx, ChunkOffset)> {
         let mut file = self.file.lock().unwrap();
         let count = self.block_count();
 
@@ -294,18 +365,20 @@ impl IndexFile {
             self.block_count.store(1, std::sync::atomic::Ordering::Relaxed);
         }
 
-        // Scan blocks from end to find a free chunk.
+        let data_len = (num_chunks as usize) * 64;
+
+        // Scan blocks from end to find free chunks.
         let total = self.block_count();
         for scan_idx in (0..total).rev() {
             let idx = scan_idx as u32;
             let mut block = Self::read_block(&file, idx)?;
             let mut header = BlockHeader::decode(&block);
 
-            if let Some(chunk_off) = BlockAllocator::alloc_chunks(&mut header.bitmap, 1) {
-                // Found free space — write header + record.
+            if let Some(chunk_off) = BlockAllocator::alloc_chunks(&mut header.bitmap, num_chunks) {
+                // Found free space — write header + data.
                 header.encode(&mut block);
                 let start = (chunk_off as usize) * 64;
-                block[start..start + 64].copy_from_slice(record);
+                block[start..start + data_len].copy_from_slice(data);
                 Self::write_block(&mut file, idx, &block)?;
                 return Ok((idx, chunk_off));
             }
@@ -316,25 +389,46 @@ impl IndexFile {
         self.block_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut block = Self::read_block(&file, idx)?;
         let mut header = BlockHeader::decode(&block);
-        let chunk_off = BlockAllocator::alloc_chunks(&mut header.bitmap, 1)
+        let chunk_off = BlockAllocator::alloc_chunks(&mut header.bitmap, num_chunks)
             .expect("fresh block must have free chunks");
         header.encode(&mut block);
         let start = (chunk_off as usize) * 64;
-        block[start..start + 64].copy_from_slice(record);
+        block[start..start + data_len].copy_from_slice(data);
         Self::write_block(&mut file, idx, &block)?;
         Ok((idx, chunk_off))
     }
 
     // ── Read ─────────────────────────────────────────────────────────────────
 
+    /// Read a 64-byte chunk.
+    fn read_chunk(&self, block_idx: BlockIdx, chunk_offset: ChunkOffset) -> StorageResult<[u8; 64]> {
+        let file = self.file.lock().unwrap();
+        let block = Self::read_block(&file, block_idx)?;
+        let start = (chunk_offset as usize) * 64;
+        let mut chunk = [0u8; 64];
+        chunk.copy_from_slice(&block[start..start + 64]);
+        Ok(chunk)
+    }
+
+    /// Read a 128-byte (2-chunk) record starting at `chunk_offset`.
+    fn read_chunk2(&self, block_idx: BlockIdx, chunk_offset: ChunkOffset) -> StorageResult<[u8; 128]> {
+        let file = self.file.lock().unwrap();
+        let block = Self::read_block(&file, block_idx)?;
+        let start = (chunk_offset as usize) * 64;
+        let mut buf = [0u8; 128];
+        buf[..64].copy_from_slice(&block[start..start + 64]);
+        buf[64..128].copy_from_slice(&block[start + 64..start + 128]);
+        Ok(buf)
+    }
+
     pub fn read_vertex_record(&self, block_idx: BlockIdx, chunk_offset: ChunkOffset) -> StorageResult<VertexIndexRecord> {
-        let chunk = self.read_chunk(block_idx, chunk_offset)?;
-        Ok(VertexIndexRecord::decode(&chunk))
+        let buf = self.read_chunk2(block_idx, chunk_offset)?;
+        Ok(VertexIndexRecord::decode(&buf))
     }
 
     pub fn read_edge_record(&self, block_idx: BlockIdx, chunk_offset: ChunkOffset) -> StorageResult<EdgeIndexRecord> {
-        let chunk = self.read_chunk(block_idx, chunk_offset)?;
-        Ok(EdgeIndexRecord::decode(&chunk))
+        let buf = self.read_chunk2(block_idx, chunk_offset)?;
+        Ok(EdgeIndexRecord::decode(&buf))
     }
 
     pub fn read_token_record(&self, block_idx: BlockIdx, chunk_offset: ChunkOffset) -> StorageResult<TokenIndexRecord> {
@@ -345,15 +439,15 @@ impl IndexFile {
     // ── Update ────────────────────────────────────────────────────────────────
 
     pub fn update_vertex_record(&self, block_idx: BlockIdx, chunk_offset: ChunkOffset, record: &VertexIndexRecord) -> StorageResult<()> {
-        let mut chunk = [0u8; 64];
-        record.encode(&mut chunk);
-        self.write_chunk(block_idx, chunk_offset, &chunk)
+        let mut buf = [0u8; 128];
+        record.encode(&mut buf);
+        self.write_chunks(block_idx, chunk_offset, &buf)
     }
 
     pub fn update_edge_record(&self, block_idx: BlockIdx, chunk_offset: ChunkOffset, record: &EdgeIndexRecord) -> StorageResult<()> {
-        let mut chunk = [0u8; 64];
-        record.encode(&mut chunk);
-        self.write_chunk(block_idx, chunk_offset, &chunk)
+        let mut buf = [0u8; 128];
+        record.encode(&mut buf);
+        self.write_chunks(block_idx, chunk_offset, &buf)
     }
 
     pub fn update_token_record(&self, block_idx: BlockIdx, chunk_offset: ChunkOffset, record: &TokenIndexRecord) -> StorageResult<()> {
@@ -372,9 +466,11 @@ impl IndexFile {
     // ── Scan (for index rebuild at startup) ──────────────────────────────────
 
     /// Iterate over all non-empty index records, calling `visitor` for each.
+    /// For vertex/edge records (2 chunks), passes a 128-byte slice.
+    /// For token records (1 chunk), passes a 64-byte slice.
     pub fn scan<F>(&self, mut visitor: F) -> StorageResult<()>
     where
-        F: FnMut(BlockIdx, ChunkOffset, &[u8; 64]) -> StorageResult<()>,
+        F: FnMut(BlockIdx, ChunkOffset, &[u8]) -> StorageResult<()>,
     {
         let file = self.file.lock().unwrap();
         let count = self.block_count();
@@ -383,17 +479,33 @@ impl IndexFile {
             let block = Self::read_block(&file, block_idx)?;
             let header = BlockHeader::decode(&block);
 
-            for chunk_off in 1u8..=255u8 {
+            let mut chunk_off: u16 = 1;
+            while chunk_off <= 255u16 {
                 let bit_pos = chunk_off as usize;
                 if (header.bitmap[bit_pos / 8] & (1 << (bit_pos % 8))) == 0 {
+                    chunk_off += 1;
                     continue;
                 }
                 let start = (chunk_off as usize) * 64;
                 let chunk_type = block[start];
-                if chunk_type != 0x00 {
+                if chunk_type == 0x00 {
+                    chunk_off += 1;
+                    continue;
+                }
+
+                if (chunk_type == ChunkType::Vertex as u8 || chunk_type == ChunkType::Edge as u8) && chunk_off < 255 {
+                    // 2-chunk record: read 128 bytes
+                    let mut buf = [0u8; 128];
+                    buf[..64].copy_from_slice(&block[start..start + 64]);
+                    buf[64..128].copy_from_slice(&block[start + 64..start + 128]);
+                    visitor(block_idx, chunk_off as u8, &buf)?;
+                    chunk_off += 2;
+                } else {
+                    // 1-chunk record (token)
                     let mut chunk = [0u8; 64];
                     chunk.copy_from_slice(&block[start..start + 64]);
-                    visitor(block_idx, chunk_off, &chunk)?;
+                    visitor(block_idx, chunk_off as u8, &chunk)?;
+                    chunk_off += 1;
                 }
             }
         }
@@ -416,20 +528,22 @@ impl IndexFile {
 
     // ── Internal helpers ─────────────────────────────────────────────────────
 
-    fn read_chunk(&self, block_idx: BlockIdx, chunk_offset: ChunkOffset) -> StorageResult<[u8; 64]> {
-        let file = self.file.lock().unwrap();
-        let block = Self::read_block(&file, block_idx)?;
-        let start = (chunk_offset as usize) * 64;
-        let mut chunk = [0u8; 64];
-        chunk.copy_from_slice(&block[start..start + 64]);
-        Ok(chunk)
-    }
-
+    /// Write a single 64-byte chunk.
     fn write_chunk(&self, block_idx: BlockIdx, chunk_offset: ChunkOffset, data: &[u8; 64]) -> StorageResult<()> {
         let mut file = self.file.lock().unwrap();
         let mut block = Self::read_block(&file, block_idx)?;
         let start = (chunk_offset as usize) * 64;
         block[start..start + 64].copy_from_slice(data);
+        Self::write_block(&mut file, block_idx, &block)?;
+        Ok(())
+    }
+
+    /// Write a 128-byte (2-chunk) record starting at `chunk_offset`.
+    fn write_chunks(&self, block_idx: BlockIdx, chunk_offset: ChunkOffset, data: &[u8; 128]) -> StorageResult<()> {
+        let mut file = self.file.lock().unwrap();
+        let mut block = Self::read_block(&file, block_idx)?;
+        let start = (chunk_offset as usize) * 64;
+        block[start..start + 128].copy_from_slice(data);
         Self::write_block(&mut file, block_idx, &block)?;
         Ok(())
     }
@@ -498,8 +612,8 @@ mod tests {
         let idx = IndexFile::open(&path).unwrap();
 
         let rec = VertexIndexRecord::new(42, 7, 3, 128);
-        let (block, chunk) = idx.alloc_record(&{
-            let mut buf = [0u8; 64];
+        let (block, chunk) = idx.alloc_record_128(&{
+            let mut buf = [0u8; 128];
             rec.encode(&mut buf);
             buf
         }).unwrap();
@@ -519,8 +633,8 @@ mod tests {
         let idx = IndexFile::open(&path).unwrap();
 
         let rec = EdgeIndexRecord::new(100, 1, 2, 0, 1, 64);
-        let (block, chunk) = idx.alloc_record(&{
-            let mut buf = [0u8; 64];
+        let (block, chunk) = idx.alloc_record_128(&{
+            let mut buf = [0u8; 128];
             rec.encode(&mut buf);
             buf
         }).unwrap();
@@ -558,15 +672,16 @@ mod tests {
         // Insert three vertex records.
         for vid in 0..3 {
             let rec = VertexIndexRecord::new(vid, 0, 1, 64);
-            let mut buf = [0u8; 64];
+            let mut buf = [0u8; 128];
             rec.encode(&mut buf);
-            idx.alloc_record(&buf).unwrap();
+            idx.alloc_record_128(&buf).unwrap();
         }
 
         let mut count = 0;
         idx.scan(|_block, _chunk, data| {
             if data[0] == ChunkType::Vertex as u8 {
-                let rec = VertexIndexRecord::decode(data);
+                let buf: &[u8; 128] = data.try_into().unwrap();
+                let rec = VertexIndexRecord::decode(buf);
                 assert_eq!(rec.vertex_id, count);
                 count += 1;
             }
@@ -582,9 +697,9 @@ mod tests {
         let idx = IndexFile::open(&path).unwrap();
 
         let rec = VertexIndexRecord::new(1, 0, 1, 64);
-        let mut buf = [0u8; 64];
+        let mut buf = [0u8; 128];
         rec.encode(&mut buf);
-        let (block, chunk) = idx.alloc_record(&buf).unwrap();
+        let (block, chunk) = idx.alloc_record_128(&buf).unwrap();
 
         // Delete it.
         idx.delete_record(block, chunk).unwrap();
@@ -604,9 +719,9 @@ mod tests {
         let n = 300u32;
         for i in 0..n {
             let rec = VertexIndexRecord::new(i, 0, 1, 64);
-            let mut buf = [0u8; 64];
+            let mut buf = [0u8; 128];
             rec.encode(&mut buf);
-            idx.alloc_record(&buf).unwrap();
+            idx.alloc_record_128(&buf).unwrap();
         }
 
         assert!(idx.block_count() >= 2);
@@ -614,7 +729,8 @@ mod tests {
         let mut found = Vec::new();
         idx.scan(|_block, _chunk, data| {
             if data[0] == ChunkType::Vertex as u8 {
-                let rec = VertexIndexRecord::decode(data);
+                let buf: &[u8; 128] = data.try_into().unwrap();
+                let rec = VertexIndexRecord::decode(buf);
                 found.push(rec.vertex_id);
             }
             Ok(())

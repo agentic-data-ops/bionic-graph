@@ -47,11 +47,12 @@ pub fn create_vertex(
     write_data_chunks(graph, data_block, data_chunk_offset, chunks_needed, &padded_data)?;
 
     // ── Create index record ──────────────────────────────────────────
-    let idx_rec = VertexIndexRecord::new(vid, data_block, data_chunk_offset, data_len as u16);
+    let mut idx_rec = VertexIndexRecord::new(vid, data_block, data_chunk_offset, data_len as u16);
+    idx_rec.set_name(name);
     let (idx_block, idx_chunk) = {
-        let mut buf = [0u8; 64];
+        let mut buf = [0u8; 128];
         idx_rec.encode(&mut buf);
-        graph.index_file.alloc_record(&buf)?
+        graph.index_file.alloc_record_128(&buf)?
     };
     let idx_ptr = IndexPointer::new(idx_block, idx_chunk);
 
@@ -108,11 +109,12 @@ pub fn create_edge(
     write_data_chunks(graph, data_block, data_chunk_offset, chunks_needed, &padded_data)?;
 
     // ── Create index record ──────────────────────────────────────────
-    let idx_rec = EdgeIndexRecord::new(eid, source, target, data_block, data_chunk_offset, data_len as u16);
+    let mut idx_rec = EdgeIndexRecord::new(eid, source, target, data_block, data_chunk_offset, data_len as u16);
+    idx_rec.set_name(name);
     let (idx_block, idx_chunk) = {
-        let mut buf = [0u8; 64];
+        let mut buf = [0u8; 128];
         idx_rec.encode(&mut buf);
-        graph.index_file.alloc_record(&buf)?
+        graph.index_file.alloc_record_128(&buf)?
     };
     let idx_ptr = IndexPointer::new(idx_block, idx_chunk);
 
@@ -149,7 +151,8 @@ pub fn get_vertex(graph: &Graph, vid: u32) -> StorageResult<Option<VertexPayload
     }
 
     let data = read_data_chunks(graph, rec.data_block_idx, rec.data_chunk_offset, rec.data_len)?;
-    let payload = deserialize_vertex(&data)?;
+    let mut payload = deserialize_vertex(&data)?;
+    payload.name = rec.get_name().to_string();
 
     // Update atime and rank.
     update_rank_and_atime(graph, &ptr, &rec)?;
@@ -171,7 +174,8 @@ pub fn get_edge(graph: &Graph, eid: u32) -> StorageResult<Option<EdgePayload>> {
     }
 
     let data = read_data_chunks(graph, rec.data_block_idx, rec.data_chunk_offset, rec.data_len)?;
-    let payload = deserialize_edge(&data)?;
+    let mut payload = deserialize_edge(&data)?;
+    payload.name = rec.get_name().to_string();
 
     // Update atime and rank.
     update_rank_and_atime(graph, &ptr, &rec)?;
@@ -357,6 +361,9 @@ pub fn update_vertex(
 
     // Update index record.
     let mut new_rec = old_rec.clone();
+    if let Some(n) = name {
+        new_rec.set_name(n);
+    }
     new_rec.data_block_idx = new_data_block;
     new_rec.data_chunk_offset = new_data_chunk;
     new_rec.data_len = serialized.len() as u16;
@@ -448,6 +455,9 @@ pub fn update_edge(
     write_data_chunks(graph, new_data_block, new_data_chunk, chunks_needed, &padded_data)?;
 
     let mut new_rec = old_rec.clone();
+    if let Some(n) = name {
+        new_rec.set_name(n);
+    }
     new_rec.data_block_idx = new_data_block;
     new_rec.data_chunk_offset = new_data_chunk;
     new_rec.data_len = serialized.len() as u16;
@@ -716,9 +726,9 @@ fn replay_create_vertex(graph: &Graph, payload: &VertexPayload, wal_data: &[u8])
 
     let idx_rec = VertexIndexRecord::new(payload.id, data_block, data_chunk_offset, data_len as u16);
     let (idx_block, idx_chunk) = {
-        let mut buf = [0u8; 64];
+        let mut buf = [0u8; 128];
         idx_rec.encode(&mut buf);
-        graph.index_file.alloc_record(&buf)?
+        graph.index_file.alloc_record_128(&buf)?
     };
     let idx_ptr = IndexPointer::new(idx_block, idx_chunk);
 
@@ -758,9 +768,9 @@ fn replay_create_edge(graph: &Graph, payload: &EdgePayload, wal_data: &[u8]) -> 
         data_block, data_chunk_offset, data_len as u16,
     );
     let (idx_block, idx_chunk) = {
-        let mut buf = [0u8; 64];
+        let mut buf = [0u8; 128];
         idx_rec.encode(&mut buf);
-        graph.index_file.alloc_record(&buf)?
+        graph.index_file.alloc_record_128(&buf)?
     };
     let idx_ptr = IndexPointer::new(idx_block, idx_chunk);
 
@@ -1093,12 +1103,13 @@ pub fn read_vertex_by_record(
         if timestamp < rec.ctime {
             return Ok(None); // didn't exist yet
         }
-        let payload: VertexPayload = deserialize_vertex(&read_data_payload(
+        let mut payload: VertexPayload = deserialize_vertex(&read_data_payload(
             graph,
             rec.data_block_idx,
             rec.data_chunk_offset,
             rec.data_len as usize,
         )?)?;
+        payload.name = rec.get_name().to_string();
 
         // Walk history newest-first. Each history entry's timestamp is the
         // time this state snapshot became current (its start of validity).
@@ -1110,7 +1121,9 @@ pub fn read_vertex_by_record(
             if h.timestamp <= timestamp {
                 if timestamp < rec.mtime {
                     // This snapshot was valid at the query time.
-                    return Ok(Some(deserialize_vertex(&h.data)?));
+                    let mut hist_payload = deserialize_vertex(&h.data)?;
+                    hist_payload.name = rec.get_name().to_string();
+                    return Ok(Some(hist_payload));
                 }
                 // at >= rec.mtime means the current state is the active one.
                 break;
@@ -1130,12 +1143,13 @@ pub fn read_vertex_by_record(
     if rec.status == DataStatus::Deleted {
         return Ok(None);
     }
-    let payload: VertexPayload = deserialize_vertex(&read_data_payload(
+    let mut payload: VertexPayload = deserialize_vertex(&read_data_payload(
         graph,
         rec.data_block_idx,
         rec.data_chunk_offset,
         rec.data_len as usize,
     )?)?;
+    payload.name = rec.get_name().to_string();
     Ok(Some(payload))
 }
 
@@ -1149,17 +1163,20 @@ pub fn read_edge_by_record(
         if timestamp < rec.ctime {
             return Ok(None);
         }
-        let payload: EdgePayload = deserialize_edge(&read_data_payload(
+        let mut payload: EdgePayload = deserialize_edge(&read_data_payload(
             graph,
             rec.data_block_idx,
             rec.data_chunk_offset,
             rec.data_len as usize,
         )?)?;
+        payload.name = rec.get_name().to_string();
 
         for h in payload.history.iter().rev() {
             if h.timestamp <= timestamp {
                 if timestamp < rec.mtime {
-                    return Ok(Some(deserialize_edge(&h.data)?));
+                    let mut hist_payload = deserialize_edge(&h.data)?;
+                    hist_payload.name = rec.get_name().to_string();
+                    return Ok(Some(hist_payload));
                 }
                 break;
             }
@@ -1175,12 +1192,13 @@ pub fn read_edge_by_record(
     if rec.status == DataStatus::Deleted {
         return Ok(None);
     }
-    let payload: EdgePayload = deserialize_edge(&read_data_payload(
+    let mut payload: EdgePayload = deserialize_edge(&read_data_payload(
         graph,
         rec.data_block_idx,
         rec.data_chunk_offset,
         rec.data_len as usize,
     )?)?;
+    payload.name = rec.get_name().to_string();
     Ok(Some(payload))
 }
 
