@@ -15,6 +15,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use crate::storage::index_file::{EdgeIndexRecord, VertexIndexRecord};
 use crate::storage::types::{BlockIdx, ChunkOffset};
 
 /// Points to a specific index record in the index file.
@@ -423,6 +424,12 @@ pub struct MemoryIndex {
     pub vertex_names: BTreeMap<String, IndexPointer>,
     /// Name → edge pointer lookup (built at startup).
     pub edge_names: BTreeMap<String, IndexPointer>,
+    /// Cached full index records — written to index file only at checkpoint.
+    /// Key = vertex_id, value = VertexIndexRecord.
+    pub vertex_records: HashMap<u32, VertexIndexRecord>,
+    /// Cached full index records — written to index file only at checkpoint.
+    /// Key = edge_id, value = EdgeIndexRecord.
+    pub edge_records: HashMap<u32, EdgeIndexRecord>,
 }
 
 impl MemoryIndex {

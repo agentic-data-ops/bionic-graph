@@ -63,7 +63,7 @@ fn try_decay(
     _old_atime: u64,
     ptr: &crate::storage::memory_index::IndexPointer,
 ) -> Result<(), String> {
-    // Try vertex first.
+    // Try vertex first — update cache instead of direct disk write.
     if let Ok(mut rec) = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset) {
         if rec.rank == 0 {
             return Ok(()); // already at minimum
@@ -71,14 +71,14 @@ fn try_decay(
         let old_rank = rec.rank;
         rec.rank = rec.rank.saturating_sub(1);
 
-        graph.index_file
-            .update_vertex_record(ptr.block_idx, ptr.chunk_offset, &rec)
-            .map_err(|e| format!("index write: {}", e))?;
-
+        // Update cache and write WAL. Skip direct index_file write.
         let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+        if let Some(cached) = mi.vertex_records.get_mut(&rec.vertex_id) {
+            cached.rank = rec.rank;
+        }
         mi.ranks.remove(old_rank, ptr);
         mi.ranks.insert(rec.rank, *ptr);
-        // atime_index unchanged — we only decayed rank, not atime.
+        drop(mi);
 
         // Append decay entry to redo log.
         let mut data = Vec::with_capacity(12);
@@ -97,11 +97,10 @@ fn try_decay(
         let old_rank = rec.rank;
         rec.rank = rec.rank.saturating_sub(1);
 
-        graph.index_file
-            .update_edge_record(ptr.block_idx, ptr.chunk_offset, &rec)
-            .map_err(|e| format!("index write: {}", e))?;
-
         let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+        if let Some(cached) = mi.edge_records.get_mut(&rec.edge_id) {
+            cached.rank = rec.rank;
+        }
         mi.ranks.remove(old_rank, ptr);
         mi.ranks.insert(rec.rank, *ptr);
 

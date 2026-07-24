@@ -33,6 +33,7 @@ pub fn build_memory_index(idx_file: &IndexFile) -> StorageResult<MemoryIndex> {
                 // Keep deleted vertices for time-travel traversal
                 mem.vertices.insert(rec.vertex_id, ptr);
                 mem.vertex_names.insert(rec.get_name().to_string(), ptr);
+                mem.vertex_records.insert(rec.vertex_id, rec.clone());
                 if rec.status != DataStatus::Deleted {
                     mem.ranks.insert(rec.rank, ptr);
                     mem.atime_index.insert(rec.atime, ptr);
@@ -45,6 +46,7 @@ pub fn build_memory_index(idx_file: &IndexFile) -> StorageResult<MemoryIndex> {
                 mem.adjacency.add_edge(rec.edge_id, rec.source, rec.target, ptr);
                 mem.edges.insert(rec.edge_id, ptr);
                 mem.edge_names.insert(rec.get_name().to_string(), ptr);
+                mem.edge_records.insert(rec.edge_id, rec.clone());
                 if rec.status != DataStatus::Deleted {
                     mem.ranks.insert(rec.rank, ptr);
                     mem.atime_index.insert(rec.atime, ptr);

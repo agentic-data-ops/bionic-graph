@@ -225,6 +225,10 @@ impl Graph {
             crate::graph::crud::replay_entry(&graph, &entry)
         })?;
 
+        // After replay, flush cached index records to disk so the index file
+        // is consistent with the in-memory state after WAL replay.
+        crate::graph::crud::flush_index_to_disk(&graph)?;
+
         // After replay, switch to a fresh WAL file so crash recovery
         // during this session works (the file stays on disk with a real
         // directory entry).
@@ -263,6 +267,7 @@ impl Graph {
     /// Close the graph — flush everything and checkpoint the WAL.
     /// Close the graph, persisting current state and counters.
     pub fn close(&self) -> StorageResult<()> {
+        crate::graph::crud::flush_index_to_disk(self)?;
         self.flush()?;
         self.redo_log.sync()?;
         self.redo_log.renew()?;

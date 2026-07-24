@@ -60,8 +60,9 @@ pub fn create_vertex(
     {
         let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
         mi.vertices.insert(vid, idx_ptr);
+        mi.vertex_records.insert(vid, idx_rec);
         mi.vertex_names.insert(payload.name.clone(), idx_ptr);
-        mi.ranks.insert(idx_rec.rank, idx_ptr);
+        mi.ranks.insert(1, idx_ptr);
     }
 
     // ── Tokenize attributes ──────────────────────────────────────────
@@ -123,8 +124,9 @@ pub fn create_edge(
     {
         let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
         mi.edges.insert(eid, idx_ptr);
+        mi.edge_records.insert(eid, idx_rec);
         mi.edge_names.insert(payload.name.clone(), idx_ptr);
-        mi.ranks.insert(idx_rec.rank, idx_ptr);
+        mi.ranks.insert(1, idx_ptr);
         mi.adjacency.add_edge(eid, source, target, idx_ptr);
     }
 
@@ -147,7 +149,11 @@ pub fn get_vertex(graph: &Graph, vid: u32) -> StorageResult<Option<VertexPayload
     };
     let Some(ptr) = ptr else { return Ok(None) };
 
-    let rec = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset)?;
+    let rec = {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        mi.vertex_records.get(&vid).cloned()
+            .ok_or_else(|| StorageError::Other("vertex record not found".into()))?
+    };
     if rec.status == DataStatus::Deleted {
         return Ok(None);
     }
@@ -157,7 +163,7 @@ pub fn get_vertex(graph: &Graph, vid: u32) -> StorageResult<Option<VertexPayload
     payload.name = rec.get_name().to_string();
 
     // Update atime and rank.
-    update_rank_and_atime(graph, &ptr, &rec)?;
+    update_rank_and_atime(graph, vid, &ptr, &rec)?;
 
     Ok(Some(payload))
 }
@@ -170,7 +176,11 @@ pub fn get_edge(graph: &Graph, eid: u32) -> StorageResult<Option<EdgePayload>> {
     };
     let Some(ptr) = ptr else { return Ok(None) };
 
-    let rec = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset)?;
+    let rec = {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        mi.edge_records.get(&eid).cloned()
+            .ok_or_else(|| StorageError::Other("edge record not found".into()))?
+    };
     if rec.status == DataStatus::Deleted {
         return Ok(None);
     }
@@ -180,7 +190,7 @@ pub fn get_edge(graph: &Graph, eid: u32) -> StorageResult<Option<EdgePayload>> {
     payload.name = rec.get_name().to_string();
 
     // Update atime and rank.
-    update_rank_and_atime(graph, &ptr, &rec)?;
+    update_rank_and_atime(graph, eid, &ptr, &rec)?;
 
     Ok(Some(payload))
 }
@@ -193,7 +203,12 @@ pub fn get_vertex_index_record(graph: &Graph, vid: u32) -> StorageResult<Option<
         mi.vertices.get(vid).copied()
     };
     let Some(ptr) = ptr else { return Ok(None) };
-    let rec = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset)?;
+    // Read from cache instead of disk.
+    let rec = {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        mi.vertex_records.get(&vid).cloned()
+            .ok_or_else(|| StorageError::Other("vertex record not found".into()))?
+    };
     if rec.status == DataStatus::Deleted {
         return Ok(None);
     }
@@ -208,7 +223,12 @@ pub fn get_edge_index_record(graph: &Graph, eid: u32) -> StorageResult<Option<Ed
         mi.edges.get(eid).copied()
     };
     let Some(ptr) = ptr else { return Ok(None) };
-    let rec = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset)?;
+    // Read from cache instead of disk.
+    let rec = {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        mi.edge_records.get(&eid).cloned()
+            .ok_or_else(|| StorageError::Other("edge record not found".into()))?
+    };
     if rec.status == DataStatus::Deleted {
         return Ok(None);
     }
@@ -223,7 +243,12 @@ pub fn update_vertex_meta(graph: &Graph, vid: u32, new_rank: Option<u32>, new_at
         mi.vertices.get(vid).copied()
     }.ok_or_else(|| StorageError::Other(format!("vertex {} not found", vid)))?;
 
-    let mut rec = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset)?;
+    // Read from cache instead of disk.
+    let mut rec = {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        mi.vertex_records.get(&vid).cloned()
+            .ok_or_else(|| StorageError::Other(format!("vertex {} record not found in cache", vid)))?
+    };
     let old_rank = rec.rank;
     let old_atime = rec.atime;
     let old_name = rec.get_name().to_string();
@@ -243,31 +268,35 @@ pub fn update_vertex_meta(graph: &Graph, vid: u32, new_rank: Option<u32>, new_at
         return Ok(()); // nothing changed
     }
 
-    graph.index_file.update_vertex_record(ptr.block_idx, ptr.chunk_offset, &rec)?;
-
-    let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-    if old_rank != rec.rank {
-        mi.ranks.remove(old_rank, &ptr);
-        mi.ranks.insert(rec.rank, ptr);
-    }
-    if old_atime != rec.atime {
-        mi.atime_index.remove(old_atime, &ptr);
-        mi.atime_index.insert(rec.atime, ptr);
-    }
-    if name_changed {
-        if let Some(n) = new_name {
-            mi.vertex_names.remove(&old_name);
-            mi.vertex_names.insert(n.to_string(), ptr);
+    // Update cache instead of disk.
+    let new_rank_val = rec.rank;
+    let new_atime_val = rec.atime;
+    let new_name_arr = rec.name;
+    {
+        let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+        mi.vertex_records.insert(vid, rec);
+        if old_rank != new_rank_val {
+            mi.ranks.remove(old_rank, &ptr);
+            mi.ranks.insert(new_rank_val, ptr);
+        }
+        if old_atime != new_atime_val {
+            mi.atime_index.remove(old_atime, &ptr);
+            mi.atime_index.insert(new_atime_val, ptr);
+        }
+        if name_changed {
+            if let Some(n) = new_name {
+                mi.vertex_names.remove(&old_name);
+                mi.vertex_names.insert(n.to_string(), ptr);
+            }
         }
     }
-    drop(mi);
 
     // Write IndexUpdate redo log entry: [rank:4][atime:8] + [name:64] if changed.
     let mut data = Vec::with_capacity(76);
-    data.extend_from_slice(&rec.rank.to_le_bytes());
-    data.extend_from_slice(&rec.atime.to_le_bytes());
+    data.extend_from_slice(&new_rank_val.to_le_bytes());
+    data.extend_from_slice(&new_atime_val.to_le_bytes());
     if name_changed {
-        data.extend_from_slice(&rec.name);
+        data.extend_from_slice(&new_name_arr);
     }
     graph.redo_log.append(OpType::VertexIndexUpdate, vid as u64, &data)?;
 
@@ -282,7 +311,12 @@ pub fn update_edge_meta(graph: &Graph, eid: u32, new_rank: Option<u32>, new_atim
         mi.edges.get(eid).copied()
     }.ok_or_else(|| StorageError::Other(format!("edge {} not found", eid)))?;
 
-    let mut rec = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset)?;
+    // Read from cache instead of disk.
+    let mut rec = {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        mi.edge_records.get(&eid).cloned()
+            .ok_or_else(|| StorageError::Other(format!("edge {} record not found in cache", eid)))?
+    };
     let old_rank = rec.rank;
     let old_atime = rec.atime;
     let old_name = rec.get_name().to_string();
@@ -302,30 +336,34 @@ pub fn update_edge_meta(graph: &Graph, eid: u32, new_rank: Option<u32>, new_atim
         return Ok(());
     }
 
-    graph.index_file.update_edge_record(ptr.block_idx, ptr.chunk_offset, &rec)?;
-
-    let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-    if old_rank != rec.rank {
-        mi.ranks.remove(old_rank, &ptr);
-        mi.ranks.insert(rec.rank, ptr);
-    }
-    if old_atime != rec.atime {
-        mi.atime_index.remove(old_atime, &ptr);
-        mi.atime_index.insert(rec.atime, ptr);
-    }
-    if name_changed {
-        if let Some(n) = new_name {
-            mi.edge_names.remove(&old_name);
-            mi.edge_names.insert(n.to_string(), ptr);
+    // Update cache instead of disk.
+    let em_rank = rec.rank;
+    let em_atime = rec.atime;
+    let em_name = rec.name;
+    {
+        let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+        mi.edge_records.insert(eid, rec);
+        if old_rank != em_rank {
+            mi.ranks.remove(old_rank, &ptr);
+            mi.ranks.insert(em_rank, ptr);
+        }
+        if old_atime != em_atime {
+            mi.atime_index.remove(old_atime, &ptr);
+            mi.atime_index.insert(em_atime, ptr);
+        }
+        if name_changed {
+            if let Some(n) = new_name {
+                mi.edge_names.remove(&old_name);
+                mi.edge_names.insert(n.to_string(), ptr);
+            }
         }
     }
-    drop(mi);
 
     let mut data = Vec::with_capacity(76);
-    data.extend_from_slice(&rec.rank.to_le_bytes());
-    data.extend_from_slice(&rec.atime.to_le_bytes());
+    data.extend_from_slice(&em_rank.to_le_bytes());
+    data.extend_from_slice(&em_atime.to_le_bytes());
     if name_changed {
-        data.extend_from_slice(&rec.name);
+        data.extend_from_slice(&em_name);
     }
     graph.redo_log.append(OpType::EdgeIndexUpdate, eid as u64, &data)?;
 
@@ -349,7 +387,11 @@ pub fn update_vertex(
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
         let ptr = mi.vertices.get(vid).copied()
             .ok_or_else(|| StorageError::Other(format!("vertex {} not found", vid)))?;
-        let rec = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset)?;
+        let rec = {
+            let mi2 = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+            mi2.vertex_records.get(&vid).cloned()
+                .ok_or_else(|| StorageError::Other(format!("vertex {} record not found in cache", vid)))?
+        };
         let data = read_data_chunks(graph, rec.data_block_idx, rec.data_chunk_offset, rec.data_len)?;
         let payload = deserialize_vertex(&data)?;
         (payload, ptr, rec)
@@ -407,15 +449,17 @@ pub fn update_vertex(
     new_rec.atime = new_rec.mtime;
     new_rec.rank += 1;
 
-    graph.index_file.update_vertex_record(old_ptr.block_idx, old_ptr.chunk_offset, &new_rec)?;
-
-    // Update rank and name in memory index.
+    // Update cache instead of disk.
     {
         let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+        let uv_rank = new_rec.rank;
+        let uv_atime = new_rec.atime;
+        mi.vertex_records.insert(vid, new_rec);
+
         mi.ranks.remove(old_rec.rank, &old_ptr);
-        mi.ranks.insert(new_rec.rank, old_ptr);
+        mi.ranks.insert(uv_rank, old_ptr);
         mi.atime_index.remove(old_rec.atime, &old_ptr);
-        mi.atime_index.insert(new_rec.atime, old_ptr);
+        mi.atime_index.insert(uv_atime, old_ptr);
         if let Some(n) = name {
             mi.vertex_names.remove(&old_payload.name);
             mi.vertex_names.insert(n.to_string(), old_ptr);
@@ -455,7 +499,11 @@ pub fn update_edge(
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
         let ptr = mi.edges.get(eid).copied()
             .ok_or_else(|| StorageError::Other(format!("edge {} not found", eid)))?;
-        let rec = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset)?;
+        let rec = {
+            let mi2 = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+            mi2.edge_records.get(&eid).cloned()
+                .ok_or_else(|| StorageError::Other(format!("edge {} record not found in cache", eid)))?
+        };
         let data = read_data_chunks(graph, rec.data_block_idx, rec.data_chunk_offset, rec.data_len)?;
         let payload = deserialize_edge(&data)?;
         (payload, ptr, rec)
@@ -507,14 +555,17 @@ pub fn update_edge(
     new_rec.atime = new_rec.mtime;
     new_rec.rank += 1;
 
-    graph.index_file.update_edge_record(old_ptr.block_idx, old_ptr.chunk_offset, &new_rec)?;
-
+    // Update cache instead of disk.
     {
         let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+        let ue_rank = new_rec.rank;
+        let ue_atime = new_rec.atime;
+        mi.edge_records.insert(eid, new_rec);
+
         mi.ranks.remove(old_rec.rank, &old_ptr);
-        mi.ranks.insert(new_rec.rank, old_ptr);
+        mi.ranks.insert(ue_rank, old_ptr);
         mi.atime_index.remove(old_rec.atime, &old_ptr);
-        mi.atime_index.insert(new_rec.atime, old_ptr);
+        mi.atime_index.insert(ue_atime, old_ptr);
     }
 
     free_data_chunks(graph, old_rec.data_block_idx, old_rec.data_chunk_offset,
@@ -540,16 +591,19 @@ pub fn soft_delete_vertex(graph: &Graph, vid: u32) -> StorageResult<()> {
             .ok_or_else(|| StorageError::Other(format!("vertex {} not found", vid)))?
     };
 
-    let mut rec = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset)?;
+    // Read from cache and update cache instead of disk.
+    let mut rec = {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        mi.vertex_records.get(&vid).cloned()
+            .ok_or_else(|| StorageError::Other(format!("vertex {} record not found in cache", vid)))?
+    };
     rec.mark_deleted();
     rec.mtime = timestamp_us();
-    graph.index_file.update_vertex_record(ptr.block_idx, ptr.chunk_offset, &rec)?;
-
-    // Keep vertex in memory index (for time-travel queries).
-    // DataStatus::Deleted flag + read_vertex_by_record handle visibility.
+    let rank = rec.rank;
     {
         let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-        mi.ranks.remove(rec.rank, &ptr);
+        mi.vertex_records.insert(vid, rec);
+        mi.ranks.remove(rank, &ptr);
     }
 
     graph.redo_log.append(OpType::VertexDelete, vid as u64, &[])?;
@@ -564,21 +618,24 @@ pub fn hard_delete_vertex(graph: &Graph, vid: u32) -> StorageResult<()> {
             .ok_or_else(|| StorageError::Other(format!("vertex {} not found", vid)))?
     };
 
-    let rec = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset)?;
+    // Read from cache.
+    let rec = {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        mi.vertex_records.get(&vid).cloned()
+            .ok_or_else(|| StorageError::Other(format!("vertex {} record not found in cache", vid)))?
+    };
 
     // Free data chunks.
     free_data_chunks(graph, rec.data_block_idx, rec.data_chunk_offset,
         BlockAllocator::chunks_needed(rec.data_len as usize))?;
 
-    // Clear index record.
-    graph.index_file.delete_record(ptr.block_idx, ptr.chunk_offset)?;
-
-    // Remove from memory index.
+    // Remove from cache instead of clearing index record on disk.
     {
         let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
         let name = rec.get_name().to_string();
         mi.vertex_names.remove(&name);
         mi.vertices.remove(vid);
+        mi.vertex_records.remove(&vid);
         mi.ranks.remove(rec.rank, &ptr);
     }
 
@@ -594,14 +651,18 @@ pub fn soft_delete_edge(graph: &Graph, eid: u32) -> StorageResult<()> {
             .ok_or_else(|| StorageError::Other(format!("edge {} not found", eid)))?
     };
 
-    let rec = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset)?;
+    // Read from cache and update cache instead of disk.
+    let rec = {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        mi.edge_records.get(&eid).cloned()
+            .ok_or_else(|| StorageError::Other(format!("edge {} record not found in cache", eid)))?
+    };
     let mut rec2 = rec.clone();
     rec2.mark_deleted();
     rec2.mtime = timestamp_us();
-    graph.index_file.update_edge_record(ptr.block_idx, ptr.chunk_offset, &rec2)?;
-
     {
         let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+        mi.edge_records.insert(eid, rec2);
         mi.ranks.remove(rec.rank, &ptr);
         // Keep edge in adjacency for time-travel traversal
     }
@@ -618,18 +679,23 @@ pub fn hard_delete_edge(graph: &Graph, eid: u32) -> StorageResult<()> {
             .ok_or_else(|| StorageError::Other(format!("edge {} not found", eid)))?
     };
 
-    let rec = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset)?;
+    // Read from cache.
+    let rec = {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        mi.edge_records.get(&eid).cloned()
+            .ok_or_else(|| StorageError::Other(format!("edge {} record not found in cache", eid)))?
+    };
 
     free_data_chunks(graph, rec.data_block_idx, rec.data_chunk_offset,
         BlockAllocator::chunks_needed(rec.data_len as usize))?;
 
-    graph.index_file.delete_record(ptr.block_idx, ptr.chunk_offset)?;
-
+    // Remove from cache instead of clearing index record on disk.
     {
         let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
         let name = rec.get_name().to_string();
         mi.edge_names.remove(&name);
         mi.edges.remove(eid);
+        mi.edge_records.remove(&eid);
         mi.ranks.remove(rec.rank, &ptr);
         mi.adjacency.remove_edge(rec.source, rec.target, &ptr);
     }
@@ -677,23 +743,24 @@ pub fn replay_entry(graph: &Graph, entry: &RedoLogEntry) -> StorageResult<()> {
             }
         }
         OpType::VertexDelete => {
-            if let Some(&ptr) = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).vertices.get(entry.op_id as u32) {
-                let _ = graph.index_file.delete_record(ptr.block_idx, ptr.chunk_offset);
+            let id = entry.op_id as u32;
+            if let Some(&ptr) = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).vertices.get(id) {
                 let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-                mi.vertices.remove(entry.op_id as u32);
+                mi.vertex_records.remove(&id);
+                mi.vertices.remove(id);
             }
         }
         OpType::EdgeDelete => {
-            if let Some(&ptr) = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).edges.get(entry.op_id as u32) {
-                // Read the edge record to obtain source/target before deletion.
-                let (source, target) = if let Ok(rec) = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset) {
-                    (rec.source, rec.target)
-                } else {
-                    (0, 0)
+            let id = entry.op_id as u32;
+            if let Some(&ptr) = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).edges.get(id) {
+                // Read source/target from cached edge record before removal.
+                let (source, target) = {
+                    let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+                    mi.edge_records.get(&id).map(|r| (r.source, r.target)).unwrap_or((0, 0))
                 };
-                let _ = graph.index_file.delete_record(ptr.block_idx, ptr.chunk_offset);
                 let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-                mi.edges.remove(entry.op_id as u32);
+                mi.edge_records.remove(&id);
+                mi.edges.remove(id);
                 // Use the real source/target vertex IDs, NOT edge_id, to properly
                 // clean up the adjacency index.
                 mi.adjacency.remove_edge(source, target, &ptr);
@@ -713,20 +780,20 @@ pub fn replay_entry(graph: &Graph, entry: &RedoLogEntry) -> StorageResult<()> {
             // Drop read guard before write guard to avoid RwLock deadlock.
                 let found = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).vertices.get(entry.op_id as u32).copied();
                 if let Some(ptr) = found {
-                    if let Ok(mut rec) = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset) {
+                    let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+                    if let Some(mut rec) = mi.vertex_records.get(&(entry.op_id as u32)).cloned() {
                         let old_rank = rec.rank;
+                        let old_atime = rec.atime;
                         rec.rank = new_rank;
                         rec.atime = new_atime;
                         if let Some(n) = new_name {
                             rec.set_name(n);
                         }
-                        if let Ok(()) = graph.index_file.update_vertex_record(ptr.block_idx, ptr.chunk_offset, &rec) {
-                            let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-                            mi.ranks.remove(old_rank, &ptr);
-                            mi.ranks.insert(new_rank, ptr);
-                            mi.atime_index.remove(rec.atime, &ptr);
-                            mi.atime_index.insert(new_atime, ptr);
-                        }
+                        mi.vertex_records.insert(entry.op_id as u32, rec);
+                        mi.ranks.remove(old_rank, &ptr);
+                        mi.ranks.insert(new_rank, ptr);
+                        mi.atime_index.remove(old_atime, &ptr);
+                        mi.atime_index.insert(new_atime, ptr);
                     }
                 }
             }
@@ -744,20 +811,20 @@ pub fn replay_entry(graph: &Graph, entry: &RedoLogEntry) -> StorageResult<()> {
                 };
                 let found = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).edges.get(entry.op_id as u32).copied();
                 if let Some(ptr) = found {
-                    if let Ok(mut rec) = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset) {
+                    let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+                    if let Some(mut rec) = mi.edge_records.get(&(entry.op_id as u32)).cloned() {
                         let old_rank = rec.rank;
+                        let old_atime = rec.atime;
                         rec.rank = new_rank;
                         rec.atime = new_atime;
                         if let Some(n) = new_name {
                             rec.set_name(n);
                         }
-                        if let Ok(()) = graph.index_file.update_edge_record(ptr.block_idx, ptr.chunk_offset, &rec) {
-                            let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-                            mi.ranks.remove(old_rank, &ptr);
-                            mi.ranks.insert(new_rank, ptr);
-                            mi.atime_index.remove(rec.atime, &ptr);
-                            mi.atime_index.insert(new_atime, ptr);
-                        }
+                        mi.edge_records.insert(entry.op_id as u32, rec);
+                        mi.ranks.remove(old_rank, &ptr);
+                        mi.ranks.insert(new_rank, ptr);
+                        mi.atime_index.remove(old_atime, &ptr);
+                        mi.atime_index.insert(new_atime, ptr);
                     }
                 }
             }
@@ -800,9 +867,11 @@ fn replay_create_vertex(graph: &Graph, payload: &VertexPayload, wal_data: &[u8])
     let idx_ptr = IndexPointer::new(idx_block, idx_chunk);
 
     let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+    let rc_rank = idx_rec.rank;
     mi.vertices.insert(payload.id, idx_ptr);
+    mi.vertex_records.insert(payload.id, idx_rec);
     mi.vertex_names.insert(payload.name.clone(), idx_ptr);
-    mi.ranks.insert(idx_rec.rank, idx_ptr);
+    mi.ranks.insert(rc_rank, idx_ptr);
     drop(mi);
 
     tokenize_vertex(graph, payload.id, payload, chunks_needed as u8)?;
@@ -844,9 +913,11 @@ fn replay_create_edge(graph: &Graph, payload: &EdgePayload, wal_data: &[u8]) -> 
     let idx_ptr = IndexPointer::new(idx_block, idx_chunk);
 
     let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+    let rc_erank = idx_rec.rank;
     mi.edges.insert(payload.id, idx_ptr);
+    mi.edge_records.insert(payload.id, idx_rec);
     mi.edge_names.insert(payload.name.clone(), idx_ptr);
-    mi.ranks.insert(idx_rec.rank, idx_ptr);
+    mi.ranks.insert(rc_erank, idx_ptr);
     mi.adjacency.add_edge(payload.id, payload.source, payload.target, idx_ptr);
     drop(mi);
 
@@ -1099,35 +1170,33 @@ fn add_token(graph: &Graph, token_str: &str, ref_type: u8, ref_id: u32, hits: &[
     Ok(())
 }
 
-/// Update access time and increment rank for an index record.
-fn update_rank_and_atime(graph: &Graph, ptr: &IndexPointer, rec: &impl HasRankAndTime) -> StorageResult<()> {
+/// Update access time and increment rank for an index record, using the cache.
+fn update_rank_and_atime(graph: &Graph, id: u32, ptr: &IndexPointer, rec: &impl HasRankAndTime) -> StorageResult<()> {
     let now = timestamp_us();
     let new_rank = rec.rank().wrapping_add(1);
 
     match rec.chunk_type() {
         crate::storage::types::ChunkType::Vertex => {
-            let mut new_rec = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset)?;
-            new_rec.atime = now;
-            new_rec.rank = new_rank;
-            graph.index_file.update_vertex_record(ptr.block_idx, ptr.chunk_offset, &new_rec)?;
-
             let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-            mi.ranks.remove(rec.rank(), ptr);
-            mi.ranks.insert(new_rank, *ptr);
-            mi.atime_index.remove(rec.atime(), ptr);
-            mi.atime_index.insert(now, *ptr);
+            if let Some(vrec) = mi.vertex_records.get_mut(&id) {
+                vrec.atime = now;
+                vrec.rank = new_rank;
+                mi.ranks.remove(rec.rank(), ptr);
+                mi.ranks.insert(new_rank, *ptr);
+                mi.atime_index.remove(rec.atime(), ptr);
+                mi.atime_index.insert(now, *ptr);
+            }
         }
         crate::storage::types::ChunkType::Edge => {
-            let mut new_rec = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset)?;
-            new_rec.atime = now;
-            new_rec.rank = new_rank;
-            graph.index_file.update_edge_record(ptr.block_idx, ptr.chunk_offset, &new_rec)?;
-
             let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-            mi.ranks.remove(rec.rank(), ptr);
-            mi.ranks.insert(new_rank, *ptr);
-            mi.atime_index.remove(rec.atime(), ptr);
-            mi.atime_index.insert(now, *ptr);
+            if let Some(erec) = mi.edge_records.get_mut(&id) {
+                erec.atime = now;
+                erec.rank = new_rank;
+                mi.ranks.remove(rec.rank(), ptr);
+                mi.ranks.insert(new_rank, *ptr);
+                mi.atime_index.remove(rec.atime(), ptr);
+                mi.atime_index.insert(now, *ptr);
+            }
         }
         _ => {}
     }
@@ -1320,4 +1389,24 @@ fn read_data_payload(
     let end = start + padded.min(BLOCK_SIZE - start);
     buf[..(end - start)].copy_from_slice(&block[start..end]);
     Ok(buf[..data_len].to_vec())
+}
+
+/// Flush all cached index records to the index file on disk.
+/// Called during checkpoint to persist in-memory index state.
+pub fn flush_index_to_disk(graph: &Graph) -> StorageResult<()> {
+    let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+
+    for (&vid, rec) in &mi.vertex_records {
+        if let Some(&ptr) = mi.vertices.get(vid) {
+            graph.index_file.update_vertex_record(ptr.block_idx, ptr.chunk_offset, rec)?;
+        }
+    }
+
+    for (&eid, rec) in &mi.edge_records {
+        if let Some(&ptr) = mi.edges.get(eid) {
+            graph.index_file.update_edge_record(ptr.block_idx, ptr.chunk_offset, rec)?;
+        }
+    }
+
+    Ok(())
 }
