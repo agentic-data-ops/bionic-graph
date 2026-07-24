@@ -19,15 +19,15 @@
 ```
 src/
 ├── main.rs                  # CLI entry + HTTP server bootstrap
-├── lib.rs                   # Crate root — 12 pub mod declarations
+├── lib.rs                   # Crate root — 11 pub mod declarations
 ├── config/                  # Settings structs + JSON file loader
 │   ├── mod.rs               # Re-exports
 │   ├── loader.rs            # ~/.config/bionic-graph/settings.json load/save
 │   └── settings.rs          # ServerConfig, LlmConfig, StorageConfig,
 │                            #   ClusterConfig, SearchSettings, RankConfig
 ├── storage/                 # Block-based storage engine (16KB blocks, 64B chunks)
-│   ├── mod.rs               # Re-exports 9 submodules
-│   ├── types.rs             # Fundamental types, constants, binary layouts
+│   ├── mod.rs               # Re-exports 8 submodules
+│   ├── types.rs             # Fundamental types, constants, DataHeader, binary layouts
 │   ├── data_file.rs         # Raw 16KB block I/O (Mutex<File>)
 │   ├── bitmap_file.rs       # Block-level free/used tracking
 │   ├── block_allocator.rs   # Chunk-level allocator within a 16KB block
@@ -35,10 +35,9 @@ src/
 │   ├── redo_log.rs          # WAL: FIFO queue + background batch writer (≤128 entries),
 │   │                        #   size (64MB) + time (15min, configurable) rotation,
 │   │                        #   checkpoint protocol, CRC32, replay
-│   ├── index_file.rs        # On-disk index (64B fixed records: Vertex/Edge/Token)
 │   ├── memory_index.rs      # In-memory BTreeMap/HashMap indexes (vertex, edge,
 │   │                        #   token, rank, atime, adjacency)
-│   └── memory_index_builder.rs  # Rebuild in-memory index at startup
+│   └── memory_index_builder.rs  # Rebuild in-memory index by scanning data file at startup
 ├── lock/                    # Striped RwLock pools for concurrency
 │   ├── mod.rs
 │   └── lock_manager.rs      # LockManager: metadata → block → vertex → edge
@@ -153,7 +152,6 @@ src/ui/
 │   └── <graph_name>/
 │       ├── data                — Data file (16KB blocks)
 │       ├── bitmap              — Bitmap (block-level free space tracking)
-│       ├── index               — Index file (64B fixed records)
 │       ├── config.json         — Per-graph config (cache_capacity, rotation_thresholds, etc.)
 │       └── redo_<yyyymmddHHMMss>_<######>  — WAL files (size + time-based rotation)
 └── documents/
@@ -305,13 +303,15 @@ Settings under `"rank"` key in settings.json:
 
 | Index | Type | Purpose |
 |-------|------|---------|
-| `vertices` | BTreeMap<u32, IndexPointer> | Vertex ID → pointer |
-| `edges` | BTreeMap<u32, IndexPointer> | Edge ID → pointer |
-| `tokens` | BTreeMap<String, Vec<IndexPointer>> | Token string → pointers (prefix search) |
-| `ranks` | BTreeMap<u32, Vec<IndexPointer>> | Rank → pointers (descending order for hot queries) |
-| `atime_index` | BTreeMap<u64, Vec<IndexPointer>> | Atime → pointers (range scan for inactivity decay) |
+| `vertices` | BTreeMap<u32, MetaPointer> | Vertex ID → data file pointer |
+| `edges` | BTreeMap<u32, MetaPointer> | Edge ID → data file pointer |
+| `tokens` | BTreeMap<String, Vec<MetaPointer>> | Token string → pointers (prefix search) |
+| `ranks` | BTreeMap<u32, Vec<MetaPointer>> | Rank → pointers (descending order for hot queries) |
+| `atime_index` | BTreeMap<u64, Vec<MetaPointer>> | Atime → pointers (range scan for inactivity decay) |
 | `adjacency` | HashMap | Vertex → outgoing/incoming edges |
 | `entity_tokens` | HashMap<(u8, u32), Vec<String>> | Entity → token strings (for hard delete cleanup) |
+| `vertex_names` | BTreeMap<String, u32> | Name → vertex ID |
+| `edge_names` | BTreeMap<String, u32> | Name → edge ID |
 
 ## Cluster Architecture
 
@@ -338,22 +338,27 @@ Settings under `"rank"` key in settings.json:
 ## Rank Lifecycle
 
 ```
-Update → update_vertex/edge: rank += 1, atime = now ──────────┐
-                                                                │
-Read → execute_gremlin → process_touch ───► get_vertex_locked   │
-       (async, via settings.auto_inc_rank_when_read)             │
-              │                                                  │
-              ▼                                                  ▼
-         build_touch_entries → IndexUpdate redo log ───────► broadcast to workers
-                                                                │
-Decay ←─ spawn_rank_decay (background, every period secs)        │
-       └── atime_index.range_up_to(threshold)                    │
-           └── rank = rank.saturating_sub(1) ◄───────────────────┘
+Update → update_vertex/edge: rank += 1, atime = now
+         DataHeader updated in-place (block cache, mark dirty) ──┐
+                                                                 │
+Read → execute_gremlin → process_touch ───► get_vertex_locked    │
+       (async, via settings.auto_inc_rank_when_read)              │
+              │                                                   │
+              ▼                                                   │
+         update_rank_and_atime → in-place DataHeader chunk update │
+              │                      (no WAL entry needed)        │
+              ▼                                                   │
+         broadcast touch to workers (cluster mode)               │
+                                                                  ▼
+Decay ←─ spawn_rank_decay (background, every period secs)   checkpoint flushes
+       └── atime_index.range_up_to(threshold)               dirty blocks to disk
+           └── rank = rank.saturating_sub(1)
+               └── update_header_in_place (no WAL)
 ```
 
 ## Watch out for
 - **Route params**: axum 0.7.9 requires `:param` syntax.
-- **Data dir**: `<data_dir>/graphs/<name>/` with files: `data`, `bitmap`, `index`, `config.json`, `redo_*`.
+- **Data dir**: `<data_dir>/graphs/<name>/` with files: `data`, `bitmap`, `config.json`, `redo_*`. No separate index file — metadata embedded in DataHeader.
 - **Default graph**: `"graph0"` when `?graph=` omitted.
 - **POST /vertices**: top-level `name` (String), optional `keywords`, `labels`, `properties`. Properties must be flat (no nested dicts, arrays of strings/numbers/booleans only).
 - **POST /edges**: requires `source`, `target`, `name` (String). Optional `labels`, `keywords`, `strength` (f32, default 1.0), `properties`.
@@ -363,10 +368,9 @@ Decay ←─ spawn_rank_decay (background, every period secs)        │
 - **Time travel**: via `X-Time-Travel` HTTP header (microsecond timestamp). Applies to all Gremlin steps and search. No longer a dedicated step.
 - **traverse step**: BFS via score * decay * edge_strength; stops when score < activate.
 - **rank step**: source mode iterates rank index descending; filter mode sorts input by rank.
-- **Memory index rebuilt at startup** — includes vertices, edges, tokens, ranks, atime_index, adjacency.
+- **Memory index rebuilt at startup** — scans data file blocks (bitmap → DataHeader → payload), populates vertices, edges, tokens, ranks, atime_index, adjacency.
 - **Lock order**: metadata → block → vertex → edge (enforced by helpers).
 - **Properties as JSON strings** inside binary blob (bincode incompatibility).
-- **Token strings**: `[u8; 43]` inline — >43 chars truncated.
 - **`touch src/ui_serve.rs`** needed after frontend changes.
 - **Extraction**: uses `crate::graph::batch::batch_import()` internally — upserts vertices by name, edges by (source_name, target_name, name). SYSTEM_PROMPT tells LLM to output `name`, `labels`, `keywords`, `properties` for entities; and `source`, `target`, `name`, `labels`, `keywords`, `strength`, `properties` for relations.
 - **WAL batch writer**: `append()` sends via `mpsc::channel` to background thread. Caller blocks on Condvar until durability confirmed.
