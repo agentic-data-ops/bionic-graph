@@ -144,17 +144,11 @@ fn upsert_edge(
 
 /// Build a name→vid map from the graph's current vertex data.
 ///
-/// Uses the `vertex_names` B-tree (built at startup from the index file)
+/// Uses the `vertex_names` B-tree (built at startup from data file scan)
 /// to avoid reading the full vertex data payload for each vertex.
 pub fn build_name_to_vid(graph: &Arc<Graph>) -> HashMap<String, u32> {
-    let mut map = HashMap::new();
     let mem = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-    for (name, ptr) in &mem.vertex_names {
-        if let Ok(rec) = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset) {
-            map.insert(name.clone(), rec.vertex_id);
-        }
-    }
-    map
+    mem.vertex_names.iter().map(|(k, v)| (k.clone(), *v)).collect()
 }
 
 /// Build an edge lookup keyed by (src_name, tgt_name, edge_name).

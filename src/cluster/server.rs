@@ -201,14 +201,21 @@ fn build_broadcast_entries(
             // Use read_vertex_by_record to avoid updating rank/atime.
             let found = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).vertices.get(id).copied();
             if let Some(ptr) = found {
-                if let Ok(rec) = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset) {
-                    if let Ok(Some(payload)) = crate::graph::crud::read_vertex_by_record(&graph, &rec, None) {
-                        if let Ok(data) = crate::graph::serialize::serialize_vertex(&payload) {
-                            entries.push(crate::storage::redo_log::RedoLogEntry {
-                                op_type: OpType::VertexCreate,
-                                op_id: id as u64,
-                                data,
-                            });
+                if let Ok(dh) = crate::graph::crud::read_header_by_ptr(&graph, &ptr) {
+                    if dh.status != crate::storage::types::DataStatus::Deleted {
+                        let payload_len = (dh.payload_len as usize).saturating_sub(crate::storage::types::DATA_HEADER_SIZE);
+                        if let Ok(data) = crate::graph::crud::read_data_chunks(
+                            &graph, ptr.block_idx, ptr.chunk_offset + 1, dh.payload_len as u16,
+                        ) {
+                            if let Ok(payload) = crate::graph::serialize::deserialize_vertex(&data[..payload_len]) {
+                                if let Ok(serialized) = crate::graph::serialize::serialize_vertex(&payload) {
+                                    entries.push(crate::storage::redo_log::RedoLogEntry {
+                                        op_type: OpType::VertexCreate,
+                                        op_id: id as u64,
+                                        data: serialized,
+                                    });
+                                }
+                            }
                         }
                     }
                 }
@@ -218,17 +225,20 @@ fn build_broadcast_entries(
             // Read edge payload directly without updating rank/atime.
             let found = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).edges.get(id).copied();
             if let Some(ptr) = found {
-                if let Ok(rec) = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset) {
-                    if let Ok(data) = crate::graph::crud::read_data_chunks(
-                        &graph, rec.data_block_idx, rec.data_chunk_offset, rec.data_len,
-                    ) {
-                        if let Ok(payload) = crate::graph::serialize::deserialize_edge(&data) {
-                            if let Ok(serialized) = crate::graph::serialize::serialize_edge(&payload) {
-                                entries.push(crate::storage::redo_log::RedoLogEntry {
-                                    op_type: OpType::EdgeCreate,
-                                    op_id: id as u64,
-                                    data: serialized,
-                                });
+                if let Ok(dh) = crate::graph::crud::read_header_by_ptr(&graph, &ptr) {
+                    if dh.status != crate::storage::types::DataStatus::Deleted {
+                        let payload_len = dh.payload_len as usize;
+                        if let Ok(data) = crate::graph::crud::read_data_chunks(
+                            &graph, ptr.block_idx, ptr.chunk_offset + 1, dh.payload_len,
+                        ) {
+                            if let Ok(payload) = crate::graph::serialize::deserialize_edge(&data[..payload_len]) {
+                                if let Ok(serialized) = crate::graph::serialize::serialize_edge(&payload) {
+                                    entries.push(crate::storage::redo_log::RedoLogEntry {
+                                        op_type: OpType::EdgeCreate,
+                                        op_id: id as u64,
+                                        data: serialized,
+                                    });
+                                }
                             }
                         }
                     }
@@ -367,7 +377,8 @@ pub struct TouchRequest {
     pub edge_ids: Vec<u32>,
 }
 
-/// Shared touch logic: update local rank/atime, create IndexUpdate entries,
+/// Shared touch logic: update local rank/atime, persist via in-place DataHeader
+/// update, and broadcast the touch to worker nodes.
 /// append to local redo_log (durable), and optionally broadcast to workers.
 ///
 /// Can be called directly from the master's gremlin handler (no HTTP needed)
@@ -419,7 +430,7 @@ pub async fn process_touch(
                     let results = crate::cluster::replication::broadcast_entry(&w, &replicated).await;
                     for (wid, res) in &results {
                         if let Err(e) = res {
-                            log::debug!("broadcast IndexUpdate to {} failed: {}", wid, e);
+                            log::debug!("broadcast touch to {} failed: {}", wid, e);
                         }
                     }
                 });
@@ -428,56 +439,25 @@ pub async fn process_touch(
     }
 }
 
-/// Build IndexUpdate redo-log entries for the given vertex/edge IDs.
-/// Updates local rank/atime via `get_vertex_locked` / `get_edge_locked`.
+/// Touch (access) vertices/edges to update rank/atime.
+/// Rank/atime are updated in-place in the DataHeader by the read
+/// itself — no WAL entries needed.
 fn build_touch_entries(
     graph: &Arc<crate::graph::graph::Graph>,
     vertex_ids: &[u32],
     edge_ids: &[u32],
 ) -> Vec<crate::storage::redo_log::RedoLogEntry> {
-    let mut entries = Vec::new();
-
     for vid in vertex_ids {
         if let Err(e) = crate::graph::locked::get_vertex_locked(graph, *vid) {
             log::debug!("touch vertex {}: {}", vid, e);
-            continue;
-        }
-        let found = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).vertices.get(*vid).copied();
-        if let Some(ptr) = found {
-            if let Ok(rec) = graph.index_file.read_vertex_record(ptr.block_idx, ptr.chunk_offset) {
-                let mut data = Vec::with_capacity(12);
-                data.extend_from_slice(&rec.rank.to_le_bytes());
-                data.extend_from_slice(&rec.atime.to_le_bytes());
-                entries.push(crate::storage::redo_log::RedoLogEntry {
-                    op_type: OpType::VertexIndexUpdate,
-                    op_id: *vid as u64,
-                    data,
-                });
-            }
         }
     }
-
     for eid in edge_ids {
         if let Err(e) = crate::graph::locked::get_edge_locked(graph, *eid) {
             log::debug!("touch edge {}: {}", eid, e);
-            continue;
-        }
-        let found = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).edges.get(*eid).copied();
-        if let Some(ptr) = found {
-            if let Ok(rec) = graph.index_file.read_edge_record(ptr.block_idx, ptr.chunk_offset) {
-                let mut data = Vec::with_capacity(12);
-                data.extend_from_slice(&rec.rank.to_le_bytes());
-                data.extend_from_slice(&rec.atime.to_le_bytes());
-                entries.push(crate::storage::redo_log::RedoLogEntry {
-                    op_type: OpType::EdgeIndexUpdate,
-                    op_id: *eid as u64,
-                    data,
-                });
-            }
         }
     }
-
-    entries
+    vec![] // rank/atime persisted via in-place DataHeader update
 }
 
 /// POST /cluster/touch

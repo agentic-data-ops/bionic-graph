@@ -268,7 +268,7 @@ pub async fn handle_gremlin(
     }
 
     // On the master (standalone or cluster), call process_touch directly
-    // to persist IndexUpdate entries to the redo log and optionally broadcast.
+    // to persist metadata to the redo log and optionally broadcast.
     if response.success && !response.data.is_empty() {
         let settings = state.settings.lock().unwrap();
         if !settings.cluster.enabled || settings.cluster.role == crate::config::NodeRole::Master {
@@ -467,20 +467,20 @@ pub async fn handle_get_vertex_meta(
         Err(e) => return Json(serde_json::json!({"error": e.to_string()})),
     };
     let _vlock = graph.locks.read_vertex(id);
-    let result = crate::graph::crud::get_vertex_index_record(&graph, id);
+    let ptr = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).vertices.get(id).copied();
+    let result = ptr.and_then(|p| crate::graph::crud::read_header_by_ptr(&graph, &p).ok());
     drop(_vlock);
     match result {
-        Ok(Some(rec)) => Json(serde_json::json!({
+        Some(header) => Json(serde_json::json!({
             "success": true,
-            "status": rec.status as u8,
-            "version": rec.version,
-            "ctime": rec.ctime,
-            "mtime": rec.mtime,
-            "atime": rec.atime,
-            "rank": rec.rank,
+            "status": header.status as u8,
+            "version": header.version,
+            "ctime": header.ctime,
+            "mtime": header.mtime,
+            "atime": header.atime,
+            "rank": header.rank,
         })),
-        Ok(None) => Json(serde_json::json!({"success": false, "error": "not found"})),
-        Err(e) => Json(serde_json::json!({"success": false, "error": e.to_string()})),
+        None => Json(serde_json::json!({"success": false, "error": "not found"})),
     }
 }
 
@@ -506,7 +506,23 @@ pub async fn handle_update_vertex_meta(
     };
     let _meta = graph.locks.read_metadata();
     let _vlock = graph.locks.write_vertex(id);
-    let result = crate::graph::crud::update_vertex_meta(&graph, id, new_rank, new_atime, new_name);
+
+    // If name is being changed, it requires a full payload update.
+    // For rank/atime only, use the lightweight meta update.
+    let result = if new_name.is_some() {
+        // Delegate to update_vertex for full payload rewrite.
+        crate::graph::crud::update_vertex(&graph, id, new_name, None, None, None, false)
+            .and_then(|_| {
+                if new_rank.is_some() || new_atime.is_some() {
+                    crate::graph::crud::update_vertex_meta(&graph, id, new_rank, new_atime)
+                } else {
+                    Ok(())
+                }
+            })
+    } else {
+        crate::graph::crud::update_vertex_meta(&graph, id, new_rank, new_atime)
+    };
+
     drop(_vlock);
     drop(_meta);
     match result {
@@ -642,20 +658,20 @@ pub async fn handle_get_edge_meta(
         Err(e) => return Json(serde_json::json!({"error": e.to_string()})),
     };
     let _elock = graph.locks.read_edge(id);
-    let result = crate::graph::crud::get_edge_index_record(&graph, id);
+    let ptr = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).edges.get(id).copied();
+    let result = ptr.and_then(|p| crate::graph::crud::read_header_by_ptr(&graph, &p).ok());
     drop(_elock);
     match result {
-        Ok(Some(rec)) => Json(serde_json::json!({
+        Some(header) => Json(serde_json::json!({
             "success": true,
-            "status": rec.status as u8,
-            "version": rec.version,
-            "ctime": rec.ctime,
-            "mtime": rec.mtime,
-            "atime": rec.atime,
-            "rank": rec.rank,
+            "status": header.status as u8,
+            "version": header.version,
+            "ctime": header.ctime,
+            "mtime": header.mtime,
+            "atime": header.atime,
+            "rank": header.rank,
         })),
-        Ok(None) => Json(serde_json::json!({"success": false, "error": "not found"})),
-        Err(e) => Json(serde_json::json!({"success": false, "error": e.to_string()})),
+        None => Json(serde_json::json!({"success": false, "error": "not found"})),
     }
 }
 
@@ -680,7 +696,20 @@ pub async fn handle_update_edge_meta(
     };
     let _meta = graph.locks.read_metadata();
     let _elock = graph.locks.write_edge(id);
-    let result = crate::graph::crud::update_edge_meta(&graph, id, new_rank, new_atime, new_name);
+
+    let result = if new_name.is_some() {
+        crate::graph::crud::update_edge(&graph, id, new_name, None, None, None, None, false)
+            .and_then(|_| {
+                if new_rank.is_some() || new_atime.is_some() {
+                    crate::graph::crud::update_edge_meta(&graph, id, new_rank, new_atime)
+                } else {
+                    Ok(())
+                }
+            })
+    } else {
+        crate::graph::crud::update_edge_meta(&graph, id, new_rank, new_atime)
+    };
+
     drop(_elock);
     drop(_meta);
     match result {

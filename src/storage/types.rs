@@ -100,21 +100,22 @@ impl From<u8> for BlockStatus {
 }
 
 /// Redo-log operation type.
+///
+/// NOTE: rank/atime metadata changes are persisted via in-place DataHeader
+/// updates (no separate WAL entries needed). Only structural changes
+/// (create/delete/update vertex/edge/token payloads) are logged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum OpType {
     VertexCreate = 0x00,
     VertexDelete = 0x01,
     VertexUpdate = 0x02,
-    VertexIndexUpdate = 0x03,
-    EdgeCreate = 0x04,
-    EdgeDelete = 0x05,
-    EdgeUpdate = 0x06,
-    EdgeIndexUpdate = 0x07,
-    TokenCreate = 0x08,
-    TokenUpdate = 0x09,
-    TokenDelete = 0x0A,
-    TokenIndexUpdate = 0x0B,
+    EdgeCreate = 0x03,
+    EdgeDelete = 0x04,
+    EdgeUpdate = 0x05,
+    TokenCreate = 0x06,
+    TokenUpdate = 0x07,
+    TokenDelete = 0x08,
 }
 
 impl TryFrom<u8> for OpType {
@@ -124,15 +125,12 @@ impl TryFrom<u8> for OpType {
             0x00 => Ok(OpType::VertexCreate),
             0x01 => Ok(OpType::VertexDelete),
             0x02 => Ok(OpType::VertexUpdate),
-            0x03 => Ok(OpType::VertexIndexUpdate),
-            0x04 => Ok(OpType::EdgeCreate),
-            0x05 => Ok(OpType::EdgeDelete),
-            0x06 => Ok(OpType::EdgeUpdate),
-            0x07 => Ok(OpType::EdgeIndexUpdate),
-            0x08 => Ok(OpType::TokenCreate),
-            0x09 => Ok(OpType::TokenUpdate),
-            0x0A => Ok(OpType::TokenDelete),
-            0x0B => Ok(OpType::TokenIndexUpdate),
+            0x03 => Ok(OpType::EdgeCreate),
+            0x04 => Ok(OpType::EdgeDelete),
+            0x05 => Ok(OpType::EdgeUpdate),
+            0x06 => Ok(OpType::TokenCreate),
+            0x07 => Ok(OpType::TokenUpdate),
+            0x08 => Ok(OpType::TokenDelete),
             _ => Err(()),
         }
     }
@@ -211,14 +209,127 @@ pub enum PropertyValue {
     Null,
 }
 
+// ── Data header (fixed 64-byte prefix on every data record) ────────────────
+
+/// Size of the fixed data header at the start of every data record (1 chunk).
+pub const DATA_HEADER_SIZE: usize = 64;
+
+/// Fixed 64-byte header at the start of every data record in the data file.
+///
+/// Layout (1 chunk = 64 bytes):
+///   [0]    chunk_type (u8)
+///   [1]    status (u8)
+///   [2..4]  version (u16 LE)
+///   [4..8]  entity_id (u32 LE)
+///   [8..16] ctime (u64 LE)
+///  [16..24] mtime (u64 LE)
+///  [24..32] atime (u64 LE)
+///  [32..36] rank (u32 LE)
+///  [36..38] payload_len (u16 LE) — length of bincode payload following the header
+///  [38..64] padding (zeros)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DataHeader {
+    pub chunk_type: ChunkType,
+    pub status: DataStatus,
+    pub version: u16,
+    pub entity_id: u32,
+    pub ctime: u64,
+    pub mtime: u64,
+    pub atime: u64,
+    pub rank: u32,
+    pub payload_len: u16,
+}
+
+impl DataHeader {
+    pub fn new_vertex(vid: u32, payload_len: u16) -> Self {
+        let now = timestamp_us();
+        Self {
+            chunk_type: ChunkType::Vertex,
+            status: DataStatus::Normal,
+            version: 1,
+            entity_id: vid,
+            ctime: now,
+            mtime: now,
+            atime: now,
+            rank: 1,
+            payload_len,
+        }
+    }
+
+    pub fn new_edge(eid: u32, payload_len: u16) -> Self {
+        let now = timestamp_us();
+        Self {
+            chunk_type: ChunkType::Edge,
+            status: DataStatus::Normal,
+            version: 1,
+            entity_id: eid,
+            ctime: now,
+            mtime: now,
+            atime: now,
+            rank: 1,
+            payload_len,
+        }
+    }
+
+    pub fn new_token(tid: u32, payload_len: u16) -> Self {
+        let now = timestamp_us();
+        Self {
+            chunk_type: ChunkType::Token,
+            status: DataStatus::Normal,
+            version: 0,
+            entity_id: tid,
+            ctime: now,
+            mtime: 0,
+            atime: 0,
+            rank: 0,
+            payload_len,
+        }
+    }
+
+    /// Encode into a 64-byte chunk buffer.
+    pub fn encode(&self, buf: &mut [u8; 64]) {
+        buf[0] = self.chunk_type as u8;
+        buf[1] = self.status as u8;
+        buf[2..4].copy_from_slice(&self.version.to_le_bytes());
+        buf[4..8].copy_from_slice(&self.entity_id.to_le_bytes());
+        buf[8..16].copy_from_slice(&self.ctime.to_le_bytes());
+        buf[16..24].copy_from_slice(&self.mtime.to_le_bytes());
+        buf[24..32].copy_from_slice(&self.atime.to_le_bytes());
+        buf[32..36].copy_from_slice(&self.rank.to_le_bytes());
+        buf[36..38].copy_from_slice(&self.payload_len.to_le_bytes());
+        // bytes 38..64 remain zeroed (padding)
+    }
+
+    /// Decode from a 64-byte chunk buffer.
+    pub fn decode(buf: &[u8; 64]) -> Self {
+        Self {
+            chunk_type: ChunkType::from(buf[0]),
+            status: DataStatus::from(buf[1]),
+            version: u16::from_le_bytes([buf[2], buf[3]]),
+            entity_id: u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]),
+            ctime: u64::from_le_bytes([
+                buf[8], buf[9], buf[10], buf[11],
+                buf[12], buf[13], buf[14], buf[15],
+            ]),
+            mtime: u64::from_le_bytes([
+                buf[16], buf[17], buf[18], buf[19],
+                buf[20], buf[21], buf[22], buf[23],
+            ]),
+            atime: u64::from_le_bytes([
+                buf[24], buf[25], buf[26], buf[27],
+                buf[28], buf[29], buf[30], buf[31],
+            ]),
+            rank: u32::from_le_bytes([buf[32], buf[33], buf[34], buf[35]]),
+            payload_len: u16::from_le_bytes([buf[36], buf[37]]),
+        }
+    }
+}
+
 // ── Data payloads (variable-length, serialized with bincode) ─────────────────
 
-/// The full vertex payload stored in data file chunks.
+/// The full vertex payload stored in data file chunks (after the DataHeader).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct VertexPayload {
-    pub id: u32,
-    /// In-memory only; not serialized. Stored in the index record.
-    #[serde(skip)]
     pub name: String,
     pub labels: Vec<String>,
     pub keywords: Vec<String>,
@@ -226,12 +337,9 @@ pub struct VertexPayload {
     pub history: Vec<HistoryRecord>,
 }
 
-/// The full edge payload stored in data file chunks.
+/// The full edge payload stored in data file chunks (after the DataHeader).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EdgePayload {
-    pub id: u32,
-    /// In-memory only; not serialized. Stored in the index record.
-    #[serde(skip)]
     pub name: String,
     /// Relation type labels (e.g. "social", "professional").
     pub labels: Vec<String>,
@@ -244,9 +352,11 @@ pub struct EdgePayload {
 }
 
 /// Token payload — maps a token ID to its references across vertices/edges.
+/// Stored after the DataHeader in the data file.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TokenPayload {
     pub id: u32,
+    pub token: String,
     pub refs: Vec<TokenRef>,
 }
 
@@ -258,8 +368,6 @@ pub struct TokenRef {
     pub ref_version: u16,
     pub ref_frequency: u16,
     pub hits: Vec<Hit>,
-    /// Microsecond timestamp when this ref was created (for time-travel filtering).
-    pub timestamp: u64,
 }
 
 /// A specific hit position (key + offset) within a vertex/edge attribute.
@@ -329,6 +437,14 @@ impl StorageError {
             StorageError::Other(s) => StorageError::Other(s.clone()),
         }
     }
+}
+
+/// Current wall-clock time in microseconds since Unix epoch.
+pub fn timestamp_us() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros() as u64
 }
 
 /// A 16 KB block with 512-byte alignment for O_DIRECT I/O.

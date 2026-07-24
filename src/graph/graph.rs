@@ -20,7 +20,6 @@ use crate::storage::{
     bitmap_file::BitmapFile,
     block_cache::BlockCache,
     data_file::DataFile,
-    index_file::IndexFile,
     memory_index::MemoryIndex,
     memory_index_builder,
     redo_log::RedoLog,
@@ -137,7 +136,6 @@ pub struct Graph {
     pub bitmap_file: RwLock<BitmapFile>,
     pub block_cache: RwLock<BlockCache>,
     pub redo_log: RedoLog,
-    pub index_file: IndexFile,
 
     // ── In-memory index ──────────────────────────────────────────────────
     pub memory_index: RwLock<MemoryIndex>,
@@ -183,14 +181,10 @@ impl Graph {
             config.storage.rotation_threshold_mb * 1024 * 1024,
             config.storage.rotation_max_age_secs,
         )?;
-        let index_file = IndexFile::open(graph_dir.join("index"))?;
-
         // ── Rebuild in-memory index ──────────────────────────────────────
-        let memory_index = RwLock::new(memory_index_builder::build_memory_index(&index_file)?);
+        let memory_index = RwLock::new(memory_index_builder::build_memory_index(&data_file)?);
 
         // ── Determine next IDs from the in-memory index ────────────────
-        // No need to persist these — on restart, the index is rebuilt from
-        // the index file, and max_id + 1 gives the correct next ID.
         let max_vid = {
             let mi = memory_index.read().unwrap_or_else(|e| e.into_inner());
             mi.vertices.keys().last().copied().unwrap_or(0)
@@ -207,7 +201,6 @@ impl Graph {
             bitmap_file,
             block_cache,
             redo_log,
-            index_file,
             memory_index,
             locks: LockManager::new(),
             next_vertex_id: AtomicU32::new(max_vid + 1),
@@ -224,10 +217,6 @@ impl Graph {
             let graph = g.upgrade().ok_or_else(|| StorageError::Other("graph dropped during replay".into()))?;
             crate::graph::crud::replay_entry(&graph, &entry)
         })?;
-
-        // After replay, flush cached index records to disk so the index file
-        // is consistent with the in-memory state after WAL replay.
-        crate::graph::crud::flush_index_to_disk(&graph)?;
 
         // After replay, switch to a fresh WAL file so crash recovery
         // during this session works (the file stays on disk with a real
@@ -259,15 +248,12 @@ impl Graph {
             self.data_file.write_block(idx, data)?;
             Ok(())
         })?;
-        self.index_file.flush_dirty()?;
         self.redo_log.sync()?;
         Ok(())
     }
 
     /// Close the graph — flush everything and checkpoint the WAL.
-    /// Close the graph, persisting current state and counters.
     pub fn close(&self) -> StorageResult<()> {
-        crate::graph::crud::flush_index_to_disk(self)?;
         self.flush()?;
         self.redo_log.sync()?;
         self.redo_log.renew()?;
