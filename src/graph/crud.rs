@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use crate::graph::graph::Graph;
+use crate::graph::profile;
 use crate::graph::serialize::{self, deserialize_edge, deserialize_vertex, serialize_edge, serialize_vertex};
 use crate::graph::tokenizer::Tokenizer;
 use crate::storage::block_allocator::BlockAllocator;
@@ -15,6 +16,7 @@ use crate::storage::types::{
 };
 
 const MAX_STORABLE_DATA: usize = (CHUNKS_PER_BLOCK - 1) * CHUNK_SIZE; // 255 * 64 = 16320
+const MAX_TOKEN_PAYLOAD: usize = 14000;
 
 
 /// Convert a PropertyValue to a string for property index lookup.
@@ -95,12 +97,12 @@ pub fn create_vertex(
         history: Vec::new(),
     };
 
-    let serialized = serialize_vertex(&payload)?;
+    let serialized = profile::time("ser_vertex", || serialize_vertex(&payload))?;
     let header = DataHeader::new_vertex(vid, serialized.len() as u16);
-    let ptr = write_data_record(graph, &header, &serialized)?;
+    let ptr = profile::time("write_data_record", || write_data_record(graph, &header, &serialized))?;
 
     // ── Update memory index ──────────────────────────────────────────
-    {
+    profile::time("idx_insert", || {
         let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
         mi.vertex_id.insert(vid, ptr);
         mi.vertex_name.insert(payload.name.clone(), vid);
@@ -109,13 +111,17 @@ pub fn create_vertex(
             mi.add_vertex_label(l, ptr);
         }
         index_vertex_properties(&mut mi, &payload.properties, ptr);
-    }
+    });
 
     // ── Tokenize attributes ──────────────────────────────────────────
-    tokenize_vertex(&graph, vid, &payload)?;
+    profile::time("tokenize_vertex", || -> StorageResult<()> {
+        tokenize_vertex(&graph, vid, &payload)
+    })?;
 
     // ── WAL ──────────────────────────────────────────────────────────
-    graph.redo_log.append(OpType::VertexCreate, vid as u64, &serialized)?;
+    profile::time("wal_append", || -> StorageResult<()> {
+        graph.redo_log.append(OpType::VertexCreate, vid as u64, &serialized)
+    })?;
 
     Ok(vid)
 }
@@ -1010,6 +1016,26 @@ pub(crate) fn add_token_immediate(graph: &Graph, token_str: &str, ref_type: u8, 
                     hits: hits.to_vec(),
                 });
                 let new_data = crate::graph::serialize::serialize_token(&token_payload)?;
+
+                // If appending would exceed the safe limit, create a new segment.
+                if payload_len + new_data.len() > MAX_TOKEN_PAYLOAD {
+                    let seg_payload = TokenPayload {
+                        id: graph.alloc_token_id(),
+                        token: token_str.to_string(),
+                        refs: vec![TokenRef {
+                            ref_type, ref_id, ref_version: 1,
+                            ref_frequency: hits.len() as u16,
+                            hits: hits.to_vec(),
+                        }],
+                    };
+                    let seg_data = crate::graph::serialize::serialize_token(&seg_payload)?;
+                    let seg_header = DataHeader::new_token(seg_payload.id, seg_data.len() as u16);
+                    let seg_ptr = profile::time("token_write", || write_data_record(graph, &seg_header, &seg_data))?;
+                    let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+                    mi.token.insert(token_str.to_string(), seg_ptr);
+                    return Ok(());
+                }
+
                 let new_header = DataHeader {
                     chunk_type: crate::storage::types::ChunkType::Token,
                     status: DataStatus::Normal,
@@ -1023,7 +1049,7 @@ pub(crate) fn add_token_immediate(graph: &Graph, token_str: &str, ref_type: u8, 
                 };
 
                 // Allocate new space and write DataHeader + payload.
-                let new_ptr = write_data_record(graph, &new_header, &new_data)?;
+                let new_ptr = profile::time("token_write", || write_data_record(graph, &new_header, &new_data))?;
 
                 // Update token pointer in memory index.
                 let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());

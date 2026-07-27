@@ -79,7 +79,7 @@ impl Default for GraphStorageConfig {
             rotation_max_age_secs: Some(900),
             free_list_target: 128,
             max_history: 32,
-            log_flush_batch_enable: false,
+            log_flush_batch_enable: true,
             log_flush_batch_size: 256,
         }
     }
