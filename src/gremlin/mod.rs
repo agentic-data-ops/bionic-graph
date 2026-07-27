@@ -126,14 +126,12 @@ pub fn build_router(
         // Custom property indices
         .route("/indices/vertex/properties", post(indices::create_vertex_property_index))
         .route("/indices/vertex/properties", get(indices::list_vertex_property_indices))
-        .route("/indices/vertex/properties/query", post(indices::query_vertex_property_indices))
-        .route("/indices/vertex/properties/:key", get(indices::query_vertex_property_index))
+        .route("/indices/vertex/properties/:key", get(indices::show_vertex_property_index))
         .route("/indices/vertex/properties/:key", delete(indices::delete_vertex_property_index))
         .route("/indices/vertex/properties", delete(indices::delete_vertex_property_indices))
         .route("/indices/edge/properties", post(indices::create_edge_property_index))
         .route("/indices/edge/properties", get(indices::list_edge_property_indices))
-        .route("/indices/edge/properties/query", post(indices::query_edge_property_indices))
-        .route("/indices/edge/properties/:key", get(indices::query_edge_property_index))
+        .route("/indices/edge/properties/:key", get(indices::show_edge_property_index))
         .route("/indices/edge/properties/:key", delete(indices::delete_edge_property_index))
         .route("/indices/edge/properties", delete(indices::delete_edge_property_indices))
         // Shared state
