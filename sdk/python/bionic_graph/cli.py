@@ -393,7 +393,7 @@ def gremlin():
 
 @gremlin.command("execute")
 @click.option("--steps", required=True, callback=_parse_json_arg,
-              help='JSON array of pipeline step objects. Steps: V, E, has, hasNot, hasLabel, hasText, hasKey, hasValue, out, in, both, outE, inE, bothE, search, traverse, repeat, expand, limit, count, dedup, values, timeTravel, rank. Example: \'[{"step":"V","ids":[1]},{"step":"out","labels":["married_to"]}]\'')
+              help='JSON array of pipeline step objects. Steps: V, E, has, hasNot, hasKey, hasLabel, hasName, search, traverse, repeat, expand, out, in, both, outE, inE, bothE, limit, count, dedup, values, rank. Example: \'[{"step":"hasName","name":"Wang Wei"}]\'')
 @click.option("--graph", help="Target graph (default: graph0)")
 @click.option("--time-travel", type=int, default=None,
               help="Microsecond timestamp for point-in-time queries (X-Time-Travel header)")

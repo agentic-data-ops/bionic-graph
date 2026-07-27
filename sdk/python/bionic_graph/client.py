@@ -286,6 +286,21 @@ class Client:
             self._request("POST", "/gremlin", json={"steps": steps}, headers=headers)
         )
 
+    def has_name(self, name: str, source_name: Optional[str] = None,
+                 target_name: Optional[str] = None,
+                 graph: Optional[str] = None,
+                 time_travel: Optional[int] = None) -> GremlinResponse:
+        """Look up a vertex or edge by name (uses vertex_name/edge_name index).
+
+        For edges, optionally specify source_name and target_name.
+        """
+        step: dict = {"step": "hasName", "name": name}
+        if source_name is not None:
+            step["sourceName"] = source_name
+        if target_name is not None:
+            step["targetName"] = target_name
+        return self.execute_gremlin([step], graph, time_travel)
+
     def search(
         self,
         text: str,
