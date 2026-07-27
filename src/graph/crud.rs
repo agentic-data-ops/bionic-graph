@@ -16,6 +16,64 @@ use crate::storage::types::{
 
 const MAX_STORABLE_DATA: usize = (CHUNKS_PER_BLOCK - 1) * CHUNK_SIZE; // 255 * 64 = 16320
 
+/// Convert a PropertyValue to a string for property index lookup.
+fn prop_val_str(pv: &PropertyValue) -> String {
+    match pv {
+        PropertyValue::String(s) => s.clone(),
+        PropertyValue::Integer(i) => i.to_string(),
+        PropertyValue::Float(f) => f.to_string(),
+        PropertyValue::Boolean(b) => b.to_string(),
+        PropertyValue::List(_) => String::new(),
+        PropertyValue::Null => String::new(),
+    }
+}
+
+/// Insert property index entries for all registered keys.
+fn index_vertex_properties(mi: &mut crate::storage::memory_index::MemoryIndex, properties: &HashMap<String, PropertyValue>, ptr: MetaPointer) {
+    for (key, val) in properties {
+        if mi.has_vertex_property(key) {
+            let s = prop_val_str(val);
+            if !s.is_empty() {
+                mi.insert_vertex_property(key, &s, ptr);
+            }
+        }
+    }
+}
+
+fn index_edge_properties(mi: &mut crate::storage::memory_index::MemoryIndex, properties: &HashMap<String, PropertyValue>, ptr: MetaPointer) {
+    for (key, val) in properties {
+        if mi.has_edge_property(key) {
+            let s = prop_val_str(val);
+            if !s.is_empty() {
+                mi.insert_edge_property(key, &s, ptr);
+            }
+        }
+    }
+}
+
+/// Remove property index entries for all registered keys.
+fn unindex_vertex_properties(mi: &mut crate::storage::memory_index::MemoryIndex, properties: &HashMap<String, PropertyValue>, ptr: &MetaPointer) {
+    for (key, val) in properties {
+        if mi.has_vertex_property(key) {
+            let s = prop_val_str(val);
+            if !s.is_empty() {
+                mi.remove_vertex_property(key, &s, ptr);
+            }
+        }
+    }
+}
+
+fn unindex_edge_properties(mi: &mut crate::storage::memory_index::MemoryIndex, properties: &HashMap<String, PropertyValue>, ptr: &MetaPointer) {
+    for (key, val) in properties {
+        if mi.has_edge_property(key) {
+            let s = prop_val_str(val);
+            if !s.is_empty() {
+                mi.remove_edge_property(key, &s, ptr);
+            }
+        }
+    }
+}
+
 // ── Create ──────────────────────────────────────────────────────────────────
 
 /// Create a vertex. Returns the new vertex ID.
@@ -49,6 +107,7 @@ pub fn create_vertex(
         for l in &payload.labels {
             mi.add_vertex_label(l, ptr);
         }
+        index_vertex_properties(&mut mi, &payload.properties, ptr);
     }
 
     // ── Tokenize attributes ──────────────────────────────────────────
@@ -98,6 +157,7 @@ pub fn create_edge(
         for l in &payload.labels {
             mi.add_edge_label(l, ptr);
         }
+        index_edge_properties(&mut mi, &payload.properties, ptr);
     }
 
     // ── Tokenize ─────────────────────────────────────────────────────
@@ -277,6 +337,12 @@ pub fn update_vertex(
         new_payload.keywords = k.to_vec();
     }
     if let Some(p) = properties {
+        // Update vertex property index: remove old entries, add new ones.
+        {
+            let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+            unindex_vertex_properties(&mut mi, &old_payload.properties, &old_ptr);
+            index_vertex_properties(&mut mi, p, old_ptr);
+        }
         new_payload.properties = p.clone();
     }
 
@@ -373,6 +439,12 @@ pub fn update_edge(
         new_payload.strength = s;
     }
     if let Some(p) = properties {
+        // Update edge property index: remove old entries, add new ones.
+        {
+            let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+            unindex_edge_properties(&mut mi, &old_payload.properties, &old_ptr);
+            index_edge_properties(&mut mi, p, old_ptr);
+        }
         new_payload.properties = p.clone();
     }
 
@@ -479,6 +551,7 @@ pub fn hard_delete_vertex(graph: &Graph, vid: u32) -> StorageResult<()> {
             for l in &payload.labels {
                 mi.remove_vertex_label(l, &ptr);
             }
+            unindex_vertex_properties(&mut mi, &payload.properties, &ptr);
         }
         mi.vertex_id.remove(vid);
         mi.rank.remove(header.rank, &ptr);
@@ -539,6 +612,7 @@ pub fn hard_delete_edge(graph: &Graph, eid: u32) -> StorageResult<()> {
             for l in &payload.labels {
                 mi.remove_edge_label(l, &ptr);
             }
+            unindex_edge_properties(&mut mi, &payload.properties, &ptr);
         }
         mi.edge_id.remove(eid);
         mi.rank.remove(header.rank, &ptr);

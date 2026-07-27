@@ -427,6 +427,10 @@ pub struct MemoryIndex {
     pub vertex_label: BTreeMap<String, Vec<MetaPointer>>,
     /// Label → list of MetaPointer for efficient label filtering on edges.
     pub edge_label: BTreeMap<String, Vec<MetaPointer>>,
+    /// Custom vertex property index: property_key → (property_value → [MetaPointer]).
+    pub vertex_properties: HashMap<String, BTreeMap<String, Vec<MetaPointer>>>,
+    /// Custom edge property index: property_key → (property_value → [MetaPointer]).
+    pub edge_properties: HashMap<String, BTreeMap<String, Vec<MetaPointer>>>,
 
 }
 
@@ -501,6 +505,90 @@ impl MemoryIndex {
         self.edge_label.get(label).map(|v| v.as_slice())
     }
 
+    // ── Custom property index helpers ──────────────────────────────────────
+
+    /// Register a property key for vertex indexing. Has no effect if already registered.
+    pub fn register_vertex_property(&mut self, key: &str) {
+        self.vertex_properties.entry(key.to_string()).or_insert_with(BTreeMap::new);
+    }
+
+    /// Register a property key for edge indexing.
+    pub fn register_edge_property(&mut self, key: &str) {
+        self.edge_properties.entry(key.to_string()).or_insert_with(BTreeMap::new);
+    }
+
+    /// Unregister a vertex property key and remove all its index entries.
+    pub fn unregister_vertex_property(&mut self, key: &str) -> bool {
+        self.vertex_properties.remove(key).is_some()
+    }
+
+    /// Unregister an edge property key and remove all its index entries.
+    pub fn unregister_edge_property(&mut self, key: &str) -> bool {
+        self.edge_properties.remove(key).is_some()
+    }
+
+    /// List all registered vertex property keys.
+    pub fn list_vertex_property_keys(&self) -> Vec<String> {
+        self.vertex_properties.keys().cloned().collect()
+    }
+
+    /// List all registered edge property keys.
+    pub fn list_edge_property_keys(&self) -> Vec<String> {
+        self.edge_properties.keys().cloned().collect()
+    }
+
+    /// Check if a vertex property key is registered.
+    pub fn has_vertex_property(&self, key: &str) -> bool {
+        self.vertex_properties.contains_key(key)
+    }
+
+    /// Check if an edge property key is registered.
+    pub fn has_edge_property(&self, key: &str) -> bool {
+        self.edge_properties.contains_key(key)
+    }
+
+    /// Insert a vertex property index entry. Key must already be registered.
+    pub fn insert_vertex_property(&mut self, key: &str, value: &str, ptr: MetaPointer) {
+        if let Some(map) = self.vertex_properties.get_mut(key) {
+            map.entry(value.to_string()).or_default().push(ptr);
+        }
+    }
+
+    /// Insert an edge property index entry.
+    pub fn insert_edge_property(&mut self, key: &str, value: &str, ptr: MetaPointer) {
+        if let Some(map) = self.edge_properties.get_mut(key) {
+            map.entry(value.to_string()).or_default().push(ptr);
+        }
+    }
+
+    /// Remove a vertex property index entry.
+    pub fn remove_vertex_property(&mut self, key: &str, value: &str, ptr: &MetaPointer) {
+        if let Some(map) = self.vertex_properties.get_mut(key) {
+            if let Some(entries) = map.get_mut(value) {
+                entries.retain(|p| p != ptr);
+            }
+        }
+    }
+
+    /// Remove an edge property index entry.
+    pub fn remove_edge_property(&mut self, key: &str, value: &str, ptr: &MetaPointer) {
+        if let Some(map) = self.edge_properties.get_mut(key) {
+            if let Some(entries) = map.get_mut(value) {
+                entries.retain(|p| p != ptr);
+            }
+        }
+    }
+
+    /// Query vertex property index: return all MetaPointer for a given key+value.
+    pub fn query_vertex_property(&self, key: &str, value: &str) -> Option<&[MetaPointer]> {
+        self.vertex_properties.get(key)?.get(value).map(|v| v.as_slice())
+    }
+
+    /// Query edge property index.
+    pub fn query_edge_property(&self, key: &str, value: &str) -> Option<&[MetaPointer]> {
+        self.edge_properties.get(key)?.get(value).map(|v| v.as_slice())
+    }
+
     // ── Index persistence ─────────────────────────────────────────────────
 
     /// Save all indexes to `dir`. Writes `index_state` last as a commit marker.
@@ -517,6 +605,8 @@ impl MemoryIndex {
         save_one(&dir.join("index_edge_name"), &self.edge_name)?;
         save_one(&dir.join("index_vertex_label"), &self.vertex_label)?;
         save_one(&dir.join("index_edge_label"), &self.edge_label)?;
+        save_one(&dir.join("index_vertex_properties"), &self.vertex_properties)?;
+        save_one(&dir.join("index_edge_properties"), &self.edge_properties)?;
         fs::write(dir.join("index_state"), b"1")?;
         Ok(())
     }
@@ -537,6 +627,8 @@ impl MemoryIndex {
             token_ref: load_one(&dir.join("index_token_ref"))?,
             vertex_label: load_one(&dir.join("index_vertex_label"))?,
             edge_label: load_one(&dir.join("index_edge_label"))?,
+            vertex_properties: load_one(&dir.join("index_vertex_properties"))?,
+            edge_properties: load_one(&dir.join("index_edge_properties"))?,
             vertex_name: load_one(&dir.join("index_vertex_name"))?,
             edge_name: load_one(&dir.join("index_edge_name"))?,
         };
@@ -549,7 +641,8 @@ impl MemoryIndex {
         for name in &["index_vertex_id", "index_edge_id", "index_token", "index_rank",
                       "index_atime", "index_vertex_adjacency", "index_token_ref",
                       "index_vertex_name", "index_edge_name", "index_vertex_label",
-                      "index_edge_label", "index_state"]
+                      "index_edge_label", "index_vertex_properties", "index_edge_properties",
+                      "index_state"]
         {
             let _ = fs::remove_file(dir.join(name));
         }
