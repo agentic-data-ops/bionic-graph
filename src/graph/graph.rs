@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::lock::lock_manager::LockManager;
 use crate::storage::{
     bitmap_file::BitmapFile,
-    block_cache::BlockCache,
+    block_cache::ShardedBlockCache,
     data_file::DataFile,
     memory_index::MemoryIndex,
     memory_index_builder,
@@ -143,7 +143,7 @@ pub struct Graph {
     // ── Storage engine ───────────────────────────────────────────────────
     pub data_file: DataFile,
     pub bitmap_file: RwLock<BitmapFile>,
-    pub block_cache: RwLock<BlockCache>,
+    pub block_cache: ShardedBlockCache,
     pub redo_log: RedoLog,
 
     // ── In-memory index ──────────────────────────────────────────────────
@@ -184,7 +184,7 @@ impl Graph {
         let data_file = DataFile::open(graph_dir.join("data"))?;
         let data_blocks = data_file.block_count()?;
         let bitmap_file = RwLock::new(BitmapFile::open(graph_dir.join("bitmap"), data_blocks)?);
-        let block_cache = RwLock::new(BlockCache::new(config.storage.cache_capacity));
+        let block_cache = ShardedBlockCache::new(config.storage.cache_capacity, crate::storage::block_cache::DEFAULT_SHARD_COUNT);
         let redo_log = RedoLog::open_with_config(
             &graph_dir,
             config.storage.rotation_threshold_mb * 1024 * 1024,
@@ -257,8 +257,7 @@ impl Graph {
 
     /// Flush all dirty blocks to disk and sync.
     pub fn flush(&self) -> StorageResult<()> {
-        let mut cache = self.block_cache.write().unwrap_or_else(|e| e.into_inner());
-        cache.flush_dirty(&|idx, data| {
+        self.block_cache.flush_dirty(&|idx, data| {
             self.data_file.write_block(idx, data)?;
             Ok(())
         })?;

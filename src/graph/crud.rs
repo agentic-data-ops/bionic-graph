@@ -16,6 +16,7 @@ use crate::storage::types::{
 
 const MAX_STORABLE_DATA: usize = (CHUNKS_PER_BLOCK - 1) * CHUNK_SIZE; // 255 * 64 = 16320
 
+
 /// Convert a PropertyValue to a string for property index lookup.
 fn prop_val_str(pv: &PropertyValue) -> String {
     match pv {
@@ -826,18 +827,19 @@ fn allocate_chunks(graph: &Graph, chunks_needed: u8) -> StorageResult<(u32, u8)>
             graph.data_file.allocate_blocks(count)
         })?;
 
-        let mut cache = graph.block_cache.write().unwrap_or_else(|e| e.into_inner());
-        let block = cache.get_or_load(block_idx,
+        let block_data = graph.block_cache.read_block_data(block_idx,
             |idx| graph.data_file.read_block(idx),
             &|idx, data| graph.data_file.write_block(idx, data),
         )?;
-
-        let mut header = BlockHeader::decode(block);
+        let mut block_buf = block_data;
+        let mut header = BlockHeader::decode(&block_buf);
         if let Some(off) = BlockAllocator::alloc_chunks(&mut header.bitmap, chunks_needed) {
-            header.encode(block);
+            header.encode(&mut block_buf);
             let was_full = BlockAllocator::is_block_full(&header.bitmap);
-            cache.mark_dirty(block_idx);
-            drop(cache);
+            graph.block_cache.write_block_data(block_idx, &block_buf,
+                |idx| graph.data_file.read_block(idx),
+                &|idx, data| graph.data_file.write_block(idx, data),
+            )?;
 
             if was_full {
                 bf.mark_full(block_idx)?;
@@ -847,7 +849,6 @@ fn allocate_chunks(graph: &Graph, chunks_needed: u8) -> StorageResult<(u32, u8)>
 
         // This block doesn't have enough contiguous free chunks (fragmented).
         // Mark it full so alloc_block skips it, then try the next block.
-        drop(cache);
         bf.mark_full(block_idx)?;
         // Continue loop to try next block
     }
@@ -855,70 +856,61 @@ fn allocate_chunks(graph: &Graph, chunks_needed: u8) -> StorageResult<(u32, u8)>
 
 /// Write padded data into the allocated chunks.
 fn write_data_chunks(graph: &Graph, block_idx: u32, chunk_offset: u8, chunks: u8, data: &[u8]) -> StorageResult<()> {
-    // Write data into the block through cache, then flush to disk.
-    let _block_copy = {
-        let mut cache = graph.block_cache.write().unwrap_or_else(|e| e.into_inner());
-        cache.with_block(block_idx,
-            |idx| graph.data_file.read_block(idx),
-            &|idx, data| graph.data_file.write_block(idx, data),
-            |block| {
-                let start = (chunk_offset as usize) * 64;
-                let end = start + (chunks as usize) * 64;
-                let write_len = data.len().min(end - start);
-                block[start..start + write_len].copy_from_slice(&data[..write_len]);
-                *block  // copy for disk flush
-            },
-        )?
-    };
+    graph.block_cache.with_block(block_idx,
+        |idx| graph.data_file.read_block(idx),
+        &|idx, data| graph.data_file.write_block(idx, data),
+        |block| {
+            let start = (chunk_offset as usize) * 64;
+            let end = start + (chunks as usize) * 64;
+            let write_len = data.len().min(end - start);
+            block[start..start + write_len].copy_from_slice(&data[..write_len]);
+        },
+    )?;
     Ok(())
 }
 
 /// Read data from chunks given the total data length.
 pub(crate) fn read_data_chunks(graph: &Graph, block_idx: u32, chunk_offset: u8, data_len: u16) -> StorageResult<Vec<u8>> {
     let _chunks = BlockAllocator::chunks_needed(data_len as usize);
-    let mut cache = graph.block_cache.write().unwrap_or_else(|e| e.into_inner());
-    let block = cache.get_or_load(block_idx, |idx| {
-        graph.data_file.read_block(idx)
-    }, &|idx, data| {
-        graph.data_file.write_block(idx, data)
-    })?;
-
-    let start = (chunk_offset as usize) * 64;
-    let read_len = data_len as usize;
-    // Clamp to block boundary to avoid slice index out of bounds.
-    let end = (start + read_len).min(BLOCK_SIZE);
-    let avail = end - start;
-    if avail < read_len {
-        log::warn!(
-            "read_data_chunks: truncated read at block={} chunk_offset={}: requested {} bytes, available {}",
-            block_idx, chunk_offset, read_len, avail,
-        );
-    }
-    let mut data = vec![0u8; avail];
-    data.copy_from_slice(&block[start..end]);
-    Ok(data)
+    graph.block_cache.with_block(block_idx,
+        |idx| graph.data_file.read_block(idx),
+        &|idx, data| graph.data_file.write_block(idx, data),
+        |block| {
+            let start = (chunk_offset as usize) * 64;
+            let read_len = data_len as usize;
+            let end = (start + read_len).min(BLOCK_SIZE);
+            let avail = end - start;
+            if avail < read_len {
+                log::warn!(
+                    "read_data_chunks: truncated read at block={} chunk_offset={}: requested {} bytes, available {}",
+                    block_idx, chunk_offset, read_len, avail,
+                );
+            }
+            let mut data = vec![0u8; avail];
+            data.copy_from_slice(&block[start..end]);
+            data
+        },
+    )
 }
 
 /// Free previously allocated data chunks.
 fn free_data_chunks(graph: &Graph, block_idx: u32, chunk_offset: u8, chunks: u8) -> StorageResult<()> {
-    let was_full = {
-        let mut cache = graph.block_cache.write().unwrap_or_else(|e| e.into_inner());
-        if cache.contains(block_idx) {
-            let block = cache.get_or_load(block_idx, |idx| {
-                graph.data_file.read_block(idx)
-            }, &|idx, data| {
-                graph.data_file.write_block(idx, data)
-            })?;
-            let mut header = BlockHeader::decode(block);
-            let was_full = BlockAllocator::is_block_full(&header.bitmap);
-            BlockAllocator::free_chunks(&mut header.bitmap, chunk_offset, chunks);
-            header.encode(block);
-            cache.mark_dirty(block_idx);
-            was_full && !BlockAllocator::is_block_full(&header.bitmap)
-        } else {
-            false
-        }
-    };
+    let was_full = graph.block_cache.peek_block(block_idx, |opt| {
+        if opt.is_none() { return false; }
+        let mut buf = [0u8; BLOCK_SIZE];
+        let result = graph.block_cache.with_block(block_idx,
+            |idx| graph.data_file.read_block(idx),
+            &|idx, data| graph.data_file.write_block(idx, data),
+            |block| {
+                let mut header = BlockHeader::decode(block);
+                let wf = BlockAllocator::is_block_full(&header.bitmap);
+                BlockAllocator::free_chunks(&mut header.bitmap, chunk_offset, chunks);
+                header.encode(block);
+                wf && !BlockAllocator::is_block_full(&header.bitmap)
+            },
+        );
+        result.unwrap_or(false)
+    });
 
     if was_full {
         let mut bf = graph.bitmap_file.write().unwrap_or_else(|e| e.into_inner());
@@ -976,7 +968,25 @@ fn tokenize_edge(graph: &Graph, eid: u32, payload: &EdgePayload) -> StorageResul
 
 /// Add or update a token entry.
 ///
+/// Add or update a token entry — dispatches to batch or immediate.
 fn add_token(graph: &Graph, token_str: &str, ref_type: u8, ref_id: u32, hits: &[crate::storage::types::Hit]) -> StorageResult<()> {
+    if crate::graph::token_batch::is_active() {
+        crate::graph::token_batch::buffer_add(graph, token_str, ref_type, ref_id, hits)
+    } else {
+        add_token_immediate(graph, token_str, ref_type, ref_id, hits)
+    }
+}
+
+/// Append multiple refs to an existing token in one write (called from token_batch::flush_batch).
+pub fn add_token_batch(graph: &Graph, token_str: &str, refs: &[crate::graph::token_batch::PendingRef]) -> StorageResult<()> {
+    for pr in refs {
+        add_token_immediate(graph, token_str, pr.ref_type, pr.ref_id, &pr.hits)?;
+    }
+    Ok(())
+}
+
+/// Add or update a token entry — immediate write (no batching).
+pub(crate) fn add_token_immediate(graph: &Graph, token_str: &str, ref_type: u8, ref_id: u32, hits: &[crate::storage::types::Hit]) -> StorageResult<()> {
     // Check if token already exists in memory index.
     let existing = {
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
@@ -1208,22 +1218,14 @@ pub fn read_token_by_ptr(
 /// Used by Gremlin engine and rank decay to resolve entity identity from data pointers.
 pub fn read_header_by_ptr(graph: &Graph, ptr: &MetaPointer) -> StorageResult<DataHeader> {
     let mut buf = [0u8; 64];
-    // Fast path: read lock.
-    {
-        let cache = graph.block_cache.read().unwrap_or_else(|e| e.into_inner());
-        if let Some(block) = cache.peek(ptr.block_idx) {
+    graph.block_cache.with_block(ptr.block_idx,
+        |idx| graph.data_file.read_block(idx),
+        &|idx, data| graph.data_file.write_block(idx, data).map_err(|e| e.into()),
+        |block| {
             let start = (ptr.chunk_offset as usize) * 64;
             buf.copy_from_slice(&block[start..start + 64]);
-            return Ok(DataHeader::decode(&buf));
-        }
-    }
-    // Slow path: write lock on cache miss.
-    let mut cache = graph.block_cache.write().unwrap_or_else(|e| e.into_inner());
-    let block = cache.get_or_load(ptr.block_idx, |idx| graph.data_file.read_block(idx), &|idx, data| {
-        graph.data_file.write_block(idx, data).map_err(|e| e.into())
-    })?;
-    let start = (ptr.chunk_offset as usize) * 64;
-    buf.copy_from_slice(&block[start..start + 64]);
+        },
+    )?;
     Ok(DataHeader::decode(&buf))
 }
 
@@ -1233,15 +1235,16 @@ pub fn read_header_by_ptr(graph: &Graph, ptr: &MetaPointer) -> StorageResult<Dat
 /// and marks the block dirty. No WAL entry is needed — the change is
 /// persisted at the next checkpoint.
 pub fn update_header_in_place(graph: &Graph, ptr: &MetaPointer, header: &DataHeader) -> StorageResult<()> {
-    let mut cache = graph.block_cache.write().unwrap_or_else(|e| e.into_inner());
-    let block = cache.get_or_load(ptr.block_idx, |idx| graph.data_file.read_block(idx), &|idx, data| {
-        graph.data_file.write_block(idx, data).map_err(|e| e.into())
-    })?;
-    let start = (ptr.chunk_offset as usize) * 64;
-    let mut buf = [0u8; 64];
-    header.encode(&mut buf);
-    block[start..start + 64].copy_from_slice(&buf);
-    cache.mark_dirty(ptr.block_idx);
+    graph.block_cache.with_block(ptr.block_idx,
+        |idx| graph.data_file.read_block(idx),
+        &|idx, data| graph.data_file.write_block(idx, data).map_err(|e| e.into()),
+        |block| {
+            let start = (ptr.chunk_offset as usize) * 64;
+            let mut buf = [0u8; 64];
+            header.encode(&mut buf);
+            block[start..start + 64].copy_from_slice(&buf);
+        },
+    )?;
     Ok(())
 }
 
@@ -1254,29 +1257,17 @@ fn read_data_payload(
     data_len: usize,
 ) -> StorageResult<Vec<u8>> {
     let padded = BlockAllocator::padded_length(data_len);
-    let mut buf = vec![0u8; padded];
-
-    // Fast path: read lock — block may already be cached.
-    {
-        let cache = graph.block_cache.read().unwrap_or_else(|e| e.into_inner());
-        if let Some(block) = cache.peek(block_idx) {
+    graph.block_cache.with_block(block_idx,
+        |idx| graph.data_file.read_block(idx),
+        &|idx, data| graph.data_file.write_block(idx, data).map_err(|e| e.into()),
+        |block| {
             let start = (chunk_offset as usize) * 64;
             let end = start + padded.min(BLOCK_SIZE - start);
-            buf[..(end - start)].copy_from_slice(&block[start..end]);
-            return Ok(buf[..data_len].to_vec());
-        }
-    }
-
-    // Slow path: write lock — load from disk on cache miss.
-    let mut cache = graph.block_cache.write().unwrap_or_else(|e| e.into_inner());
-    let block = cache.get_or_load(block_idx, |idx| graph.data_file.read_block(idx), &|idx, data| {
-        graph.data_file.write_block(idx, data).map_err(|e| e.into())
-    })?;
-
-    let start = (chunk_offset as usize) * 64;
-    let end = start + padded.min(BLOCK_SIZE - start);
-    buf[..(end - start)].copy_from_slice(&block[start..end]);
-    Ok(buf[..data_len].to_vec())
+            let mut buf = vec![0u8; end - start];
+            buf.copy_from_slice(&block[start..end]);
+            buf
+        },
+    )
 }
 
 // ── New DataHeader-based helpers ─────────────────────────────────────────────

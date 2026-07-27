@@ -221,6 +221,12 @@ pub fn batch_import(
     // Start profiling
     profile::begin_batch(format!("batch_import {}v+{}e update={}", entities.len(), relations.len(), update_existing));
 
+    // Enable WAL batch mode when configured
+    let wal_batch_enabled = graph.config.storage.log_flush_batch_enable;
+    if wal_batch_enabled {
+        graph.redo_log.start_batch();
+    }
+
     // Import vertices
     for entity in entities {
         let t0 = std::time::Instant::now();
@@ -307,6 +313,13 @@ pub fn batch_import(
             }
         }
         profile::record(if update_existing { "edge_update" } else { "edge_create" }, t0.elapsed());
+    }
+
+    // End WAL batch mode
+    if wal_batch_enabled {
+        if let Err(e) = graph.redo_log.end_batch() {
+            log::warn!("WAL end_batch error: {}", e);
+        }
     }
 
     // Log profiling summary

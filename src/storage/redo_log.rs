@@ -69,10 +69,17 @@ struct WriteState {
     error: Option<StorageError>,
 }
 
+struct BatchBuffer {
+    entries: Vec<Vec<u8>>,
+    start_time: Instant,
+}
+
 /// Messages sent from the API to the background writer.
 enum WriterMessage {
     /// A data entry to be written (pre-encoded binary bytes).
     Entry(Vec<u8>),
+    /// Multiple entries at once.
+    BatchEntries(Vec<Vec<u8>>),
     /// Flush any pending batch and ensure all prior entries are durable.
     Flush {
         done: Arc<(Mutex<bool>, Condvar)>,
@@ -106,6 +113,8 @@ pub struct RedoLog {
     /// File size threshold for rotation (bytes).
     #[allow(dead_code)]
     rotation_threshold: u64,
+    #[allow(dead_code)]
+    batch_buffer: Mutex<Option<BatchBuffer>>,
 }
 
 impl RedoLog {
@@ -162,6 +171,7 @@ impl RedoLog {
             state,
             handle: Some(handle),
             rotation_threshold,
+            batch_buffer: Mutex::new(None),
         })
     }
 
@@ -193,6 +203,15 @@ impl RedoLog {
     pub fn append(&self, op_type: OpType, op_id: u64, data: &[u8]) -> StorageResult<()> {
         let bytes = self.encode_entry(op_type, op_id, data);
 
+        // Check if batch mode is active.
+        {
+            let mut guard = self.batch_buffer.lock().unwrap();
+            if let Some(ref mut buf) = *guard {
+                buf.entries.push(bytes);
+                return Ok(());
+            }
+        }
+
         // Read the current epoch so we can detect when our batch commits.
         let epoch = self.state.0.lock().unwrap().committed_epoch;
 
@@ -212,6 +231,42 @@ impl RedoLog {
         }
 
         Ok(())
+    }
+
+    pub fn start_batch(&self) {
+        let mut guard = self.batch_buffer.lock().unwrap();
+        if guard.is_none() {
+            *guard = Some(BatchBuffer { entries: Vec::with_capacity(128), start_time: Instant::now() });
+        }
+    }
+
+    pub fn maybe_flush_batch(&self, max_count: usize, max_age: Duration) -> StorageResult<bool> {
+        let should_flush = {
+            let guard = self.batch_buffer.lock().unwrap();
+            guard.as_ref().map_or(false, |b| b.entries.len() >= max_count || b.start_time.elapsed() >= max_age)
+        };
+        if should_flush { self.flush_batch()?; Ok(true) } else { Ok(false) }
+    }
+
+    pub fn flush_batch(&self) -> StorageResult<()> {
+        let entries = { let mut g = self.batch_buffer.lock().unwrap(); g.as_mut().map(|b| std::mem::take(&mut b.entries)) };
+        let Some(entries) = entries else { return Ok(()) };
+        if entries.is_empty() { return Ok(()); }
+        self.writer_tx.send(WriterMessage::BatchEntries(entries)).map_err(|_| StorageError::Other("WAL writer channel closed".into()))?;
+        let done = Arc::new((Mutex::new(false), Condvar::new()));
+        let done2 = done.clone();
+        self.writer_tx.send(WriterMessage::Flush { done }).map_err(|_| StorageError::Other("WAL writer channel closed".into()))?;
+        let mut guard = done2.0.lock().unwrap();
+        while !*guard { guard = done2.1.wait(guard).unwrap(); }
+        { let s = self.state.0.lock().unwrap(); if let Some(ref err) = s.error { return Err(err.to_error()); } }
+        if let Some(ref mut buf) = *self.batch_buffer.lock().unwrap() { buf.start_time = Instant::now(); }
+        Ok(())
+    }
+
+    pub fn end_batch(&self) -> StorageResult<()> {
+        let r = self.flush_batch();
+        *self.batch_buffer.lock().unwrap() = None;
+        r
     }
 
     /// Flush any pending batch and ensure all prior entries are durable
@@ -455,12 +510,23 @@ fn writer_main_loop(
         match msg {
             WriterMessage::Entry(bytes) => {
                 batch.push(bytes);
+            }
+            WriterMessage::BatchEntries(mut entries) => {
+                batch.append(&mut entries);
+                // Flush immediately if batch is large enough.
+                if batch.len() >= DEFAULT_BATCH_SIZE {
+                    writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, rotation_max_age_secs, &mut checkpoint_seq, &state);
+                }
+            }
+            WriterMessage::Entry(bytes) => {
+                batch.push(bytes);
 
                 // Try to collect more entries up to batch size.
                 let deadline = Instant::now() + BATCH_FLUSH_INTERVAL;
                 while batch.len() < DEFAULT_BATCH_SIZE && Instant::now() < deadline {
                     match rx.try_recv() {
                         Ok(WriterMessage::Entry(b)) => batch.push(b),
+                        Ok(WriterMessage::BatchEntries(mut es)) => batch.append(&mut es),
                         Ok(other) => {
                             // Control message arrived mid-batch.
                             // Flush the partial batch, then handle control.

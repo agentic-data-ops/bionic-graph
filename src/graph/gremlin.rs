@@ -226,22 +226,14 @@ impl GremlinResult {
 /// Used by the Gremlin engine to determine entity type/id from rank index pointers.
 fn read_header_by_ptr(graph: &Graph, ptr: &MetaPointer) -> StorageResult<DataHeader> {
     let mut buf = [0u8; 64];
-    {
-        let cache = graph.block_cache.read().unwrap_or_else(|e| e.into_inner());
-        if let Some(block) = cache.peek(ptr.block_idx) {
-            let start = (ptr.chunk_offset as usize) * 64;
-            buf.copy_from_slice(&block[start..start + 64]);
-            return Ok(DataHeader::decode(&buf));
-        }
-    }
-    let mut cache = graph.block_cache.write().unwrap_or_else(|e| e.into_inner());
-    let block = cache.get_or_load(
-        ptr.block_idx,
+    graph.block_cache.with_block(ptr.block_idx,
         |idx| graph.data_file.read_block(idx),
         &|idx, data| graph.data_file.write_block(idx, data).map_err(|e| e.into()),
+        |block| {
+            let start = (ptr.chunk_offset as usize) * 64;
+            buf.copy_from_slice(&block[start..start + 64]);
+        },
     )?;
-    let start = (ptr.chunk_offset as usize) * 64;
-    buf.copy_from_slice(&block[start..start + 64]);
     Ok(DataHeader::decode(&buf))
 }
 
