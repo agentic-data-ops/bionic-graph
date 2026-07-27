@@ -457,6 +457,47 @@ pub fn execute(
                 }
             }
 
+            // Check if next step is HasLabel with label index.
+            if let Some(GremlinStep::HasLabel { label }) = steps.get(i + 1) {
+                match step {
+                    GremlinStep::V { ids: None, names: None, .. } => {
+                        let pairs: Vec<u32> = {
+                            let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+                            let ptr_to_vid: std::collections::HashMap<MetaPointer, u32> = mi.vertex_id.iter()
+                                .map(|(&vid, &ptr)| (ptr, vid)).collect();
+                            mi.vertex_label.get(label).map(|ptrs| {
+                                ptrs.iter().filter_map(|p| ptr_to_vid.get(p).copied()).collect()
+                            }).unwrap_or_default()
+                        };
+                        if !pairs.is_empty() {
+                            if let Ok(results) = step_v(graph, Some(&pairs), None, None, time_travel_at) {
+                                current = results;
+                                skip_next = true;
+                                continue;
+                            }
+                        }
+                    }
+                    GremlinStep::E { ids: None, names: None, .. } => {
+                        let pairs: Vec<u32> = {
+                            let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+                            let ptr_to_eid: std::collections::HashMap<MetaPointer, u32> = mi.edge_id.iter()
+                                .map(|(&eid, &ptr)| (ptr, eid)).collect();
+                            mi.edge_label.get(label).map(|ptrs| {
+                                ptrs.iter().filter_map(|p| ptr_to_eid.get(p).copied()).collect()
+                            }).unwrap_or_default()
+                        };
+                        if !pairs.is_empty() {
+                            if let Ok(results) = step_e(graph, Some(&pairs), None, None, time_travel_at) {
+                                current = results;
+                                skip_next = true;
+                                continue;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
             // Check if next step is Limit → propagate limit for early-break.
             let peek_limit = match step {
                 GremlinStep::V { ids, names, limit } if ids.is_none() && names.is_none() && limit.is_none() => {
