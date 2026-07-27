@@ -510,16 +510,6 @@ fn writer_main_loop(
         match msg {
             WriterMessage::Entry(bytes) => {
                 batch.push(bytes);
-            }
-            WriterMessage::BatchEntries(mut entries) => {
-                batch.append(&mut entries);
-                // Flush immediately if batch is large enough.
-                if batch.len() >= DEFAULT_BATCH_SIZE {
-                    writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, rotation_max_age_secs, &mut checkpoint_seq, &state);
-                }
-            }
-            WriterMessage::Entry(bytes) => {
-                batch.push(bytes);
 
                 // Try to collect more entries up to batch size.
                 let deadline = Instant::now() + BATCH_FLUSH_INTERVAL;
@@ -544,6 +534,13 @@ fn writer_main_loop(
 
                 // Flush accumulated batch.
                 writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, rotation_max_age_secs, &mut checkpoint_seq, &state);
+            }
+            WriterMessage::BatchEntries(mut entries) => {
+                batch.append(&mut entries);
+                // Flush immediately if batch is large enough.
+                if batch.len() >= DEFAULT_BATCH_SIZE {
+                    writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, rotation_max_age_secs, &mut checkpoint_seq, &state);
+                }
             }
             WriterMessage::Shutdown => {
                 flush_entries(writer, &mut batch, &dir, rotation_threshold, rotation_max_age_secs, &mut checkpoint_seq, &state);
