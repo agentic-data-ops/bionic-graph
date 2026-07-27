@@ -335,6 +335,128 @@ pub fn execute(
                 }
             }
 
+            // Check if next step is HasKey with property key that has an index.
+            if let Some(GremlinStep::HasKey { key }) = steps.get(i + 1) {
+                match step {
+                    GremlinStep::V { ids: None, names: None, .. } => {
+                        let pairs: Vec<u32> = {
+                            let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+                            let ptr_to_vid: std::collections::HashMap<MetaPointer, u32> = mi.vertex_id.iter()
+                                .map(|(&vid, &ptr)| (ptr, vid)).collect();
+                            mi.vertex_properties.get(key).map(|val_map| {
+                                let mut ids = Vec::new();
+                                for ptrs in val_map.values() {
+                                    for &p in ptrs {
+                                        if let Some(&vid) = ptr_to_vid.get(&p) {
+                                            ids.push(vid);
+                                        }
+                                    }
+                                }
+                                ids
+                            }).unwrap_or_default()
+                        };
+                        if !pairs.is_empty() {
+                            if let Ok(results) = step_v(graph, Some(&pairs), None, None, time_travel_at) {
+                                current = results;
+                                skip_next = true;
+                                continue;
+                            }
+                        }
+                    }
+                    GremlinStep::E { ids: None, names: None, .. } => {
+                        let pairs: Vec<u32> = {
+                            let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+                            let ptr_to_eid: std::collections::HashMap<MetaPointer, u32> = mi.edge_id.iter()
+                                .map(|(&eid, &ptr)| (ptr, eid)).collect();
+                            mi.edge_properties.get(key).map(|val_map| {
+                                let mut ids = Vec::new();
+                                for ptrs in val_map.values() {
+                                    for &p in ptrs {
+                                        if let Some(&eid) = ptr_to_eid.get(&p) {
+                                            ids.push(eid);
+                                        }
+                                    }
+                                }
+                                ids
+                            }).unwrap_or_default()
+                        };
+                        if !pairs.is_empty() {
+                            if let Ok(results) = step_e(graph, Some(&pairs), None, None, time_travel_at) {
+                                current = results;
+                                skip_next = true;
+                                continue;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // Check if next step is HasNot with property key that has an index.
+            if let Some(GremlinStep::HasNot { key, value }) = steps.get(i + 1) {
+                let prop_str = match value {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Number(n) => n.to_string(),
+                    serde_json::Value::Bool(b) => b.to_string(),
+                    _ => String::new(),
+                };
+                if !prop_str.is_empty() {
+                    match step {
+                        GremlinStep::V { ids: None, names: None, .. } => {
+                            let matching: Vec<u32> = {
+                                let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+                                mi.query_vertex_property(key, &prop_str)
+                                    .map(|ptrs| mi.vertex_id.iter()
+                                        .filter(|(_, &p)| ptrs.contains(&p))
+                                        .map(|(&vid, _)| vid)
+                                        .collect())
+                                    .unwrap_or_default()
+                            };
+                            if !matching.is_empty() {
+                                let all: Vec<u32> = {
+                                    let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+                                    mi.vertex_id.keys().copied().collect()
+                                };
+                                let excluded: Vec<u32> = all.into_iter()
+                                    .filter(|vid| !matching.contains(vid))
+                                    .collect();
+                                if let Ok(results) = step_v(graph, Some(&excluded), None, None, time_travel_at) {
+                                    current = results;
+                                    skip_next = true;
+                                    continue;
+                                }
+                            }
+                        }
+                        GremlinStep::E { ids: None, names: None, .. } => {
+                            let matching: Vec<u32> = {
+                                let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+                                mi.query_edge_property(key, &prop_str)
+                                    .map(|ptrs| mi.edge_id.iter()
+                                        .filter(|(_, &p)| ptrs.contains(&p))
+                                        .map(|(&eid, _)| eid)
+                                        .collect())
+                                    .unwrap_or_default()
+                            };
+                            if !matching.is_empty() {
+                                let all: Vec<u32> = {
+                                    let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+                                    mi.edge_id.keys().copied().collect()
+                                };
+                                let excluded: Vec<u32> = all.into_iter()
+                                    .filter(|eid| !matching.contains(eid))
+                                    .collect();
+                                if let Ok(results) = step_e(graph, Some(&excluded), None, None, time_travel_at) {
+                                    current = results;
+                                    skip_next = true;
+                                    continue;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
             // Check if next step is Limit → propagate limit for early-break.
             let peek_limit = match step {
                 GremlinStep::V { ids, names, limit } if ids.is_none() && names.is_none() && limit.is_none() => {
