@@ -33,8 +33,6 @@ pub enum GremlinStep {
     #[serde(rename = "V")]
     V {
         ids: Option<Vec<u32>>,
-        #[serde(default)]
-        names: Option<Vec<String>>,
         /// Optional limit — when set, use rank index to fetch top-N vertices.
         #[serde(default)]
         limit: Option<u32>,
@@ -42,8 +40,6 @@ pub enum GremlinStep {
     #[serde(rename = "E")]
     E {
         ids: Option<Vec<u32>>,
-        #[serde(default)]
-        names: Option<Vec<String>>,
         /// Optional limit — when set, use rank index to fetch top-N edges.
         #[serde(default)]
         limit: Option<u32>,
@@ -294,36 +290,44 @@ pub fn execute(
                 };
                 if !prop_str.is_empty() {
                     match step {
-                        GremlinStep::V { ids: None, names: None, .. } => {
+                        GremlinStep::V { ids: None, .. } => {
                             let pairs: Vec<u32> = {
                                 let mi2 = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-                                mi2.query_vertex_property(key, &prop_str)
-                                    .map(|ptrs| mi2.vertex_id.iter()
-                                        .filter(|(_, &p)| ptrs.contains(&p))
-                                        .map(|(&vid, _)| vid)
-                                        .collect())
-                                    .unwrap_or_default()
+                                if key == "name" {
+                                    mi2.vertex_name.get(&prop_str).map(|&vid| vec![vid]).unwrap_or_default()
+                                } else {
+                                    mi2.query_vertex_property(key, &prop_str)
+                                        .map(|ptrs| mi2.vertex_id.iter()
+                                            .filter(|(_, &p)| ptrs.contains(&p))
+                                            .map(|(&vid, _)| vid)
+                                            .collect())
+                                        .unwrap_or_default()
+                                }
                             };
                             if !pairs.is_empty() {
-                                if let Ok(results) = step_v(graph, Some(&pairs), None, None, time_travel_at) {
+                                if let Ok(results) = step_v(graph, Some(&pairs), None, time_travel_at) {
                                     current = results;
                                     skip_next = true;
                                     continue;
                                 }
                             }
                         }
-                        GremlinStep::E { ids: None, names: None, .. } => {
+                        GremlinStep::E { ids: None, .. } => {
                             let pairs: Vec<u32> = {
                                 let mi2 = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-                                mi2.query_edge_property(key, &prop_str)
-                                    .map(|ptrs| mi2.edge_id.iter()
-                                        .filter(|(_, &p)| ptrs.contains(&p))
-                                        .map(|(&eid, _)| eid)
-                                        .collect())
-                                    .unwrap_or_default()
+                                if key == "name" {
+                                    mi2.edge_name.get(&prop_str).map(|&eid| vec![eid]).unwrap_or_default()
+                                } else {
+                                    mi2.query_edge_property(key, &prop_str)
+                                        .map(|ptrs| mi2.edge_id.iter()
+                                            .filter(|(_, &p)| ptrs.contains(&p))
+                                            .map(|(&eid, _)| eid)
+                                            .collect())
+                                        .unwrap_or_default()
+                                }
                             };
                             if !pairs.is_empty() {
-                                if let Ok(results) = step_e(graph, Some(&pairs), None, None, time_travel_at) {
+                                if let Ok(results) = step_e(graph, Some(&pairs), None, time_travel_at) {
                                     current = results;
                                     skip_next = true;
                                     continue;
@@ -338,7 +342,7 @@ pub fn execute(
             // Check if next step is HasKey with property key that has an index.
             if let Some(GremlinStep::HasKey { key }) = steps.get(i + 1) {
                 match step {
-                    GremlinStep::V { ids: None, names: None, .. } => {
+                    GremlinStep::V { ids: None, .. } => {
                         let pairs: Vec<u32> = {
                             let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
                             let ptr_to_vid: std::collections::HashMap<MetaPointer, u32> = mi.vertex_id.iter()
@@ -356,14 +360,14 @@ pub fn execute(
                             }).unwrap_or_default()
                         };
                         if !pairs.is_empty() {
-                            if let Ok(results) = step_v(graph, Some(&pairs), None, None, time_travel_at) {
+                            if let Ok(results) = step_v(graph, Some(&pairs), None, time_travel_at) {
                                 current = results;
                                 skip_next = true;
                                 continue;
                             }
                         }
                     }
-                    GremlinStep::E { ids: None, names: None, .. } => {
+                    GremlinStep::E { ids: None, .. } => {
                         let pairs: Vec<u32> = {
                             let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
                             let ptr_to_eid: std::collections::HashMap<MetaPointer, u32> = mi.edge_id.iter()
@@ -381,7 +385,7 @@ pub fn execute(
                             }).unwrap_or_default()
                         };
                         if !pairs.is_empty() {
-                            if let Ok(results) = step_e(graph, Some(&pairs), None, None, time_travel_at) {
+                            if let Ok(results) = step_e(graph, Some(&pairs), None, time_travel_at) {
                                 current = results;
                                 skip_next = true;
                                 continue;
@@ -402,7 +406,7 @@ pub fn execute(
                 };
                 if !prop_str.is_empty() {
                     match step {
-                        GremlinStep::V { ids: None, names: None, .. } => {
+                        GremlinStep::V { ids: None, .. } => {
                             let matching: Vec<u32> = {
                                 let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
                                 mi.query_vertex_property(key, &prop_str)
@@ -420,14 +424,14 @@ pub fn execute(
                                 let excluded: Vec<u32> = all.into_iter()
                                     .filter(|vid| !matching.contains(vid))
                                     .collect();
-                                if let Ok(results) = step_v(graph, Some(&excluded), None, None, time_travel_at) {
+                                if let Ok(results) = step_v(graph, Some(&excluded), None, time_travel_at) {
                                     current = results;
                                     skip_next = true;
                                     continue;
                                 }
                             }
                         }
-                        GremlinStep::E { ids: None, names: None, .. } => {
+                        GremlinStep::E { ids: None, .. } => {
                             let matching: Vec<u32> = {
                                 let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
                                 mi.query_edge_property(key, &prop_str)
@@ -445,7 +449,7 @@ pub fn execute(
                                 let excluded: Vec<u32> = all.into_iter()
                                     .filter(|eid| !matching.contains(eid))
                                     .collect();
-                                if let Ok(results) = step_e(graph, Some(&excluded), None, None, time_travel_at) {
+                                if let Ok(results) = step_e(graph, Some(&excluded), None, time_travel_at) {
                                     current = results;
                                     skip_next = true;
                                     continue;
@@ -460,7 +464,7 @@ pub fn execute(
             // Check if next step is HasLabel with label index.
             if let Some(GremlinStep::HasLabel { label }) = steps.get(i + 1) {
                 match step {
-                    GremlinStep::V { ids: None, names: None, .. } => {
+                    GremlinStep::V { ids: None, .. } => {
                         let pairs: Vec<u32> = {
                             let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
                             let ptr_to_vid: std::collections::HashMap<MetaPointer, u32> = mi.vertex_id.iter()
@@ -470,14 +474,14 @@ pub fn execute(
                             }).unwrap_or_default()
                         };
                         if !pairs.is_empty() {
-                            if let Ok(results) = step_v(graph, Some(&pairs), None, None, time_travel_at) {
+                            if let Ok(results) = step_v(graph, Some(&pairs), None, time_travel_at) {
                                 current = results;
                                 skip_next = true;
                                 continue;
                             }
                         }
                     }
-                    GremlinStep::E { ids: None, names: None, .. } => {
+                    GremlinStep::E { ids: None, .. } => {
                         let pairs: Vec<u32> = {
                             let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
                             let ptr_to_eid: std::collections::HashMap<MetaPointer, u32> = mi.edge_id.iter()
@@ -487,7 +491,7 @@ pub fn execute(
                             }).unwrap_or_default()
                         };
                         if !pairs.is_empty() {
-                            if let Ok(results) = step_e(graph, Some(&pairs), None, None, time_travel_at) {
+                            if let Ok(results) = step_e(graph, Some(&pairs), None, time_travel_at) {
                                 current = results;
                                 skip_next = true;
                                 continue;
@@ -500,7 +504,7 @@ pub fn execute(
 
             // Check if next step is Limit → propagate limit for early-break.
             let peek_limit = match step {
-                GremlinStep::V { ids, names, limit } if ids.is_none() && names.is_none() && limit.is_none() => {
+                GremlinStep::V { ids, limit } if ids.is_none() && limit.is_none() => {
                     steps.get(i + 1).and_then(|next| {
                         if let GremlinStep::Limit { count } = next {
                             Some(*count)
@@ -509,7 +513,7 @@ pub fn execute(
                         }
                     })
                 }
-                GremlinStep::E { ids, names, limit } if ids.is_none() && names.is_none() && limit.is_none() => {
+                GremlinStep::E { ids, limit } if ids.is_none() && limit.is_none() => {
                     steps.get(i + 1).and_then(|next| {
                         if let GremlinStep::Limit { count } = next {
                             Some(*count)
@@ -523,11 +527,11 @@ pub fn execute(
 
             let step = if let Some(limit) = peek_limit {
                 match step {
-                    GremlinStep::V { ids: _, names: _, limit: _ } => {
-                        &GremlinStep::V { ids: None, names: None, limit: Some(limit) }
+                    GremlinStep::V { ids: _, limit: _ } => {
+                        &GremlinStep::V { ids: None, limit: Some(limit) }
                     }
-                    GremlinStep::E { ids: _, names: _, limit: _ } => {
-                        &GremlinStep::E { ids: None, names: None, limit: Some(limit) }
+                    GremlinStep::E { ids: _, limit: _ } => {
+                        &GremlinStep::E { ids: None, limit: Some(limit) }
                     }
                     _ => step,
                 }
@@ -577,8 +581,8 @@ fn execute_step(
     time_travel_at: Option<u64>,
 ) -> StorageResult<Vec<GremlinResult>> {
     match step {
-        GremlinStep::V { ids, names, limit } => step_v(graph, ids.as_deref(), names.as_deref(), *limit, time_travel_at),
-        GremlinStep::E { ids, names, limit } => step_e(graph, ids.as_deref(), names.as_deref(), *limit, time_travel_at),
+        GremlinStep::V { ids, limit } => step_v(graph, ids.as_deref(), *limit, time_travel_at),
+        GremlinStep::E { ids, limit } => step_e(graph, ids.as_deref(), *limit, time_travel_at),
         GremlinStep::Search { text, mode, match_mode, limit, min_rank } => {
             step_search(graph, text, mode.as_deref(), match_mode.as_deref(), time_travel_at, *limit, *min_rank)
         }
@@ -612,7 +616,6 @@ fn execute_step(
 fn step_v(
     graph: &Arc<Graph>,
     ids: Option<&[u32]>,
-    names: Option<&[String]>,
     limit: Option<u32>,
     at: Option<u64>,
 ) -> StorageResult<Vec<GremlinResult>> {
@@ -624,26 +627,6 @@ fn step_v(
         for &vid in ids {
             if let Some(ptr) = mi.vertex_id.get(vid) {
                 candidates.push((vid, *ptr));
-            }
-        }
-        drop(mi);
-        let mut results = Vec::with_capacity(candidates.len());
-        for (vid, ptr) in candidates {
-            if let Ok(Some(v)) = crud::read_vertex_by_ptr(graph, ptr, at) {
-                results.push(GremlinResult::from_vertex(vid, &v, None));
-            }
-        }
-        return Ok(results);
-    }
-
-    if let Some(names) = names {
-        // Specific names requested — look up each name in vertex_names.
-        let mut candidates: Vec<(u32, MetaPointer)> = Vec::with_capacity(names.len());
-        for name in names {
-            if let Some(&vid) = mi.vertex_name.get(name) {
-                if let Some(ptr) = mi.vertex_id.get(vid) {
-                    candidates.push((vid, *ptr));
-                }
             }
         }
         drop(mi);
@@ -702,7 +685,6 @@ fn step_v(
 fn step_e(
     graph: &Arc<Graph>,
     ids: Option<&[u32]>,
-    names: Option<&[String]>,
     limit: Option<u32>,
     at: Option<u64>,
 ) -> StorageResult<Vec<GremlinResult>> {
@@ -714,26 +696,6 @@ fn step_e(
         for &eid in ids {
             if let Some(ptr) = mi.edge_id.get(eid) {
                 candidates.push((eid, *ptr));
-            }
-        }
-        drop(mi);
-        let mut results = Vec::with_capacity(candidates.len());
-        for (eid, ptr) in candidates {
-            if let Ok(Some(e)) = crud::read_edge_by_ptr(graph, ptr, at) {
-                results.push(GremlinResult::from_edge(eid, &e, None));
-            }
-        }
-        return Ok(results);
-    }
-
-    if let Some(names) = names {
-        // Specific names requested — look up each name in edge_names.
-        let mut candidates: Vec<(u32, MetaPointer)> = Vec::with_capacity(names.len());
-        for name in names {
-            if let Some(&eid) = mi.edge_name.get(name) {
-                if let Some(ptr) = mi.edge_id.get(eid) {
-                    candidates.push((eid, *ptr));
-                }
             }
         }
         drop(mi);
