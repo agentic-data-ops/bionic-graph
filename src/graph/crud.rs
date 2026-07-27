@@ -350,11 +350,18 @@ pub fn update_vertex(
     // The history entry's timestamp is the old header's mtime — the moment
     // this state snapshot was last current before being superseded.
     if record_history {
-        let old_bytes = serialize_vertex(&old_payload)?;
+        let mut old_payload_core = old_payload.clone();
+        old_payload_core.history.clear();
+        let old_bytes = serialize_vertex(&old_payload_core)?;
         new_payload.history.push(HistoryRecord {
             timestamp: old_header.mtime,
             data: old_bytes,
         });
+        // Cap history to prevent unbounded growth.
+        let max_history = graph.config.storage.max_history;
+        while new_payload.history.len() > max_history {
+            new_payload.history.remove(0);
+        }
     }
 
     // Serialize and allocate new chunks (copy-on-write).
@@ -449,11 +456,17 @@ pub fn update_edge(
     }
 
     if record_history {
-        let old_bytes = serialize_edge(&old_payload)?;
+        let mut old_payload_core = old_payload.clone();
+        old_payload_core.history.clear();
+        let old_bytes = serialize_edge(&old_payload_core)?;
         new_payload.history.push(HistoryRecord {
             timestamp: old_header.mtime,
             data: old_bytes,
         });
+        let max_history = graph.config.storage.max_history;
+        while new_payload.history.len() > max_history {
+            new_payload.history.remove(0);
+        }
     }
 
     let serialized = serialize_edge(&new_payload)?;
@@ -962,6 +975,7 @@ fn tokenize_edge(graph: &Graph, eid: u32, payload: &EdgePayload) -> StorageResul
 }
 
 /// Add or update a token entry.
+///
 fn add_token(graph: &Graph, token_str: &str, ref_type: u8, ref_id: u32, hits: &[crate::storage::types::Hit]) -> StorageResult<()> {
     // Check if token already exists in memory index.
     let existing = {

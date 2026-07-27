@@ -63,6 +63,12 @@ pub struct GraphStorageConfig {
     pub rotation_max_age_secs: Option<u64>,
     /// 位图空闲块列表预填充数量
     pub free_list_target: usize,
+    /// 顶点/边历史记录最大条目数。
+    pub max_history: usize,
+    /// 是否启用日志批量写入（批量导入时合并日志记录）。
+    pub log_flush_batch_enable: bool,
+    /// WAL 批量 flush 的批次大小。
+    pub log_flush_batch_size: usize,
 }
 
 impl Default for GraphStorageConfig {
@@ -72,6 +78,9 @@ impl Default for GraphStorageConfig {
             rotation_threshold_mb: 64,
             rotation_max_age_secs: Some(900),
             free_list_target: 128,
+            max_history: 32,
+            log_flush_batch_enable: false,
+            log_flush_batch_size: 256,
         }
     }
 }
