@@ -182,16 +182,21 @@ impl Graph {
             config.storage.rotation_max_age_secs,
         )?;
         // ── Rebuild in-memory index ──────────────────────────────────────
-        let memory_index = RwLock::new(memory_index_builder::build_memory_index(&data_file)?);
+        let memory_index = RwLock::new(
+            match MemoryIndex::load_from_dir(&graph_dir.join("index"))? {
+                Some(mi) => mi,
+                None => memory_index_builder::build_memory_index(&data_file)?,
+            }
+        );
 
         // ── Determine next IDs from the in-memory index ────────────────
         let max_vid = {
             let mi = memory_index.read().unwrap_or_else(|e| e.into_inner());
-            mi.vertices.keys().last().copied().unwrap_or(0)
+            mi.vertex_id.keys().last().copied().unwrap_or(0)
         };
         let max_eid = {
             let mi = memory_index.read().unwrap_or_else(|e| e.into_inner());
-            mi.edges.keys().last().copied().unwrap_or(0)
+            mi.edge_id.keys().last().copied().unwrap_or(0)
         };
 
         let graph = Arc::new(Self {
@@ -257,6 +262,10 @@ impl Graph {
         self.flush()?;
         self.redo_log.sync()?;
         self.redo_log.renew()?;
+        // Persist memory index for faster startup.
+        if let Ok(mi) = self.memory_index.read() {
+            let _ = mi.save_to_dir(&self.dir.join("index"));
+        }
         Ok(())
     }
 }

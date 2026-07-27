@@ -199,7 +199,7 @@ fn build_broadcast_entries(
     match (method.as_str(), req.path.as_str()) {
         ("POST", "/vertices") | ("PUT", "/vertices") => {
             // Use read_vertex_by_record to avoid updating rank/atime.
-            let found = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).vertices.get(id).copied();
+            let found = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).vertex_id.get(id).copied();
             if let Some(ptr) = found {
                 if let Ok(dh) = crate::graph::crud::read_header_by_ptr(&graph, &ptr) {
                     if dh.status != crate::storage::types::DataStatus::Deleted {
@@ -223,7 +223,7 @@ fn build_broadcast_entries(
         }
         ("POST", "/edges") | ("PUT", "/edges") => {
             // Read edge payload directly without updating rank/atime.
-            let found = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).edges.get(id).copied();
+            let found = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).edge_id.get(id).copied();
             if let Some(ptr) = found {
                 if let Ok(dh) = crate::graph::crud::read_header_by_ptr(&graph, &ptr) {
                     if dh.status != crate::storage::types::DataStatus::Deleted {

@@ -62,28 +62,28 @@ pub fn build_memory_index(data_file: &DataFile) -> StorageResult<MemoryIndex> {
                     match chunk_type {
                         ChunkType::Vertex => {
                             let payload = deserialize_vertex(payload_bytes)?;
-                            mem.vertices.insert(dh.entity_id, ptr);
-                            mem.vertex_names.insert(payload.name.clone(), dh.entity_id);
+                            mem.vertex_id.insert(dh.entity_id, ptr);
+                            mem.vertex_name.insert(payload.name.clone(), dh.entity_id);
                             if dh.status != DataStatus::Deleted {
-                                mem.ranks.insert(dh.rank, ptr);
-                                mem.atime_index.insert(dh.atime, ptr);
+                                mem.rank.insert(dh.rank, ptr);
+                                mem.atime.insert(dh.atime, ptr);
                             }
                         }
                         ChunkType::Edge => {
                             let payload = deserialize_edge(payload_bytes)?;
-                            mem.edges.insert(dh.entity_id, ptr);
-                            mem.edge_names.insert(payload.name.clone(), dh.entity_id);
-                            mem.adjacency.add_edge(dh.entity_id, payload.source, payload.target, ptr);
+                            mem.edge_id.insert(dh.entity_id, ptr);
+                            mem.edge_name.insert(payload.name.clone(), dh.entity_id);
+                            mem.vertex_adjacency.add_edge(dh.entity_id, payload.source, payload.target, ptr);
                             if dh.status != DataStatus::Deleted {
-                                mem.ranks.insert(dh.rank, ptr);
-                                mem.atime_index.insert(dh.atime, ptr);
+                                mem.rank.insert(dh.rank, ptr);
+                                mem.atime.insert(dh.atime, ptr);
                             }
                         }
                         ChunkType::Token => {
                             let payload = deserialize_token(payload_bytes)?;
                             let token_str = &payload.token;
                             if !token_str.is_empty() {
-                                mem.tokens.insert(token_str.clone(), ptr);
+                                mem.token.insert(token_str.clone(), ptr);
                                 // Build reverse index (entity_tokens) from token refs
                                 for tref in &payload.refs {
                                     mem.add_entity_token(tref.ref_type, tref.ref_id, token_str);
@@ -159,9 +159,9 @@ mod tests {
         let path = dir.path().join("data");
         let df = DataFile::open(&path).unwrap();
         let mem = build_memory_index(&df).unwrap();
-        assert_eq!(mem.vertices.len(), 0);
-        assert_eq!(mem.edges.len(), 0);
-        assert_eq!(mem.tokens.len(), 0);
+        assert_eq!(mem.vertex_id.len(), 0);
+        assert_eq!(mem.edge_id.len(), 0);
+        assert_eq!(mem.token.len(), 0);
     }
 
     #[test]
@@ -175,12 +175,12 @@ mod tests {
         }
 
         let mem = build_memory_index(&df).unwrap();
-        assert_eq!(mem.vertices.len(), 3);
+        assert_eq!(mem.vertex_id.len(), 3);
         for vid in 0..3 {
-            assert!(mem.vertices.contains(vid));
-            assert!(mem.vertex_names.contains_key(&format!("vertex-{}", vid)));
+            assert!(mem.vertex_id.contains(vid));
+            assert!(mem.vertex_name.contains_key(&format!("vertex-{}", vid)));
             assert_eq!(
-                mem.vertex_names[&format!("vertex-{}", vid)],
+                mem.vertex_name[&format!("vertex-{}", vid)],
                 vid
             );
         }

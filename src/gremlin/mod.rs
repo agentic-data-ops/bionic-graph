@@ -467,7 +467,7 @@ pub async fn handle_get_vertex_meta(
         Err(e) => return Json(serde_json::json!({"error": e.to_string()})),
     };
     let _vlock = graph.locks.read_vertex(id);
-    let ptr = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).vertices.get(id).copied();
+    let ptr = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).vertex_id.get(id).copied();
     let result = ptr.and_then(|p| crate::graph::crud::read_header_by_ptr(&graph, &p).ok());
     drop(_vlock);
     match result {
@@ -658,7 +658,7 @@ pub async fn handle_get_edge_meta(
         Err(e) => return Json(serde_json::json!({"error": e.to_string()})),
     };
     let _elock = graph.locks.read_edge(id);
-    let ptr = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).edges.get(id).copied();
+    let ptr = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).edge_id.get(id).copied();
     let result = ptr.and_then(|p| crate::graph::crud::read_header_by_ptr(&graph, &p).ok());
     drop(_elock);
     match result {
@@ -996,7 +996,7 @@ pub async fn delete_document(
             // Phase 1: Collect all vertex IDs while holding memory_index lock.
             let all_vids: Vec<u32> = {
                 let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-                mi.vertices.keys().copied().collect()
+                mi.vertex_id.keys().copied().collect()
             };
 
             // Phase 2: Check each vertex's _source_doc_id property (lock released).
@@ -1017,10 +1017,10 @@ pub async fn delete_document(
                 {
                     let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
                     for vid in &match_vids {
-                        for &(eid, _, _) in mi.adjacency.out_edges(*vid) {
+                        for &(eid, _, _) in mi.vertex_adjacency.out_edges(*vid) {
                             edge_ids.push(eid);
                         }
-                        for &(eid, _, _) in mi.adjacency.in_edges(*vid) {
+                        for &(eid, _, _) in mi.vertex_adjacency.in_edges(*vid) {
                             edge_ids.push(eid);
                         }
                     }

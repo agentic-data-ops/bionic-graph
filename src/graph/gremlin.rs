@@ -340,8 +340,8 @@ pub fn execute(
 fn step_v_count(graph: &Arc<Graph>, ids: Option<&[u32]>) -> Vec<GremlinResult> {
     let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
     let count = match ids {
-        Some(ids) => ids.iter().filter(|id| mi.vertices.contains(**id)).count(),
-        None => mi.vertices.len(),
+        Some(ids) => ids.iter().filter(|id| mi.vertex_id.contains(**id)).count(),
+        None => mi.vertex_id.len(),
     };
     vec![GremlinResult::Count { count }]
 }
@@ -350,8 +350,8 @@ fn step_v_count(graph: &Arc<Graph>, ids: Option<&[u32]>) -> Vec<GremlinResult> {
 fn step_e_count(graph: &Arc<Graph>, ids: Option<&[u32]>) -> Vec<GremlinResult> {
     let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
     let count = match ids {
-        Some(ids) => ids.iter().filter(|id| mi.edges.contains(**id)).count(),
-        None => mi.edges.len(),
+        Some(ids) => ids.iter().filter(|id| mi.edge_id.contains(**id)).count(),
+        None => mi.edge_id.len(),
     };
     vec![GremlinResult::Count { count }]
 }
@@ -408,7 +408,7 @@ fn step_v(
         // Specific IDs requested — collect meta, drop lock, then read.
         let mut candidates: Vec<(u32, MetaPointer)> = Vec::with_capacity(ids.len());
         for &vid in ids {
-            if let Some(ptr) = mi.vertices.get(vid) {
+            if let Some(ptr) = mi.vertex_id.get(vid) {
                 candidates.push((vid, *ptr));
             }
         }
@@ -426,8 +426,8 @@ fn step_v(
         // Specific names requested — look up each name in vertex_names.
         let mut candidates: Vec<(u32, MetaPointer)> = Vec::with_capacity(names.len());
         for name in names {
-            if let Some(&vid) = mi.vertex_names.get(name) {
-                if let Some(ptr) = mi.vertices.get(vid) {
+            if let Some(&vid) = mi.vertex_name.get(name) {
+                if let Some(ptr) = mi.vertex_id.get(vid) {
                     candidates.push((vid, *ptr));
                 }
             }
@@ -447,7 +447,7 @@ fn step_v(
 
     if limit < u32::MAX as usize {
         // Use rank index descending to fetch top-N vertices.
-        let ptrs = mi.ranks.top_pointers(limit, None);
+        let ptrs = mi.rank.top_pointers(limit, None);
 
         let mut results = Vec::with_capacity(limit.min(ptrs.len()));
         for ptr in &ptrs {
@@ -467,10 +467,10 @@ fn step_v(
     }
 
     // Full scan (no practical limit) — iterate all vertices.
-    let ids: Vec<u32> = mi.vertices.keys().copied().collect();
+    let ids: Vec<u32> = mi.vertex_id.keys().copied().collect();
     let mut candidates: Vec<(u32, MetaPointer)> = Vec::with_capacity(ids.len());
     for vid in &ids {
-        if let Some(ptr) = mi.vertices.get(*vid) {
+        if let Some(ptr) = mi.vertex_id.get(*vid) {
             candidates.push((*vid, *ptr));
         }
     }
@@ -498,7 +498,7 @@ fn step_e(
         // Specific IDs requested — collect ptrs, drop lock, then read.
         let mut candidates: Vec<(u32, MetaPointer)> = Vec::with_capacity(ids.len());
         for &eid in ids {
-            if let Some(ptr) = mi.edges.get(eid) {
+            if let Some(ptr) = mi.edge_id.get(eid) {
                 candidates.push((eid, *ptr));
             }
         }
@@ -516,8 +516,8 @@ fn step_e(
         // Specific names requested — look up each name in edge_names.
         let mut candidates: Vec<(u32, MetaPointer)> = Vec::with_capacity(names.len());
         for name in names {
-            if let Some(&eid) = mi.edge_names.get(name) {
-                if let Some(ptr) = mi.edges.get(eid) {
+            if let Some(&eid) = mi.edge_name.get(name) {
+                if let Some(ptr) = mi.edge_id.get(eid) {
                     candidates.push((eid, *ptr));
                 }
             }
@@ -537,7 +537,7 @@ fn step_e(
 
     if limit < u32::MAX as usize {
         // Use rank index descending to fetch top-N edges.
-        let ptrs = mi.ranks.top_pointers(limit, None);
+        let ptrs = mi.rank.top_pointers(limit, None);
 
         let mut results = Vec::with_capacity(limit.min(ptrs.len()));
         for ptr in &ptrs {
@@ -557,10 +557,10 @@ fn step_e(
     }
 
     // Full scan (no practical limit) — iterate all edges.
-    let ids: Vec<u32> = mi.edges.keys().copied().collect();
+    let ids: Vec<u32> = mi.edge_id.keys().copied().collect();
     let mut candidates: Vec<(u32, MetaPointer)> = Vec::with_capacity(ids.len());
     for eid in &ids {
-        if let Some(ptr) = mi.edges.get(*eid) {
+        if let Some(ptr) = mi.edge_id.get(*eid) {
             candidates.push((*eid, *ptr));
         }
     }
@@ -608,10 +608,10 @@ fn step_search(
         // Look up matching stored tokens based on match_mode.
         let matching_tokens: Vec<Vec<crate::storage::memory_index::MetaPointer>> = if match_mode == "word" {
             // Word mode: exact match on stored token (O(1) HashMap lookup)
-            mi.tokens.get(token).map(|ptrs| vec![ptrs.clone()]).unwrap_or_default()
+            mi.token.get(token).map(|ptrs| vec![ptrs.clone()]).unwrap_or_default()
         } else {
             // Prefix mode: FST-backed prefix search (O(len(prefix) + M))
-            mi.tokens.search_prefix(token)
+            mi.token.search_prefix(token)
                 .into_iter()
                 .map(|(_, ptrs)| ptrs)
                 .collect()
@@ -681,7 +681,7 @@ fn step_search(
     // Process vertices — collect meta, drop lock, then read.
     let mut v_candidates: Vec<(u32, MetaPointer)> = Vec::new();
     for vid in &include_vertices {
-        if let Some(ptr) = mi.vertices.get(*vid) {
+        if let Some(ptr) = mi.vertex_id.get(*vid) {
             v_candidates.push((*vid, *ptr));
         }
     }
@@ -689,7 +689,7 @@ fn step_search(
     // Process edges — collect ptrs, drop lock, then read.
     let mut e_candidates: Vec<(u32, MetaPointer, f32)> = Vec::new();
     for (eid, score) in &edge_scores {
-        if let Some(ptr) = mi.edges.get(*eid) {
+        if let Some(ptr) = mi.edge_id.get(*eid) {
             e_candidates.push((*eid, *ptr, *score));
         }
     }
@@ -900,7 +900,7 @@ fn step_out(
             if cur_depth >= max_depth {
                 continue;
             }
-            for (_eid, target, _ptr) in mi.adjacency.out_edges(cur_id) {
+            for (_eid, target, _ptr) in mi.vertex_adjacency.out_edges(cur_id) {
                 let target_id = *target;
                 if visited.insert(target_id) {
                     target_ids.push(target_id);
@@ -913,7 +913,7 @@ fn step_out(
     // Collect ptrs for all target vertices, drop lock, then read.
     let mut candidates: Vec<(u32, MetaPointer)> = Vec::with_capacity(target_ids.len());
     for &tid in &target_ids {
-        if let Some(ptr) = mi.vertices.get(tid) {
+        if let Some(ptr) = mi.vertex_id.get(tid) {
             candidates.push((tid, *ptr));
         }
     }
@@ -959,7 +959,7 @@ fn step_in(
             if cur_depth >= max_depth {
                 continue;
             }
-            for (_eid, source, _ptr) in mi.adjacency.in_edges(cur_id) {
+            for (_eid, source, _ptr) in mi.vertex_adjacency.in_edges(cur_id) {
                 let source_id = *source;
                 if visited.insert(source_id) {
                     source_ids.push(source_id);
@@ -972,7 +972,7 @@ fn step_in(
     // Collect ptrs for all source vertices, drop lock, then read.
     let mut candidates: Vec<(u32, MetaPointer)> = Vec::with_capacity(source_ids.len());
     for &sid in &source_ids {
-        if let Some(ptr) = mi.vertices.get(sid) {
+        if let Some(ptr) = mi.vertex_id.get(sid) {
             candidates.push((sid, *ptr));
         }
     }
@@ -1032,8 +1032,8 @@ fn step_oute(
             GremlinResult::Vertex { id, .. } => *id,
             _ => continue,
         };
-        for (eid, _target, _ptr) in mi.adjacency.out_edges(vid) {
-            if let Some(ptr) = mi.edges.get(*eid) {
+        for (eid, _target, _ptr) in mi.vertex_adjacency.out_edges(vid) {
+            if let Some(ptr) = mi.edge_id.get(*eid) {
                 candidates.push((*eid, *ptr));
             }
         }
@@ -1071,8 +1071,8 @@ fn step_ine(
             GremlinResult::Vertex { id, .. } => *id,
             _ => continue,
         };
-        for (eid, _source, _ptr) in mi.adjacency.in_edges(vid) {
-            if let Some(ptr) = mi.edges.get(*eid) {
+        for (eid, _source, _ptr) in mi.vertex_adjacency.in_edges(vid) {
+            if let Some(ptr) = mi.edge_id.get(*eid) {
                 candidates.push((*eid, *ptr));
             }
         }
@@ -1322,13 +1322,13 @@ fn step_traverse(
     let mut edge_str_map: HashMap<u32, MetaPointer> = HashMap::new();
 
     for &(vid, _) in &scored {
-        let out: Vec<(u32, u32, MetaPointer)> = mi.adjacency.out_edges(vid)
+        let out: Vec<(u32, u32, MetaPointer)> = mi.vertex_adjacency.out_edges(vid)
             .iter().map(|&(eid, target, ptr)| (eid, target, ptr))
             .collect();
         if !out.is_empty() {
             adjacency_out.insert(vid, out);
         }
-        let inp: Vec<(u32, u32, MetaPointer)> = mi.adjacency.in_edges(vid)
+        let inp: Vec<(u32, u32, MetaPointer)> = mi.vertex_adjacency.in_edges(vid)
             .iter().map(|&(eid, source, ptr)| (eid, source, ptr))
             .collect();
         if !inp.is_empty() {
@@ -1337,7 +1337,7 @@ fn step_traverse(
     }
 
     // Collect edge ptrs for all reachable edges.
-    for (&eid, &ptr) in mi.edges.iter() {
+    for (&eid, &ptr) in mi.edge_id.iter() {
         edge_str_map.insert(eid, ptr);
     }
     drop(mi);
@@ -1397,13 +1397,13 @@ fn step_traverse(
                 if !adjacency_out.contains_key(&target) {
                     // Re-acquire mi temporarily to collect more adjacency.
                     let mi2 = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-                    let out2: Vec<(u32, u32, MetaPointer)> = mi2.adjacency.out_edges(target)
+                    let out2: Vec<(u32, u32, MetaPointer)> = mi2.vertex_adjacency.out_edges(target)
                         .iter().map(|&(e, t, p)| (e, t, p))
                         .collect();
                     if !out2.is_empty() {
                         adjacency_out.insert(target, out2);
                     }
-                    let in2: Vec<(u32, u32, MetaPointer)> = mi2.adjacency.in_edges(target)
+                    let in2: Vec<(u32, u32, MetaPointer)> = mi2.vertex_adjacency.in_edges(target)
                         .iter().map(|&(e, s, p)| (e, s, p))
                         .collect();
                     if !in2.is_empty() {
@@ -1436,13 +1436,13 @@ fn step_traverse(
                     // Collect adjacency for newly discovered vertex.
                     if !adjacency_out.contains_key(&source) {
                         let mi2 = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-                        let out2: Vec<(u32, u32, MetaPointer)> = mi2.adjacency.out_edges(source)
+                        let out2: Vec<(u32, u32, MetaPointer)> = mi2.vertex_adjacency.out_edges(source)
                             .iter().map(|&(e, t, p)| (e, t, p))
                             .collect();
                         if !out2.is_empty() {
                             adjacency_out.insert(source, out2);
                         }
-                        let in2: Vec<(u32, u32, MetaPointer)> = mi2.adjacency.in_edges(source)
+                        let in2: Vec<(u32, u32, MetaPointer)> = mi2.vertex_adjacency.in_edges(source)
                             .iter().map(|&(e, s, p)| (e, s, p))
                             .collect();
                         if !in2.is_empty() {
@@ -1467,7 +1467,7 @@ fn step_traverse(
     let mi3 = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
     let mut v_candidates: Vec<(u32, MetaPointer, f32)> = Vec::new();
     for (vid, score) in &results {
-        if let Some(ptr) = mi3.vertices.get(*vid) {
+        if let Some(ptr) = mi3.vertex_id.get(*vid) {
             v_candidates.push((*vid, *ptr, *score));
         }
     }
@@ -1480,7 +1480,7 @@ fn step_traverse(
         let src_score = visited.get(src).copied().unwrap_or(0.0);
         let tgt_score = visited.get(tgt).copied().unwrap_or(0.0);
         if src_score >= min_score && tgt_score >= min_score {
-            if let Some(ptr) = mi3.edges.get(*eid) {
+            if let Some(ptr) = mi3.edge_id.get(*eid) {
                 e_candidates.push((*src, *tgt, *eid, *ptr));
             }
         }
@@ -1521,7 +1521,7 @@ fn step_rank(
     if input.is_empty() {
         // Source mode: iterate rank index descending.
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-        let ptrs = mi.ranks.top_pointers(limit, Some(min));
+        let ptrs = mi.rank.top_pointers(limit, Some(min));
 
         let mut results = Vec::new();
         for ptr in &ptrs {
@@ -1560,8 +1560,8 @@ fn step_rank(
                 _ => continue,
             };
             let ptr = match &item {
-                GremlinResult::Vertex { .. } => mi.vertices.get(id).copied(),
-                GremlinResult::Edge { .. } => mi.edges.get(id).copied(),
+                GremlinResult::Vertex { .. } => mi.vertex_id.get(id).copied(),
+                GremlinResult::Edge { .. } => mi.edge_id.get(id).copied(),
                 _ => None,
             };
             let rank = if let Some(ptr) = ptr {

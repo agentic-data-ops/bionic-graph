@@ -148,7 +148,7 @@ fn upsert_edge(
 /// to avoid reading the full vertex data payload for each vertex.
 pub fn build_name_to_vid(graph: &Arc<Graph>) -> HashMap<String, u32> {
     let mem = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-    mem.vertex_names.iter().map(|(k, v)| (k.clone(), *v)).collect()
+    mem.vertex_name.iter().map(|(k, v)| (k.clone(), *v)).collect()
 }
 
 /// Build an edge lookup keyed by (src_name, tgt_name, edge_name).
@@ -159,7 +159,7 @@ pub fn build_edge_lookup(
     let mut map = HashMap::new();
     let eids: Vec<u32> = {
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-        mi.edges.keys().copied().collect()
+        mi.edge_id.keys().copied().collect()
     };
     // Build reverse vid→name map for efficient lookup
     let vid_to_name: HashMap<u32, &str> = name_to_vid.iter().map(|(n, &v)| (v, n.as_str())).collect();
@@ -329,7 +329,7 @@ pub fn batch_delete(
         // Find the edge in the adjacency index
         let eid = {
             let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-            mi.adjacency.out_edges(src_vid).iter()
+            mi.vertex_adjacency.out_edges(src_vid).iter()
                 .find(|(_, t, _)| *t == tgt_vid)
                 .map(|(e, _, _)| *e)
         };
@@ -348,10 +348,10 @@ pub fn batch_delete(
             vids_to_delete.push(vid);
             // Collect all edges from adjacency index (both outgoing and incoming)
             let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-            for (eid, _, _) in mi.adjacency.out_edges(vid) {
+            for (eid, _, _) in mi.vertex_adjacency.out_edges(vid) {
                 edge_ids_to_delete.push(*eid);
             }
-            for (eid, _, _) in mi.adjacency.in_edges(vid) {
+            for (eid, _, _) in mi.vertex_adjacency.in_edges(vid) {
                 edge_ids_to_delete.push(*eid);
             }
         }
