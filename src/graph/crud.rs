@@ -895,22 +895,23 @@ pub(crate) fn read_data_chunks(graph: &Graph, block_idx: u32, chunk_offset: u8, 
 
 /// Free previously allocated data chunks.
 fn free_data_chunks(graph: &Graph, block_idx: u32, chunk_offset: u8, chunks: u8) -> StorageResult<()> {
-    let was_full = graph.block_cache.peek_block(block_idx, |opt| {
-        if opt.is_none() { return false; }
-        let mut buf = [0u8; BLOCK_SIZE];
-        let result = graph.block_cache.with_block(block_idx,
-            |idx| graph.data_file.read_block(idx),
-            &|idx, data| graph.data_file.write_block(idx, data),
-            |block| {
-                let mut header = BlockHeader::decode(block);
-                let wf = BlockAllocator::is_block_full(&header.bitmap);
-                BlockAllocator::free_chunks(&mut header.bitmap, chunk_offset, chunks);
-                header.encode(block);
-                wf && !BlockAllocator::is_block_full(&header.bitmap)
-            },
-        );
-        result.unwrap_or(false)
-    });
+    // Only modify block if it's in cache (avoids loading just to free).
+    let is_cached = graph.block_cache.peek_block(block_idx, |opt| opt.is_some());
+    if !is_cached {
+        return Ok(());
+    }
+
+    let was_full = graph.block_cache.with_block(block_idx,
+        |idx| graph.data_file.read_block(idx),
+        &|idx, data| graph.data_file.write_block(idx, data).map_err(|e| e.into()),
+        |block| {
+            let mut header = BlockHeader::decode(block);
+            let wf = BlockAllocator::is_block_full(&header.bitmap);
+            BlockAllocator::free_chunks(&mut header.bitmap, chunk_offset, chunks);
+            header.encode(block);
+            wf && !BlockAllocator::is_block_full(&header.bitmap)
+        },
+    )?;
 
     if was_full {
         let mut bf = graph.bitmap_file.write().unwrap_or_else(|e| e.into_inner());
