@@ -6,10 +6,12 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::graph::crud;
 use crate::graph::graph::Graph;
 use crate::graph::locked;
+use crate::graph::profile;
 use crate::storage::types::PropertyValue;
 use crate::storage::types::StorageResult;
 
@@ -216,8 +218,12 @@ pub fn batch_import(
         edges_skipped: 0,
     };
 
+    // Start profiling
+    profile::begin_batch(format!("batch_import {}v+{}e update={}", entities.len(), relations.len(), update_existing));
+
     // Import vertices
     for entity in entities {
+        let t0 = std::time::Instant::now();
         if update_existing {
             let existed = name_to_vid.contains_key(&entity.name);
             if existed {
@@ -249,10 +255,12 @@ pub fn batch_import(
                 Err(e) => log::warn!("Failed to create vertex '{}': {}", entity.name, e),
             }
         }
+        profile::record(if update_existing { "vertex_update" } else { "vertex_create" }, t0.elapsed());
     }
 
     // Import edges
     for rel in relations {
+        let t0 = std::time::Instant::now();
         if update_existing {
             let key = (rel.source.clone(), rel.target.clone(), rel.name.clone());
             let existed = edge_key_to_eid.contains_key(&key);
@@ -298,7 +306,11 @@ pub fn batch_import(
                     rel.name, rel.source, rel.target);
             }
         }
+        profile::record(if update_existing { "edge_update" } else { "edge_create" }, t0.elapsed());
     }
+
+    // Log profiling summary
+    profile::end_batch();
 
     result
 }
