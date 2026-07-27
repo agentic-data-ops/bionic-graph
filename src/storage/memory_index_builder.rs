@@ -68,6 +68,9 @@ pub fn build_memory_index(data_file: &DataFile) -> StorageResult<MemoryIndex> {
                                 mem.rank.insert(dh.rank, ptr);
                                 mem.atime.insert(dh.atime, ptr);
                             }
+                            for l in &payload.labels {
+                                mem.add_vertex_label(l, ptr);
+                            }
                         }
                         ChunkType::Edge => {
                             let payload = deserialize_edge(payload_bytes)?;
@@ -77,6 +80,9 @@ pub fn build_memory_index(data_file: &DataFile) -> StorageResult<MemoryIndex> {
                             if dh.status != DataStatus::Deleted {
                                 mem.rank.insert(dh.rank, ptr);
                                 mem.atime.insert(dh.atime, ptr);
+                            }
+                            for l in &payload.labels {
+                                mem.add_edge_label(l, ptr);
                             }
                         }
                         ChunkType::Token => {

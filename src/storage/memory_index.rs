@@ -423,6 +423,10 @@ pub struct MemoryIndex {
     pub vertex_name: BTreeMap<String, u32>,
     /// (source_name, target_name, edge_name) → edge ID lookup (built at startup).
     pub edge_name: BTreeMap<String, u32>,
+    /// Label → list of MetaPointer for efficient label filtering on vertices.
+    pub vertex_label: BTreeMap<String, Vec<MetaPointer>>,
+    /// Label → list of MetaPointer for efficient label filtering on edges.
+    pub edge_label: BTreeMap<String, Vec<MetaPointer>>,
 
 }
 
@@ -463,6 +467,40 @@ impl MemoryIndex {
         self.edge_name.get(name).copied()
     }
 
+    /// Add a vertex label entry.
+    pub fn add_vertex_label(&mut self, label: &str, ptr: MetaPointer) {
+        self.vertex_label.entry(label.to_string()).or_default().push(ptr);
+    }
+
+    /// Add an edge label entry.
+    pub fn add_edge_label(&mut self, label: &str, ptr: MetaPointer) {
+        self.edge_label.entry(label.to_string()).or_default().push(ptr);
+    }
+
+    /// Remove a vertex label entry.
+    pub fn remove_vertex_label(&mut self, label: &str, ptr: &MetaPointer) {
+        if let Some(entries) = self.vertex_label.get_mut(label) {
+            entries.retain(|p| p != ptr);
+        }
+    }
+
+    /// Remove an edge label entry.
+    pub fn remove_edge_label(&mut self, label: &str, ptr: &MetaPointer) {
+        if let Some(entries) = self.edge_label.get_mut(label) {
+            entries.retain(|p| p != ptr);
+        }
+    }
+
+    /// Get all vertex MetaPointer with a given label.
+    pub fn get_vertex_by_label(&self, label: &str) -> Option<&[MetaPointer]> {
+        self.vertex_label.get(label).map(|v| v.as_slice())
+    }
+
+    /// Get all edge MetaPointer with a given label.
+    pub fn get_edge_by_label(&self, label: &str) -> Option<&[MetaPointer]> {
+        self.edge_label.get(label).map(|v| v.as_slice())
+    }
+
     // ── Index persistence ─────────────────────────────────────────────────
 
     /// Save all indexes to `dir`. Writes `index_state` last as a commit marker.
@@ -477,6 +515,8 @@ impl MemoryIndex {
         save_one(&dir.join("index_token_ref"), &self.token_ref)?;
         save_one(&dir.join("index_vertex_name"), &self.vertex_name)?;
         save_one(&dir.join("index_edge_name"), &self.edge_name)?;
+        save_one(&dir.join("index_vertex_label"), &self.vertex_label)?;
+        save_one(&dir.join("index_edge_label"), &self.edge_label)?;
         fs::write(dir.join("index_state"), b"1")?;
         Ok(())
     }
@@ -495,6 +535,8 @@ impl MemoryIndex {
             atime: load_one(&dir.join("index_atime"))?,
             vertex_adjacency: load_one(&dir.join("index_vertex_adjacency"))?,
             token_ref: load_one(&dir.join("index_token_ref"))?,
+            vertex_label: load_one(&dir.join("index_vertex_label"))?,
+            edge_label: load_one(&dir.join("index_edge_label"))?,
             vertex_name: load_one(&dir.join("index_vertex_name"))?,
             edge_name: load_one(&dir.join("index_edge_name"))?,
         };
@@ -506,7 +548,8 @@ impl MemoryIndex {
     pub fn remove_index_files(dir: &Path) {
         for name in &["index_vertex_id", "index_edge_id", "index_token", "index_rank",
                       "index_atime", "index_vertex_adjacency", "index_token_ref",
-                      "index_vertex_name", "index_edge_name", "index_state"]
+                      "index_vertex_name", "index_edge_name", "index_vertex_label",
+                      "index_edge_label", "index_state"]
         {
             let _ = fs::remove_file(dir.join(name));
         }

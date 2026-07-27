@@ -46,6 +46,9 @@ pub fn create_vertex(
         mi.vertex_id.insert(vid, ptr);
         mi.vertex_name.insert(payload.name.clone(), vid);
         mi.rank.insert(1, ptr);
+        for l in &payload.labels {
+            mi.add_vertex_label(l, ptr);
+        }
     }
 
     // ── Tokenize attributes ──────────────────────────────────────────
@@ -92,6 +95,9 @@ pub fn create_edge(
         mi.edge_name.insert(payload.name.clone(), eid);
         mi.rank.insert(1, ptr);
         mi.vertex_adjacency.add_edge(eid, source, target, ptr);
+        for l in &payload.labels {
+            mi.add_edge_label(l, ptr);
+        }
     }
 
     // ── Tokenize ─────────────────────────────────────────────────────
@@ -470,6 +476,9 @@ pub fn hard_delete_vertex(graph: &Graph, vid: u32) -> StorageResult<()> {
         let data = read_data_chunks(graph, ptr.block_idx, ptr.chunk_offset + 1, payload_len as u16)?;
         if let Ok(payload) = deserialize_vertex(&data) {
             mi.vertex_name.remove(&payload.name);
+            for l in &payload.labels {
+                mi.remove_vertex_label(l, &ptr);
+            }
         }
         mi.vertex_id.remove(vid);
         mi.rank.remove(header.rank, &ptr);
@@ -527,6 +536,9 @@ pub fn hard_delete_edge(graph: &Graph, eid: u32) -> StorageResult<()> {
         if let Ok(payload) = deserialize_edge(&data) {
             mi.edge_name.remove(&payload.name);
             mi.vertex_adjacency.remove_edge(payload.source, payload.target, &ptr);
+            for l in &payload.labels {
+                mi.remove_edge_label(l, &ptr);
+            }
         }
         mi.edge_id.remove(eid);
         mi.rank.remove(header.rank, &ptr);
@@ -637,6 +649,9 @@ fn replay_create_vertex(graph: &Graph, id: u32, payload: &VertexPayload, wal_dat
     mi.vertex_id.insert(id, ptr);
     mi.vertex_name.insert(payload.name.clone(), id);
     mi.rank.insert(header.rank, ptr);
+    for l in &payload.labels {
+        mi.add_vertex_label(l, ptr);
+    }
     drop(mi);
 
     tokenize_vertex(graph, id, payload)?;
@@ -655,6 +670,9 @@ fn replay_create_vertex_always(graph: &Graph, id: u32, payload: &VertexPayload, 
     mi.vertex_id.insert(id, ptr);
     mi.vertex_name.insert(payload.name.clone(), id);
     mi.rank.insert(header.rank, ptr);
+    for l in &payload.labels {
+        mi.add_vertex_label(l, ptr);
+    }
     drop(mi);
 
     tokenize_vertex(graph, id, payload)?;
@@ -680,6 +698,9 @@ fn replay_create_edge(graph: &Graph, id: u32, payload: &EdgePayload, wal_data: &
     mi.edge_name.insert(payload.name.clone(), id);
     mi.rank.insert(header.rank, ptr);
     mi.vertex_adjacency.add_edge(id, payload.source, payload.target, ptr);
+    for l in &payload.labels {
+        mi.add_edge_label(l, ptr);
+    }
     drop(mi);
 
     tokenize_edge(graph, id, payload)?;
@@ -698,6 +719,9 @@ fn replay_create_edge_always(graph: &Graph, id: u32, payload: &EdgePayload, wal_
     mi.edge_name.insert(payload.name.clone(), id);
     mi.rank.insert(header.rank, ptr);
     mi.vertex_adjacency.add_edge(id, payload.source, payload.target, ptr);
+    for l in &payload.labels {
+        mi.add_edge_label(l, ptr);
+    }
     drop(mi);
 
     tokenize_edge(graph, id, payload)?;
