@@ -284,6 +284,57 @@ pub fn execute(
                 }
             }
 
+            // Check if next step is Has with property key that has an index.
+            if let Some(GremlinStep::Has { key, value }) = steps.get(i + 1) {
+                let prop_str = match value {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Number(n) => n.to_string(),
+                    serde_json::Value::Bool(b) => b.to_string(),
+                    _ => String::new(),
+                };
+                if !prop_str.is_empty() {
+                    match step {
+                        GremlinStep::V { ids: None, names: None, .. } => {
+                            let pairs: Vec<u32> = {
+                                let mi2 = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+                                mi2.query_vertex_property(key, &prop_str)
+                                    .map(|ptrs| mi2.vertex_id.iter()
+                                        .filter(|(_, &p)| ptrs.contains(&p))
+                                        .map(|(&vid, _)| vid)
+                                        .collect())
+                                    .unwrap_or_default()
+                            };
+                            if !pairs.is_empty() {
+                                if let Ok(results) = step_v(graph, Some(&pairs), None, None, time_travel_at) {
+                                    current = results;
+                                    skip_next = true;
+                                    continue;
+                                }
+                            }
+                        }
+                        GremlinStep::E { ids: None, names: None, .. } => {
+                            let pairs: Vec<u32> = {
+                                let mi2 = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+                                mi2.query_edge_property(key, &prop_str)
+                                    .map(|ptrs| mi2.edge_id.iter()
+                                        .filter(|(_, &p)| ptrs.contains(&p))
+                                        .map(|(&eid, _)| eid)
+                                        .collect())
+                                    .unwrap_or_default()
+                            };
+                            if !pairs.is_empty() {
+                                if let Ok(results) = step_e(graph, Some(&pairs), None, None, time_travel_at) {
+                                    current = results;
+                                    skip_next = true;
+                                    continue;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
             // Check if next step is Limit → propagate limit for early-break.
             let peek_limit = match step {
                 GremlinStep::V { ids, names, limit } if ids.is_none() && names.is_none() && limit.is_none() => {

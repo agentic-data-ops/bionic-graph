@@ -46,13 +46,6 @@ fn prop_val_str(pv: &PropertyValue) -> String {
     }
 }
 
-/// Build a value→count summary from a BTreeMap of value→[MetaPointer].
-fn value_stats(data: &std::collections::BTreeMap<String, Vec<MetaPointer>>) -> Vec<serde_json::Value> {
-    data.iter().map(|(val, ptrs)| {
-        serde_json::json!({"value": val, "count": ptrs.len()})
-    }).collect()
-}
-
 /// Scan all vertices and populate index for a given property key.
 fn scan_vertex_property(graph: &Graph, key: &str) {
     let pairs: Vec<(u32, MetaPointer)> = {
@@ -123,7 +116,7 @@ pub async fn show_vertex_property_index(
             let total: usize = data.values().map(|v| v.len()).sum();
             Json(serde_json::json!({
                 "status": "ok", "key": key, "type": "vertex",
-                "total_entities": total, "values": value_stats(data),
+                "total_entities": total,
             }))
         }
         None => Json(serde_json::json!({
@@ -143,7 +136,7 @@ pub async fn list_vertex_property_indices(
         if let Some(data) = mi.vertex_properties.get(&key) {
             let total: usize = data.values().map(|v| v.len()).sum();
             indices.push(serde_json::json!({
-                "key": key, "total_entities": total, "values": value_stats(data),
+                "key": key, "total_entities": total,
             }));
         }
     }
@@ -208,7 +201,7 @@ pub async fn show_edge_property_index(
             let total: usize = data.values().map(|v| v.len()).sum();
             Json(serde_json::json!({
                 "status": "ok", "key": key, "type": "edge",
-                "total_entities": total, "values": value_stats(data),
+                "total_entities": total,
             }))
         }
         None => Json(serde_json::json!({
@@ -228,7 +221,7 @@ pub async fn list_edge_property_indices(
         if let Some(data) = mi.edge_properties.get(&key) {
             let total: usize = data.values().map(|v| v.len()).sum();
             indices.push(serde_json::json!({
-                "key": key, "total_entities": total, "values": value_stats(data),
+                "key": key, "total_entities": total,
             }));
         }
     }

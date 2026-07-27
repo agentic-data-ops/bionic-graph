@@ -512,3 +512,45 @@ class Client:
                         except json.JSONDecodeError:
                             pass
         return {"choices": [{"message": {"content": full_content}}]}
+
+    # ── Property index ─────────────────────────────────────────────────────
+
+    def create_vertex_property_index(self, key: str, graph: Optional[str] = None) -> dict:
+        return self._request("POST", "/indices/vertex/properties",
+                             json={"key": key}, headers=self._graph_header(graph))
+
+    def show_vertex_property_index(self, key: str, graph: Optional[str] = None) -> dict:
+        return self._request("GET", f"/indices/vertex/properties/{key}",
+                             headers=self._graph_header(graph))
+
+    def list_vertex_property_indices(self, graph: Optional[str] = None) -> dict:
+        return self._request("GET", "/indices/vertex/properties",
+                             headers=self._graph_header(graph))
+
+    def delete_vertex_property_index(self, key: str, graph: Optional[str] = None) -> dict:
+        return self._request("DELETE", f"/indices/vertex/properties/{key}",
+                             headers=self._graph_header(graph))
+
+    def delete_vertex_property_indices(self, keys: list[str], graph: Optional[str] = None) -> dict:
+        return self._request("DELETE", "/indices/vertex/properties",
+                             json={"keys": keys}, headers=self._graph_header(graph))
+
+    def create_edge_property_index(self, key: str, graph: Optional[str] = None) -> dict:
+        return self._request("POST", "/indices/edge/properties",
+                             json={"key": key}, headers=self._graph_header(graph))
+
+    def show_edge_property_index(self, key: str, graph: Optional[str] = None) -> dict:
+        return self._request("GET", f"/indices/edge/properties/{key}",
+                             headers=self._graph_header(graph))
+
+    def list_edge_property_indices(self, graph: Optional[str] = None) -> dict:
+        return self._request("GET", "/indices/edge/properties",
+                             headers=self._graph_header(graph))
+
+    def delete_edge_property_index(self, key: str, graph: Optional[str] = None) -> dict:
+        return self._request("DELETE", f"/indices/edge/properties/{key}",
+                             headers=self._graph_header(graph))
+
+    def delete_edge_property_indices(self, keys: list[str], graph: Optional[str] = None) -> dict:
+        return self._request("DELETE", "/indices/edge/properties",
+                             json={"keys": keys}, headers=self._graph_header(graph))
