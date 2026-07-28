@@ -29,6 +29,89 @@ pub mod settings;
 pub mod tokenizer_settings;
 pub mod indices;
 use crate::storage::types::{PropertyValue, StorageResult};
+use crate::config::NodeRole;
+
+/// If this node is a cluster worker, forward the write request to the master
+/// and return the master's JSON response. Returns None on master / standalone.
+pub(crate) async fn try_forward_json(
+    state: &AppState,
+    method: &str,
+    path: &str,
+    query: Option<&str>,
+    graph_name: Option<&str>,
+    body: Option<&str>,
+) -> Option<Result<Json<serde_json::Value>, StatusCode>> {
+    // Extract settings before the await point (MutexGuard is not Send).
+    let (is_worker, master_addr) = {
+        let settings = state.settings.lock().unwrap();
+        let is_worker = settings.cluster.enabled && settings.cluster.role == NodeRole::Worker;
+        let addr = state.master_api_addr.clone();
+        (is_worker, addr)
+    };
+    if !is_worker { return None; }
+    let master_addr = master_addr.as_ref()?;
+    let req = crate::cluster::forward::ForwardedRequest {
+        method: method.to_string(),
+        path: path.to_string(),
+        query: query.map(|s| s.to_string()),
+        body: body.map(|s| s.to_string()),
+        graph: graph_name.map(|s| s.to_string()),
+    };
+    match crate::cluster::forward::forward_write(master_addr, &req).await {
+        Ok(resp) => {
+            if resp.success {
+                if let Some(body_str) = resp.body {
+                    match serde_json::from_str(&body_str) {
+                        Ok(val) => Some(Ok(Json(val))),
+                        Err(_) => Some(Err(StatusCode::INTERNAL_SERVER_ERROR)),
+                    }
+                } else {
+                    Some(Ok(Json(serde_json::json!({"status": "ok"}))))
+                }
+            } else {
+                Some(Err(StatusCode::from_u16(resp.status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)))
+            }
+        }
+        Err(e) => {
+            log::warn!("Forward to master failed: {}", e);
+            Some(Err(StatusCode::BAD_GATEWAY))
+        }
+    }
+}
+
+/// Same as try_forward_json but for handlers that return StatusCode.
+pub(crate) async fn try_forward_status(
+    state: &AppState,
+    method: &str,
+    path: &str,
+    query: Option<&str>,
+) -> Option<StatusCode> {
+    let (is_worker, master_addr) = {
+        let settings = state.settings.lock().unwrap();
+        let is_worker = settings.cluster.enabled && settings.cluster.role == NodeRole::Worker;
+        let addr = state.master_api_addr.clone();
+        (is_worker, addr)
+    };
+    if !is_worker { return None; }
+    let master_addr = master_addr.as_ref()?;
+    let req = crate::cluster::forward::ForwardedRequest {
+        method: method.to_string(),
+        path: path.to_string(),
+        query: query.map(|s| s.to_string()),
+        body: None,
+        graph: None,
+    };
+    match crate::cluster::forward::forward_write(master_addr, &req).await {
+        Ok(resp) => {
+            if resp.success {
+                Some(StatusCode::OK)
+            } else {
+                Some(StatusCode::from_u16(resp.status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR))
+            }
+        }
+        Err(_) => Some(StatusCode::BAD_GATEWAY),
+    }
+}
 
 /// Shared application state for all graph routes.
 #[derive(Clone)]
@@ -484,7 +567,7 @@ pub async fn handle_search(
 
 // ── POST /vertices ─────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct CreateVertexBody {
     pub name: String,
     pub labels: Option<Vec<String>>,
@@ -503,6 +586,18 @@ pub async fn create_vertex(
     headers: axum::http::HeaderMap,
     Json(body): Json<CreateVertexBody>,
 ) -> Result<Json<CreateVertexResponse>, StatusCode> {
+    // Worker → Master forwarding
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    if let Some(resp) = try_forward_json(
+        &state, "POST", "/vertices", None, graph_name,
+        Some(&serde_json::to_string(&body).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?),
+    ).await {
+        return resp.map(|json| {
+            let id = json.get("id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            Json(CreateVertexResponse { id })
+        });
+    }
+
     let graph = resolve_graph_from_request(&state, &headers)
         .map_err(|_| StatusCode::NOT_FOUND)?;
     let vid = crate::graph::locked::create_vertex_locked(
@@ -528,7 +623,7 @@ pub async fn create_vertex(
 
 // ── PUT /vertices2/:id ──────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct UpdateVertexBody {
     pub name: Option<String>,
     pub labels: Option<Vec<String>>,
@@ -542,6 +637,16 @@ pub async fn update_vertex(
     headers: axum::http::HeaderMap,
     Json(body): Json<UpdateVertexBody>,
 ) -> StatusCode {
+    // Worker → Master forwarding
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    let path = format!("/vertices/{}", id);
+    if let Some(resp) = try_forward_json(
+        &state, "PUT", &path, None, graph_name,
+        Some(&serde_json::to_string(&body).unwrap_or_default()),
+    ).await {
+        return if resp.is_ok() { StatusCode::OK } else { StatusCode::BAD_GATEWAY };
+    }
+
     let graph = match resolve_graph_from_request(&state, &headers) {
         Ok(g) => g,
         Err(_) => return StatusCode::NOT_FOUND,
@@ -579,6 +684,16 @@ pub async fn delete_vertex(
     Query(params): Query<DeleteVertexParams>,
     headers: axum::http::HeaderMap,
 ) -> StatusCode {
+    // Worker → Master forwarding
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    let query_str = params.force.map(|f| format!("force={}", f));
+    let path = format!("/vertices/{}", id);
+    if let Some(status) = try_forward_status(
+        &state, "DELETE", &path, query_str.as_deref(),
+    ).await {
+        return status;
+    }
+
     let graph = match resolve_graph_from_request(&state, &headers) {
         Ok(g) => g,
         Err(_) => return StatusCode::NOT_FOUND,
@@ -690,7 +805,7 @@ pub async fn handle_update_vertex_meta(
 
 // ── POST /edges ─────────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct CreateEdgeBody {
     pub name: String,
     pub source: u32,
@@ -712,6 +827,18 @@ pub async fn create_edge(
     headers: axum::http::HeaderMap,
     Json(body): Json<CreateEdgeBody>,
 ) -> Result<Json<CreateEdgeResponse>, StatusCode> {
+    // Worker → Master forwarding
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    if let Some(resp) = try_forward_json(
+        &state, "POST", "/edges", None, graph_name,
+        Some(&serde_json::to_string(&body).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?),
+    ).await {
+        return resp.map(|json| {
+            let id = json.get("id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            Json(CreateEdgeResponse { id })
+        });
+    }
+
     let graph = resolve_graph_from_request(&state, &headers)
         .map_err(|_| StatusCode::NOT_FOUND)?;
     let eid = crate::graph::locked::create_edge_locked(
@@ -733,7 +860,7 @@ pub async fn create_edge(
 
 // ── PUT /edges ──────────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct UpdateEdgeBody {
     pub name: Option<String>,
     pub labels: Option<Vec<String>>,
@@ -748,6 +875,16 @@ pub async fn update_edge(
     headers: axum::http::HeaderMap,
     Json(body): Json<UpdateEdgeBody>,
 ) -> StatusCode {
+    // Worker → Master forwarding
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    let path = format!("/edges/{}", id);
+    if let Some(resp) = try_forward_json(
+        &state, "PUT", &path, None, graph_name,
+        Some(&serde_json::to_string(&body).unwrap_or_default()),
+    ).await {
+        return if resp.is_ok() { StatusCode::OK } else { StatusCode::BAD_GATEWAY };
+    }
+
     let graph = match resolve_graph_from_request(&state, &headers) {
         Ok(g) => g,
         Err(_) => return StatusCode::NOT_FOUND,
@@ -785,6 +922,16 @@ pub async fn delete_edge(
     Query(params): Query<DeleteEdgeParams>,
     headers: axum::http::HeaderMap,
 ) -> StatusCode {
+    // Worker → Master forwarding
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    let query_str = params.force.map(|f| format!("force={}", f));
+    let path = format!("/edges/{}", id);
+    if let Some(status) = try_forward_status(
+        &state, "DELETE", &path, query_str.as_deref(),
+    ).await {
+        return status;
+    }
+
     let graph = match resolve_graph_from_request(&state, &headers) {
         Ok(g) => g,
         Err(_) => return StatusCode::NOT_FOUND,
@@ -898,7 +1045,7 @@ pub async fn list_graphs(State(state): State<AppState>) -> Json<serde_json::Valu
 
 // ── POST /graphs ────────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct CreateGraphParams {
     pub name: String,
     #[serde(default)]
@@ -919,6 +1066,21 @@ pub async fn create_graph(
     State(state): State<AppState>,
     Json(params): Json<CreateGraphParams>,
 ) -> Result<Json<CreateGraphResponse>, StatusCode> {
+    // Worker → Master forwarding
+    let body_str = serde_json::to_string(&params).unwrap_or_default();
+    if let Some(resp) = try_forward_json(
+        &state, "POST", "/graphs", None, None, Some(&body_str),
+    ).await {
+        return resp.map(|json| {
+            Json(CreateGraphResponse {
+                name: json.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                description: json.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                time_travel: json.get("time_travel").and_then(|v| v.as_bool()).unwrap_or(false),
+                created: json.get("created").and_then(|v| v.as_bool()).unwrap_or(false),
+            })
+        });
+    }
+
     // Reject empty or whitespace-only names.
     if params.name.trim().is_empty() {
         return Err(StatusCode::BAD_REQUEST);

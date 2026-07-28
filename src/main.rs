@@ -203,17 +203,14 @@ async fn main() {
         };
 
     // ── Main API server ──────────────────────────────────────────────────────
-    // Determine master API address for worker→master forwarding.
+    // Determine master address for worker→master write forwarding.
+    // Workers forward writes to the master's cluster server (/cluster/forward).
     let master_api_addr: Option<String> = if settings.cluster.enabled && settings.cluster.role == NodeRole::Worker {
         settings.cluster.master_addr.as_ref().map(|addr| {
-            // Derive master's API port: cluster port (e.g. 9090) → API port (e.g. 8090)
-            if let Some(col) = addr.rfind(':') {
-                let host = &addr[..col];
-                let port: u16 = addr[col+1..].parse().unwrap_or(9090);
-                format!("{}:{}", host, port.saturating_sub(1000))
-            } else {
-                addr.clone()
-            }
+            // master_addr is the cluster address (e.g. "127.0.0.1:9090").
+            // The /cluster/forward endpoint is on the cluster server, so use it directly.
+            // If master_addr already has http:// prefix, strip it.
+            addr.trim_start_matches("http://").trim_start_matches("https://").to_string()
         })
     } else {
         None

@@ -312,6 +312,13 @@ async fn proxy_to_api(api_addr: &str, req: &ForwardedRequest) -> ForwardedRespon
         request
     };
 
+    // Forward the graph name header so the master's handler uses the correct graph.
+    let request = if let Some(ref graph) = req.graph {
+        request.header("X-Graph-Name", graph.as_str())
+    } else {
+        request
+    };
+
     match request.send().await {
         Ok(resp) => {
             let status_code = resp.status().as_u16();
