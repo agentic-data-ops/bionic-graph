@@ -59,7 +59,7 @@ pub(crate) fn broadcast_write_result(
 
     // Determine op_type and op_id.
     let (op_type, op_id) = match method {
-        "POST" | "PUT" => {
+        "POST" => {
             let id = serde_json::from_str::<serde_json::Value>(response_body)
                 .ok().and_then(|v| v.get("id").and_then(|id| id.as_u64()))
                 .unwrap_or(0);
@@ -68,6 +68,18 @@ pub(crate) fn broadcast_write_result(
                 crate::storage::types::OpType::VertexCreate
             } else if path == "/edges" || path.starts_with("/edges/") {
                 crate::storage::types::OpType::EdgeCreate
+            } else { return };
+            (op, id)
+        }
+        "PUT" => {
+            let id = serde_json::from_str::<serde_json::Value>(response_body)
+                .ok().and_then(|v| v.get("id").and_then(|id| id.as_u64()))
+                .unwrap_or(0);
+            if id == 0 { return; }
+            let op = if path.starts_with("/vertices/") {
+                crate::storage::types::OpType::VertexUpdate
+            } else if path.starts_with("/edges/") {
+                crate::storage::types::OpType::EdgeUpdate
             } else { return };
             (op, id)
         }
@@ -90,32 +102,41 @@ pub(crate) fn broadcast_write_result(
     let data = if method != "DELETE" {
         let g = graph.clone();
         (move || -> Vec<u8> {
-            if let Ok(dh) = crate::graph::crud::read_header_by_ptr(&g, &crate::storage::memory_index::MetaPointer::new(0, 0)) {
-                // skip — will use simpler approach below
-            }
-            // Build the entry data by reading from the memory index
             let id_u32 = op_id as u32;
             let ptr = g.memory_index.read().ok()
-                .and_then(|mi| if op_type == crate::storage::types::OpType::VertexCreate {
-                    mi.vertex_id.get(id_u32).copied()
-                } else {
-                    mi.edge_id.get(id_u32).copied()
+                .and_then(|mi| {
+                    if op_type == crate::storage::types::OpType::VertexCreate
+                        || op_type == crate::storage::types::OpType::VertexUpdate {
+                        mi.vertex_id.get(id_u32).copied()
+                    } else if op_type == crate::storage::types::OpType::EdgeCreate
+                        || op_type == crate::storage::types::OpType::EdgeUpdate {
+                        mi.edge_id.get(id_u32).copied()
+                    } else { None }
                 });
-            if let Some(ptr) = ptr {
-                if let Ok(dh) = crate::graph::crud::read_header_by_ptr(&g, &ptr) {
-                    let plen = dh.payload_len as usize;
-                    if let Ok(data) = crate::graph::crud::read_data_chunks(
-                        &g, ptr.block_idx, ptr.chunk_offset + 1, dh.payload_len as u16,
-                    ) {
-                        return data[..plen.min(data.len())].to_vec();
-                    }
-                }
-            }
-            Vec::new()
+            let Some(ptr) = ptr else { return Vec::new() };
+            let Ok(dh) = crate::graph::crud::read_header_by_ptr(&g, &ptr) else { return Vec::new() };
+            let plen = dh.payload_len as usize;
+            let Ok(raw) = crate::graph::crud::read_data_chunks(
+                &g, ptr.block_idx, ptr.chunk_offset + 1, dh.payload_len as u16,
+            ) else { return Vec::new() };
+            let data_for_ser = &raw[..plen.min(raw.len())];
+            // Re-serialize to ensure valid WAL format (avoids chunk padding issues)
+            let result = if op_type == crate::storage::types::OpType::VertexCreate
+                || op_type == crate::storage::types::OpType::VertexUpdate {
+                crate::graph::serialize::deserialize_vertex(data_for_ser)
+                    .and_then(|p| crate::graph::serialize::serialize_vertex(&p))
+            } else {
+                crate::graph::serialize::deserialize_edge(data_for_ser)
+                    .and_then(|p| crate::graph::serialize::serialize_edge(&p))
+            };
+            result.unwrap_or_default()
         })()
     } else {
         Vec::new()
     };
+    if data.is_empty() && method != "DELETE" {
+        log::warn!("broadcast_write: empty data for {} {} op={:?}", method, path, op_type);
+    }
 
     let entry = crate::storage::redo_log::RedoLogEntry { op_type, op_id, data };
     let reg = registry.clone();
@@ -535,7 +556,12 @@ pub async fn update_vertex(
         body.properties.as_ref(),
         true,
     ) {
-        Ok(_) => StatusCode::OK,
+        Ok(_) => {
+            let graph_name = graph.name.clone();
+            let response_body = serde_json::json!({"id": id}).to_string();
+            broadcast_write_result(&state.cluster_registry, &graph, "PUT", &format!("/vertices/{}", id), &graph_name, &response_body);
+            StatusCode::OK
+        }
         Err(_) => StatusCode::NOT_FOUND,
     }
 }
@@ -689,9 +715,7 @@ pub async fn create_edge(
     let graph = resolve_graph_from_request(&state, &headers)
         .map_err(|_| StatusCode::NOT_FOUND)?;
     let eid = crate::graph::locked::create_edge_locked(
-        &graph,
-        body.source,
-        body.target,
+        &graph, body.source, body.target,
         &body.name,
         &body.labels.unwrap_or_default(),
         &body.keywords.unwrap_or_default(),
@@ -699,6 +723,11 @@ pub async fn create_edge(
         &body.properties,
     )
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let graph_name = graph.name.clone();
+    let response_body = serde_json::json!({"id": eid}).to_string();
+    broadcast_write_result(&state.cluster_registry, &graph, "POST", "/edges", &graph_name, &response_body);
+
     Ok(Json(CreateEdgeResponse { id: eid }))
 }
 
@@ -770,7 +799,11 @@ pub async fn delete_edge(
     };
 
     match result {
-        Ok(_) => StatusCode::OK,
+        Ok(_) => {
+            let graph_name = graph.name.clone();
+            broadcast_write_result(&state.cluster_registry, &graph, "DELETE", &format!("/edges/{}", id), &graph_name, "{}");
+            StatusCode::OK
+        }
         Err(_) => StatusCode::NOT_FOUND,
     }
 }
