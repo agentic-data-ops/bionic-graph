@@ -16,38 +16,62 @@ impl BlockAllocator {
     /// 1-based data-chunk offset of the first chunk. Returns `None` when
     /// there aren't enough contiguous free slots.
     ///
-    /// Uses a single-pass scan with running count (sliding window)
-    /// instead of the previous two-pass (find + check consecutive) approach.
+    /// Two-phase allocation:
+    ///   Phase 1 — sequential fast path: try from `*offset` to end-of-block.
+    ///   Phase 2 — fallback scan: scan `[1, *offset - count)` for any run.
+    ///
+    /// On success, allocates the chunks (sets bits) and advances `*offset`
+    /// past them (Phase 1 only; Phase 2 leaves offset unchanged so that
+    /// future sequential allocations still grow from the tail).
+    ///
+    /// `offset` starts at 1 for a fresh block and tracks the next expected
+    /// free position. All chunks at `offset..` are implicitly free.
     ///
     /// Bit positions 0..=255 map to chunks as follows:
     /// - Bit 0 = always-set header bit (chunk 1, never allocated as data)
     /// - Bits 1..=255 = data chunks, where bit N → data offset N
-    ///
-    /// The search starts from bit 1 (skipping the header bit at position 0).
-    pub fn alloc_chunks(bitmap: &mut [u8; 32], count: u8) -> Option<ChunkOffset> {
+    pub fn alloc_chunks(bitmap: &mut [u8; 32], offset: &mut u8, count: u8) -> Option<ChunkOffset> {
         if count == 0 || count as usize >= CHUNKS_PER_BLOCK {
             return None;
         }
         let run = count as usize;
-        let mut current_run = 0usize;
 
-        for pos in 1..CHUNKS_PER_BLOCK {
+        // ── Phase 1: Sequential allocation from offset ───────────────────
+        let start = (*offset as usize).max(1);
+        if start + run <= CHUNKS_PER_BLOCK {
+            // The space after offset is implicitly free (never allocated yet).
+            let all_free = (start..start + run).all(|i| !Self::test_bit(bitmap, i));
+            if all_free {
+                for i in start..start + run {
+                    Self::set_bit(bitmap, i, true);
+                }
+                *offset = (start + run) as u8;
+                return Some(start as u8);
+            }
+        }
+
+        // ── Phase 2: Fallback scan for already-fragmented prefix ─────────
+        // Scan from the beginning up to `offset - run`, looking for any
+        // contiguous run. This catches space freed by token updates etc.
+        let scan_end = start.saturating_sub(run).max(1);
+        let mut current_run = 0usize;
+        for pos in 1..=scan_end + run - 1 {
             if !Self::test_bit(bitmap, pos) {
-                // Free chunk — extend current run
                 current_run += 1;
                 if current_run == run {
-                    // Found enough consecutive free chunks
-                    let start = pos + 1 - run; // 1-based offset
-                    for i in start..=pos {
+                    let found = pos + 1 - run;
+                    for i in found..=pos {
                         Self::set_bit(bitmap, i, true);
                     }
-                    return Some(start as u8);
+                    // Keep offset unchanged — leave cursor at the tail
+                    // so future Phase-1 allocations still use the fresh region.
+                    return Some(found as u8);
                 }
             } else {
-                // Allocated chunk — reset run
                 current_run = 0;
             }
         }
+
         None
     }
 
@@ -61,18 +85,15 @@ impl BlockAllocator {
         }
     }
 
-    /// Returns `true` when every data chunk (positions 1..255) is allocated.
+    /// Returns `true` when no 2 consecutive data chunks are free.
+    ///
+    /// Since every allocation needs at least 2 chunks (header + payload),
+    /// a block with no 2-consecutive-free run is effectively full.
     pub fn is_block_full(bitmap: &[u8; 32]) -> bool {
-        // Check bits 1..255 — we can check bytes 0..31 except bit 0 of byte 0
-        for (byte_idx, &byte) in bitmap.iter().enumerate() {
-            let expected = if byte_idx == 0 {
-                // bit 0 is the header (always set); bits 1-7 should be set
-                0xFFu8
-            } else {
-                0xFFu8
-            };
-            if byte != expected {
-                return false;
+        // Check bits 1..254 for any pair of consecutive zero (free) bits
+        for pos in 1..CHUNKS_PER_BLOCK - 1 {
+            if !Self::test_bit(bitmap, pos) && !Self::test_bit(bitmap, pos + 1) {
+                return false; // Found 2 consecutive free chunks
             }
         }
         true

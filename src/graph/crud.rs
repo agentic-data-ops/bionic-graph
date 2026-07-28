@@ -882,7 +882,7 @@ fn allocate_chunks(graph: &Graph, chunks_needed: u8) -> StorageResult<(u32, u8)>
         )?;
         let mut block_buf = block_data;
         let mut header = BlockHeader::decode(&block_buf);
-        if let Some(off) = BlockAllocator::alloc_chunks(&mut header.bitmap, chunks_needed) {
+        if let Some(off) = BlockAllocator::alloc_chunks(&mut header.bitmap, &mut header.offset, chunks_needed) {
             header.encode(&mut block_buf);
             let was_full = BlockAllocator::is_block_full(&header.bitmap);
             graph.block_cache.write_block_data(block_idx, &block_buf,
