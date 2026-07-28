@@ -844,8 +844,12 @@ fn replay_create_vertex(graph: &Graph, id: u32, payload: &VertexPayload, wal_dat
 /// than what's on disk (if the update's dirty blocks weren't flushed before crash).
 /// Cleans up old index entries before inserting the new ones.
 fn replay_create_vertex_always(graph: &Graph, id: u32, payload: &VertexPayload, wal_data: &[u8]) -> StorageResult<()> {
-    // Remove old index entries if vertex exists in the rebuilt index.
-    if let Some(&old_ptr) = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).vertex_id.get(id) {
+    // Remove old index entries (read lock scoped to avoid deadlock on upgrade).
+    let old_info: Option<(MetaPointer, u32)> = {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        mi.vertex_id.get(id).map(|&ptr| (ptr, 0u32))
+    };
+    if let Some((old_ptr, _)) = old_info {
         if let Ok(old_header) = read_data_header(graph, old_ptr) {
             let old_plen = old_header.payload_len as usize;
             let old_data = read_data_chunks(graph, old_ptr.block_idx, old_ptr.chunk_offset + 1, old_plen as u16)
@@ -912,8 +916,12 @@ fn replay_create_edge(graph: &Graph, id: u32, payload: &EdgePayload, wal_data: &
 /// Replay helper: write an edge data record unconditionally (no duplicate check).
 /// Used for EdgeUpdate replay, same rationale as replay_create_vertex_always.
 fn replay_create_edge_always(graph: &Graph, id: u32, payload: &EdgePayload, wal_data: &[u8]) -> StorageResult<()> {
-    // Remove old index entries if edge exists in the rebuilt index.
-    if let Some(&old_ptr) = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).edge_id.get(id) {
+    // Remove old index entries (read lock scoped to avoid deadlock on upgrade).
+    let old_ptr: Option<MetaPointer> = {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        mi.edge_id.get(id).copied()
+    };
+    if let Some(old_ptr) = old_ptr {
         if let Ok(old_header) = read_data_header(graph, old_ptr) {
             let old_plen = old_header.payload_len as usize;
             let old_data = read_data_chunks(graph, old_ptr.block_idx, old_ptr.chunk_offset + 1, old_plen as u16)
