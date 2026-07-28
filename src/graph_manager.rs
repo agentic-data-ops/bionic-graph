@@ -119,6 +119,20 @@ impl GraphManager {
         reg.get_meta(name).cloned()
     }
 
+    /// Open all registered graphs at startup so the first user request
+    /// doesn't pay the cost of `Graph::open()` (WAL replay etc.).
+    pub fn open_all(&self) {
+        let names: Vec<String> = {
+            let reg = self.registry.read().unwrap_or_else(|e| e.into_inner());
+            reg.graphs.iter().map(|g| g.name.clone()).collect()
+        };
+        for name in &names {
+            if let Err(e) = self.get(name) {
+                log::warn!("Failed to open graph '{}' at startup: {}", name, e);
+            }
+        }
+    }
+
     /// Check if a graph has time-travel enabled.
     pub fn time_travel_enabled(&self, name: &str) -> bool {
         let reg = self.registry.read().unwrap_or_else(|e| e.into_inner());

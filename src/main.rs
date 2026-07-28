@@ -184,6 +184,10 @@ async fn main() {
     // Initialize the new block-based graph manager.
     let gm = Arc::new(GraphManager::new(data_dir_path.clone()));
 
+    // Open all registered graphs at startup (WAL replay, index rebuild).
+    // This ensures the first user query doesn't pay the one-time cost.
+    gm.open_all();
+
     // Ensure the default graph "graph0" exists on first startup.
     if let Err(e) = gm.get("graph0") {
         log::warn!("Failed to create default graph 'graph0': {}", e);
