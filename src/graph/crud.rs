@@ -985,10 +985,88 @@ fn add_token(graph: &Graph, token_str: &str, ref_type: u8, ref_id: u32, hits: &[
 }
 
 /// Append multiple refs to an existing token in one write (called from token_batch::flush_batch).
+/// Reads the existing token segment, appends all refs at once, and writes a single new record.
+/// Falls back to per-ref writes if the combined payload would exceed MAX_TOKEN_PAYLOAD.
 pub fn add_token_batch(graph: &Graph, token_str: &str, refs: &[crate::graph::token_batch::PendingRef]) -> StorageResult<()> {
+    // Read the first existing token segment.
+    let (ptr, header, mut token_payload) = {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        let ptrs = mi.token.get(token_str);
+        let ptr = match ptrs.and_then(|v| v.first().copied()) {
+            Some(p) => p,
+            None => {
+                // Token doesn't exist yet — create it with all refs.
+                drop(mi);
+                let seg = TokenPayload {
+                    id: graph.alloc_token_id(),
+                    token: token_str.to_string(),
+                    refs: refs.iter().map(|pr| TokenRef {
+                        ref_type: pr.ref_type, ref_id: pr.ref_id,
+                        ref_version: 1, ref_frequency: pr.hits.len() as u16,
+                        hits: pr.hits.clone(),
+                    }).collect(),
+                };
+                let data = serialize::serialize_token(&seg)?;
+                let h = DataHeader::new_token(seg.id, data.len() as u16);
+                let new_ptr = write_data_record(graph, &h, &data)?;
+                let mut mi2 = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+                mi2.token.insert(token_str.to_string(), new_ptr);
+                return Ok(());
+            }
+        };
+        let h = read_data_header(graph, ptr)?;
+        let plen = h.payload_len as usize;
+        let data = read_data_chunks(graph, ptr.block_idx, ptr.chunk_offset + 1, plen as u16)?;
+        let payload = serialize::deserialize_token(&data)
+            .map_err(|e| StorageError::Other(format!("token deser: {e}")))?;
+        (ptr, h, payload)
+    };
+
+    let old_payload_len = header.payload_len as usize;
+
+    // Append all refs.
     for pr in refs {
-        add_token_immediate(graph, token_str, pr.ref_type, pr.ref_id, &pr.hits)?;
+        token_payload.refs.push(TokenRef {
+            ref_type: pr.ref_type, ref_id: pr.ref_id,
+            ref_version: 1, ref_frequency: pr.hits.len() as u16,
+            hits: pr.hits.clone(),
+        });
     }
+
+    let new_data = serialize::serialize_token(&token_payload)?;
+
+    // If the combined payload would overflow, fall back to per-ref writes.
+    if old_payload_len + new_data.len() > MAX_TOKEN_PAYLOAD {
+        for pr in refs {
+            add_token_immediate(graph, token_str, pr.ref_type, pr.ref_id, &pr.hits)?;
+        }
+        return Ok(());
+    }
+
+    let new_header = DataHeader {
+        chunk_type: crate::storage::types::ChunkType::Token,
+        status: DataStatus::Normal, version: 0,
+        entity_id: token_payload.id,
+        ctime: header.ctime, mtime: 0, atime: 0, rank: 0,
+        payload_len: new_data.len() as u16,
+    };
+
+    let new_ptr = write_data_record(graph, &new_header, &new_data)?;
+
+    // Update memory index.
+    {
+        let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+        mi.token.remove_pointer(token_str, &ptr);
+        mi.token.insert(token_str.to_string(), new_ptr);
+    }
+
+    // Free old chunks.
+    if old_payload_len > 0 {
+        let old_total = (DATA_HEADER_SIZE + old_payload_len) as u16;
+        let old_chunks = BlockAllocator::chunks_needed(old_total as usize);
+        free_data_chunks(graph, ptr.block_idx, ptr.chunk_offset, old_chunks)?;
+    }
+
     Ok(())
 }
 
