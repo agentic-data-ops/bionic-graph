@@ -208,6 +208,12 @@ impl RedoLog {
     /// This call blocks until the writer commits the batch containing this
     /// entry to disk.
     pub fn append(&self, op_type: OpType, op_id: u64, data: &[u8]) -> StorageResult<()> {
+        // During WAL replay, skip appending to avoid recursive WAL writes.
+        use crate::graph::graph::REPLAYING;
+        if REPLAYING.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+
         let bytes = self.encode_entry(op_type, op_id, data);
 
         // Check if batch mode is active.

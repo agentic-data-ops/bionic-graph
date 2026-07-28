@@ -689,121 +689,46 @@ pub fn replay_entry(graph: &Graph, entry: &RedoLogEntry) -> StorageResult<()> {
     match entry.op_type {
         OpType::VertexCreate => {
             let id = entry.op_id as u32;
-            if id >= graph.next_vertex_id.load(std::sync::atomic::Ordering::Relaxed) {
-                graph.next_vertex_id.store(id + 1, std::sync::atomic::Ordering::Relaxed);
-            }
+            graph.next_vertex_id.store(id, Ordering::Relaxed);
             if let Ok(payload) = deserialize_vertex(&entry.data) {
-                // Always re-apply: data in dirty cache may have been lost.
-                replay_create_vertex(graph, id, &payload, &entry.data)?;
+                crate::graph::locked::create_vertex_locked_direct(graph, &payload.name, &payload.labels, &payload.keywords, &payload.properties)?;
             }
         }
         OpType::VertexUpdate => {
             let id = entry.op_id as u32;
-            if id >= graph.next_vertex_id.load(std::sync::atomic::Ordering::Relaxed) {
-                graph.next_vertex_id.store(id + 1, std::sync::atomic::Ordering::Relaxed);
+            if id >= graph.next_vertex_id.load(Ordering::Relaxed) {
+                graph.next_vertex_id.store(id + 1, Ordering::Relaxed);
             }
             if let Ok(payload) = deserialize_vertex(&entry.data) {
-                // Always write the update — do NOT skip even if vertex exists,
-                // because the data file may have the stale pre-update state
-                // (the update's new data record was only in dirty cache).
-                replay_create_vertex_always(graph, id, &payload, &entry.data)?;
+                crate::graph::locked::update_vertex_locked_direct(graph, id, Some(&payload.name), Some(&payload.labels), Some(&payload.keywords), Some(&payload.properties), true)?;
             }
         }
         OpType::EdgeCreate => {
             let id = entry.op_id as u32;
-            if id >= graph.next_edge_id.load(std::sync::atomic::Ordering::Relaxed) {
-                graph.next_edge_id.store(id + 1, std::sync::atomic::Ordering::Relaxed);
-            }
+            graph.next_edge_id.store(id, Ordering::Relaxed);
             if let Ok(payload) = deserialize_edge(&entry.data) {
-                replay_create_edge(graph, id, &payload, &entry.data)?;
+                crate::graph::locked::create_edge_locked_direct(graph, payload.source, payload.target, &payload.name, &payload.labels, &payload.keywords, payload.strength, &payload.properties)?;
             }
         }
         OpType::EdgeUpdate => {
             let id = entry.op_id as u32;
-            if id >= graph.next_edge_id.load(std::sync::atomic::Ordering::Relaxed) {
-                graph.next_edge_id.store(id + 1, std::sync::atomic::Ordering::Relaxed);
+            if id >= graph.next_edge_id.load(Ordering::Relaxed) {
+                graph.next_edge_id.store(id + 1, Ordering::Relaxed);
             }
             if let Ok(payload) = deserialize_edge(&entry.data) {
-                replay_create_edge_always(graph, id, &payload, &entry.data)?;
+                crate::graph::locked::update_edge_locked_direct(graph, id, Some(&payload.name), Some(&payload.labels), Some(&payload.keywords), Some(payload.strength), Some(&payload.properties), true)?;
             }
         }
         OpType::VertexDelete => {
             let id = entry.op_id as u32;
-            // Read the vertex ptr from the rebuilt index.
-            let ptr = graph.memory_index.read().unwrap_or_else(|e| e.into_inner())
-                .vertex_id.get(id).copied();
-            if let Some(ptr) = ptr {
-                // Read payload to get name / labels / properties for index cleanup.
-                if let Ok(header) = read_data_header(graph, ptr) {
-                    let payload_len = header.payload_len as usize;
-                    let data = read_data_chunks(graph, ptr.block_idx, ptr.chunk_offset + 1, payload_len as u16)
-                        .unwrap_or_default();
-                    if let Ok(payload) = deserialize_vertex(&data) {
-                        let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-                        mi.vertex_name.remove(&payload.name);
-                        for l in &payload.labels {
-                            mi.remove_vertex_label(l, &ptr);
-                        }
-                        unindex_vertex_properties(&mut mi, &payload.properties, &ptr);
-                        mi.rank.remove(header.rank, &ptr);
-                        mi.vertex_id.remove(id);
-                        // Free the data chunks so the next restart doesn't find them.
-                        drop(mi);
-                        let total_len = DATA_HEADER_SIZE + payload_len;
-                        let chunks = BlockAllocator::chunks_needed(total_len);
-                        let _ = free_data_chunks(graph, ptr.block_idx, ptr.chunk_offset, chunks as u8);
-                    } else {
-                        // Couldn't read payload — remove what we can.
-                        let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-                        mi.rank.remove(header.rank, &ptr);
-                        mi.vertex_id.remove(id);
-                    }
-                }
-            }
+            let _ = crate::graph::locked::hard_delete_vertex_locked_direct(graph, id);
         }
         OpType::EdgeDelete => {
             let id = entry.op_id as u32;
-            let ptr = graph.memory_index.read().unwrap_or_else(|e| e.into_inner())
-                .edge_id.get(id).copied();
-            if let Some(ptr) = ptr {
-                // Read payload to get name / labels / source / target / properties.
-                if let Ok(header) = read_data_header(graph, ptr) {
-                    let payload_len = header.payload_len as usize;
-                    let data = read_data_chunks(graph, ptr.block_idx, ptr.chunk_offset + 1, payload_len as u16)
-                        .unwrap_or_default();
-                    if let Ok(payload) = deserialize_edge(&data) {
-                        let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-                        mi.edge_name.remove(&payload.name);
-                        mi.vertex_adjacency.remove_edge(payload.source, payload.target, &ptr);
-                        for l in &payload.labels {
-                            mi.remove_edge_label(l, &ptr);
-                        }
-                        unindex_edge_properties(&mut mi, &payload.properties, &ptr);
-                        mi.rank.remove(header.rank, &ptr);
-                        mi.edge_id.remove(id);
-                        drop(mi);
-                        let total_len = DATA_HEADER_SIZE + payload_len;
-                        let chunks = BlockAllocator::chunks_needed(total_len);
-                        let _ = free_data_chunks(graph, ptr.block_idx, ptr.chunk_offset, chunks as u8);
-                    }
-                }
-            }
+            let _ = crate::graph::locked::hard_delete_edge_locked_direct(graph, id);
         }
-        OpType::TokenCreate => {
-            if let Ok(payload) = deserialize_token(&entry.data) {
-                replay_create_token(graph, &payload, &entry.data)?;
-            }
-        }
-        OpType::TokenUpdate => {
-            if let Ok(payload) = deserialize_token(&entry.data) {
-                // Remove old pointers for this token then insert the new segment.
-                replay_update_token(graph, &payload, &entry.data)?;
-            }
-        }
-        OpType::TokenDelete => {
-            // Token delete removes all segments from memory index and frees chunks.
-            let token_str = String::from_utf8_lossy(&entry.data);
-            replay_delete_token(graph, &token_str)?;
+        OpType::TokenCreate | OpType::TokenUpdate | OpType::TokenDelete => {
+            // Tokens are implicitly created by vertex/edge CRUD replay.
         }
     }
     Ok(())

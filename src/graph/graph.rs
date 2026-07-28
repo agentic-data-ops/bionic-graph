@@ -9,10 +9,14 @@
 use std::{
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         Arc, RwLock,
     },
 };
+
+/// Flag set during WAL replay — prevents recursive WAL writes and
+/// recursive broadcasting.
+pub(crate) static REPLAYING: AtomicBool = AtomicBool::new(false);
 
 use serde::{Deserialize, Serialize};
 use crate::lock::lock_manager::LockManager;
@@ -231,13 +235,13 @@ impl Graph {
         // ── Replay redo log ──────────────────────────────────────────────
         // The WAL replay applies any un-checkpointed operations to the
         // in-memory index and data blocks.
-        crate::graph::crud::REPLAYING.store(true, Ordering::Relaxed);
+        crate::graph::graph::REPLAYING.store(true, Ordering::Relaxed);
         let g = Arc::downgrade(&graph);
         let replay_result = RedoLog::replay(&graph_dir, |entry| {
             let graph = g.upgrade().ok_or_else(|| StorageError::Other("graph dropped during replay".into()))?;
             crate::graph::crud::replay_entry(&graph, &entry)
         });
-        crate::graph::crud::REPLAYING.store(false, Ordering::Relaxed);
+        crate::graph::graph::REPLAYING.store(false, Ordering::Relaxed);
         replay_result?;
 
         // After replay, switch to a fresh WAL file so crash recovery
