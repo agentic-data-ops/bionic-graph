@@ -65,7 +65,9 @@ pub async fn push_entry_to_worker(
     worker_cluster_addr: &str,
     entry: &ReplicatedEntry,
 ) -> Result<ReplicationAck, ReplicationError> {
-    let url = format!("http://{}/cluster/replicate", worker_cluster_addr);
+    // Replace 0.0.0.0 with 127.0.0.1 for outgoing connections.
+    let addr = worker_cluster_addr.replace("0.0.0.0", "127.0.0.1");
+    let url = format!("http://{}/cluster/replicate", addr);
     let body = serde_json::to_string(entry)?;
 
     let client = reqwest::Client::new();

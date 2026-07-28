@@ -763,7 +763,11 @@ pub async fn update_edge(
         body.properties.as_ref(),
         true,
     ) {
-        Ok(_) => StatusCode::OK,
+        Ok(_) => {
+            let graph_name = graph.name.clone();
+            broadcast_write_result(&state.cluster_registry, &graph, "PUT", &format!("/edges/{}", id), &graph_name, &serde_json::json!({"id": id}).to_string());
+            StatusCode::OK
+        }
         Err(_) => StatusCode::NOT_FOUND,
     }
 }
