@@ -31,7 +31,7 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
-        mpsc::{self, Receiver, Sender, TryRecvError},
+        mpsc::{self, Receiver, Sender},
         Arc, Condvar, Mutex,
     },
     thread::{self, JoinHandle},
@@ -46,8 +46,6 @@ use crate::storage::types::{OpType, StorageError, StorageResult};
 pub const ROTATION_THRESHOLD: u64 = 64 * 1024 * 1024;
 /// Default batch size: accumulate up to 128 entries before writing.
 pub const DEFAULT_BATCH_SIZE: usize = 128;
-/// Maximum time the writer waits for more entries before flushing a partial batch.
-const BATCH_FLUSH_INTERVAL: Duration = Duration::from_millis(10);
 /// CRC32 of an entry covers: op_type (1) + op_id (8) + data_len (4) + data.
 const CRC_HEADER_LEN: usize = 1 + 8 + 4;
 
@@ -533,29 +531,8 @@ fn writer_main_loop(
         match msg {
             WriterMessage::Entry(bytes) => {
                 batch.push(bytes);
-
-                // Try to collect more entries up to batch size.
-                let deadline = Instant::now() + BATCH_FLUSH_INTERVAL;
-                while batch.len() < DEFAULT_BATCH_SIZE && Instant::now() < deadline {
-                    match rx.try_recv() {
-                        Ok(WriterMessage::Entry(b)) => batch.push(b),
-                        Ok(WriterMessage::BatchEntries(mut es)) => batch.append(&mut es),
-                        Ok(other) => {
-                            // Control message arrived mid-batch.
-                            // Flush the partial batch, then handle control.
-                            writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, log_rotation_age_secs, &mut checkpoint_seq, &state);
-                            handle_control_msg(other, &mut writer, &dir, &mut checkpoint_seq, &state);
-                            continue;
-                        }
-                        Err(TryRecvError::Empty) => break,
-                        Err(TryRecvError::Disconnected) => {
-                            flush_entries(writer, &mut batch, &dir, rotation_threshold, log_rotation_age_secs, &mut checkpoint_seq, &state);
-                            return;
-                        }
-                    }
-                }
-
-                // Flush accumulated batch.
+                // 非 batch 模式：逐条写入并 fsync，不累积等待
+                // 确保每条 append() 在返回前数据已耐久
                 writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, log_rotation_age_secs, &mut checkpoint_seq, &state);
             }
             WriterMessage::BatchEntries(mut entries) => {
@@ -691,45 +668,6 @@ fn try_flush_entries(
     writer.size += batch_size;
 
     Ok(())
-}
-
-/// Handle control messages (Flush, Renew) that arrive mid-batch.
-fn handle_control_msg(
-    msg: WriterMessage,
-    writer: &mut RedoLogWriter,
-    dir: &Path,
-    checkpoint_seq: &mut u64,
-    state: &Arc<(Mutex<WriteState>, Condvar)>,
-) {
-    match msg {
-        WriterMessage::Renew { done } => {
-            let _ = writer.file.sync_all();
-            let files = list_redo_files(dir);
-            for fname in &files {
-                let _ = fs::remove_file(dir.join(fname));
-            }
-            match create_new_file(dir, *checkpoint_seq) {
-                Ok(new_writer) => {
-                    *checkpoint_seq += 1;
-                    *writer = new_writer;
-                    advance_epoch(state, None);
-                }
-                Err(e) => advance_epoch(state, Some(e)),
-            }
-            let mut guard = done.0.lock().unwrap();
-            *guard = true;
-            done.1.notify_all();
-        }
-        _ => {
-            // Other control messages: just advance epoch and signal done.
-            advance_epoch(state, None);
-            if let WriterMessage::Flush { done } = msg {
-                let mut guard = done.0.lock().unwrap();
-                *guard = true;
-                done.1.notify_all();
-            }
-        }
-    }
 }
 
 fn advance_epoch(state: &Arc<(Mutex<WriteState>, Condvar)>, err: Option<StorageError>) {
