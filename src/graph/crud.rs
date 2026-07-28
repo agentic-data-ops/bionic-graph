@@ -814,6 +814,7 @@ fn replay_create_vertex(graph: &Graph, id: u32, payload: &VertexPayload, wal_dat
     for l in &payload.labels {
         mi.add_vertex_label(l, ptr);
     }
+    index_vertex_properties(&mut mi, &payload.properties, ptr);
     drop(mi);
 
     tokenize_vertex(graph, id, payload)?;
@@ -823,7 +824,26 @@ fn replay_create_vertex(graph: &Graph, id: u32, payload: &VertexPayload, wal_dat
 /// Replay helper: write a vertex data record unconditionally (no duplicate check).
 /// Used for VertexUpdate replay, where the WAL entry may contain a newer state
 /// than what's on disk (if the update's dirty blocks weren't flushed before crash).
+/// Cleans up old index entries before inserting the new ones.
 fn replay_create_vertex_always(graph: &Graph, id: u32, payload: &VertexPayload, wal_data: &[u8]) -> StorageResult<()> {
+    // Remove old index entries if vertex exists in the rebuilt index.
+    if let Some(&old_ptr) = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).vertex_id.get(id) {
+        if let Ok(old_header) = read_data_header(graph, old_ptr) {
+            let old_plen = old_header.payload_len as usize;
+            let old_data = read_data_chunks(graph, old_ptr.block_idx, old_ptr.chunk_offset + 1, old_plen as u16)
+                .unwrap_or_default();
+            if let Ok(old_payload) = deserialize_vertex(&old_data) {
+                let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+                mi.vertex_name.remove(&old_payload.name);
+                for l in &old_payload.labels {
+                    mi.remove_vertex_label(l, &old_ptr);
+                }
+                unindex_vertex_properties(&mut mi, &old_payload.properties, &old_ptr);
+                mi.rank.remove(old_header.rank, &old_ptr);
+            }
+        }
+    }
+
     let serialized = wal_data.to_vec();
     let header = DataHeader::new_vertex(id, serialized.len() as u16);
     let ptr = write_data_record(graph, &header, &serialized)?;
@@ -835,6 +855,7 @@ fn replay_create_vertex_always(graph: &Graph, id: u32, payload: &VertexPayload, 
     for l in &payload.labels {
         mi.add_vertex_label(l, ptr);
     }
+    index_vertex_properties(&mut mi, &payload.properties, ptr);
     drop(mi);
 
     tokenize_vertex(graph, id, payload)?;
@@ -863,6 +884,7 @@ fn replay_create_edge(graph: &Graph, id: u32, payload: &EdgePayload, wal_data: &
     for l in &payload.labels {
         mi.add_edge_label(l, ptr);
     }
+    index_edge_properties(&mut mi, &payload.properties, ptr);
     drop(mi);
 
     tokenize_edge(graph, id, payload)?;
@@ -872,6 +894,25 @@ fn replay_create_edge(graph: &Graph, id: u32, payload: &EdgePayload, wal_data: &
 /// Replay helper: write an edge data record unconditionally (no duplicate check).
 /// Used for EdgeUpdate replay, same rationale as replay_create_vertex_always.
 fn replay_create_edge_always(graph: &Graph, id: u32, payload: &EdgePayload, wal_data: &[u8]) -> StorageResult<()> {
+    // Remove old index entries if edge exists in the rebuilt index.
+    if let Some(&old_ptr) = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).edge_id.get(id) {
+        if let Ok(old_header) = read_data_header(graph, old_ptr) {
+            let old_plen = old_header.payload_len as usize;
+            let old_data = read_data_chunks(graph, old_ptr.block_idx, old_ptr.chunk_offset + 1, old_plen as u16)
+                .unwrap_or_default();
+            if let Ok(old_payload) = deserialize_edge(&old_data) {
+                let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+                mi.edge_name.remove(&old_payload.name);
+                mi.vertex_adjacency.remove_edge(old_payload.source, old_payload.target, &old_ptr);
+                for l in &old_payload.labels {
+                    mi.remove_edge_label(l, &old_ptr);
+                }
+                unindex_edge_properties(&mut mi, &old_payload.properties, &old_ptr);
+                mi.rank.remove(old_header.rank, &old_ptr);
+            }
+        }
+    }
+
     let serialized = wal_data.to_vec();
     let header = DataHeader::new_edge(id, serialized.len() as u16);
     let ptr = write_data_record(graph, &header, &serialized)?;
@@ -884,6 +925,7 @@ fn replay_create_edge_always(graph: &Graph, id: u32, payload: &EdgePayload, wal_
     for l in &payload.labels {
         mi.add_edge_label(l, ptr);
     }
+    index_edge_properties(&mut mi, &payload.properties, ptr);
     drop(mi);
 
     tokenize_edge(graph, id, payload)?;
