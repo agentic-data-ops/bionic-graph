@@ -183,6 +183,18 @@ impl BitmapFile {
         self.free_blocks.retain(|&b| b != idx);
     }
 
+    /// Rotate the free list: move the first block to the end.
+    /// Used when a block can't satisfy the current allocation but may
+    /// work for a future one (or after other blocks have been freed).
+    pub fn skip_block(&mut self, idx: BlockIdx) {
+        if let Some(pos) = self.free_blocks.iter().position(|&b| b == idx) {
+            self.free_blocks.remove(pos);
+            if let Err(pos) = self.free_blocks.binary_search(&idx) {
+                self.free_blocks.insert(pos, idx);
+            }
+        }
+    }
+
     /// Return the current count of free blocks tracked.
     pub fn free_block_count(&self) -> usize {
         self.free_blocks.len()

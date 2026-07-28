@@ -863,18 +863,24 @@ fn replay_create_edge_always(graph: &Graph, id: u32, payload: &EdgePayload, wal_
 fn allocate_chunks(graph: &Graph, chunks_needed: u8) -> StorageResult<(u32, u8)> {
     let mut bf = graph.bitmap_file.write().unwrap_or_else(|e| e.into_inner());
 
+    // Track how many blocks we've tried this round. When every free
+    // block has been tried and none has enough contiguous space, discard
+    // one to free up a slot for a fresh block allocation.
+    let mut tried = 0usize;
+
     loop {
         let block_idx = match bf.peek_free_block() {
             Some(idx) => idx,
             None => {
-                // No free blocks — allocate a batch from the data file.
                 bf.alloc_new_blocks(|count| {
                     graph.data_file.allocate_blocks(count)
                 })?;
-                // After allocation, there's at least one free block.
                 bf.peek_free_block().expect("fresh blocks must exist")
             }
         };
+
+        // Remove from free_blocks for this attempt
+        bf.consume_free_block(block_idx);
 
         let block_data = graph.block_cache.read_block_data(block_idx,
             |idx| graph.data_file.read_block(idx),
@@ -899,10 +905,18 @@ fn allocate_chunks(graph: &Graph, chunks_needed: u8) -> StorageResult<(u32, u8)>
         }
 
         // This block doesn't have enough contiguous free chunks.
-        // Skip it — it will be tried again on the next allocation call.
-        // (Not marking it full, so it stays available in free_blocks,
-        // just removed from the in-memory free list for this session.)
-        bf.consume_free_block(block_idx);
+        tried += 1;
+        // Detect if we've been around all free blocks without success.
+        let free_count = bf.free_block_count();
+        if tried > free_count {
+            // Full circle with no success — discard the fragmented block
+            // so consume_free_block causes peek_free_block to return None,
+            // triggering alloc_new_blocks at the top of the loop.
+            bf.consume_free_block(block_idx);
+            tried = 0;
+        } else {
+            bf.mark_partial(block_idx);
+        }
         // Continue loop to try next block
     }
 }
