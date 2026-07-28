@@ -143,9 +143,11 @@ async fn handle_forward(
             let entries = build_broadcast_entries(&state, &req, &result);
             for entry in entries {
                 let seq = state.registry.next_seq();
+                let graph_name = req.graph.clone().unwrap_or_else(|| state.gm.get_default_name());
                 let replicated = ReplicatedEntry {
                     cluster_seq: seq,
                     entry,
+                    graph_name,
                     master_timestamp: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
@@ -176,13 +178,22 @@ fn build_broadcast_entries(
 ) -> Vec<crate::storage::redo_log::RedoLogEntry> {
     let mut entries = Vec::new();
     let method = req.method.to_uppercase();
-    let default_name = state.gm.get_default_name();
-    let graph = match state.gm.get(&default_name) {
+
+    // Use the graph from the request, or fall back to default.
+    let graph_name = req.graph.clone().unwrap_or_else(|| state.gm.get_default_name());
+    let graph = match state.gm.get(&graph_name) {
         Ok(g) => g,
         Err(_) => return entries,
     };
 
-    // Parse created/updated ID from response body {"id": N}.
+    // Parse ID from path (e.g. "/vertices/3?force=true" → 3).
+    let path_id: Option<u32> = {
+        let path = req.path.split('?').next().unwrap_or(&req.path);
+        let parts: Vec<&str> = path.split('/').collect();
+        parts.last().and_then(|s| s.parse().ok())
+    };
+
+    // Parse response body.
     let body = match result.body {
         Some(ref b) => b.clone(),
         None => return entries,
@@ -191,19 +202,16 @@ fn build_broadcast_entries(
         Ok(v) => v,
         Err(_) => return entries,
     };
-    let id = match parsed.get("id").and_then(|v| v.as_u64()) {
-        Some(id) => id as u32,
-        None => return entries,
-    };
 
     match (method.as_str(), req.path.as_str()) {
         ("POST", "/vertices") | ("PUT", "/vertices") => {
-            // Use read_vertex_by_record to avoid updating rank/atime.
+            let id = parsed.get("id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            if id == 0 { return entries; }
             let found = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).vertex_id.get(id).copied();
             if let Some(ptr) = found {
                 if let Ok(dh) = crate::graph::crud::read_header_by_ptr(&graph, &ptr) {
                     if dh.status != crate::storage::types::DataStatus::Deleted {
-                        let payload_len = (dh.payload_len as usize).saturating_sub(crate::storage::types::DATA_HEADER_SIZE);
+                        let payload_len = dh.payload_len as usize;
                         if let Ok(data) = crate::graph::crud::read_data_chunks(
                             &graph, ptr.block_idx, ptr.chunk_offset + 1, dh.payload_len as u16,
                         ) {
@@ -222,14 +230,15 @@ fn build_broadcast_entries(
             }
         }
         ("POST", "/edges") | ("PUT", "/edges") => {
-            // Read edge payload directly without updating rank/atime.
+            let id = parsed.get("id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            if id == 0 { return entries; }
             let found = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).edge_id.get(id).copied();
             if let Some(ptr) = found {
                 if let Ok(dh) = crate::graph::crud::read_header_by_ptr(&graph, &ptr) {
                     if dh.status != crate::storage::types::DataStatus::Deleted {
                         let payload_len = dh.payload_len as usize;
                         if let Ok(data) = crate::graph::crud::read_data_chunks(
-                            &graph, ptr.block_idx, ptr.chunk_offset + 1, dh.payload_len,
+                            &graph, ptr.block_idx, ptr.chunk_offset + 1, dh.payload_len as u16,
                         ) {
                             if let Ok(payload) = crate::graph::serialize::deserialize_edge(&data[..payload_len]) {
                                 if let Ok(serialized) = crate::graph::serialize::serialize_edge(&payload) {
@@ -243,6 +252,24 @@ fn build_broadcast_entries(
                         }
                     }
                 }
+            }
+        }
+        ("DELETE", path) if path.starts_with("/vertices/") => {
+            if let Some(vid) = path_id {
+                entries.push(crate::storage::redo_log::RedoLogEntry {
+                    op_type: OpType::VertexDelete,
+                    op_id: vid as u64,
+                    data: Vec::new(),
+                });
+            }
+        }
+        ("DELETE", path) if path.starts_with("/edges/") => {
+            if let Some(eid) = path_id {
+                entries.push(crate::storage::redo_log::RedoLogEntry {
+                    op_type: OpType::EdgeDelete,
+                    op_id: eid as u64,
+                    data: Vec::new(),
+                });
             }
         }
         _ => {}
@@ -321,19 +348,19 @@ async fn handle_replicate(
         });
     }
 
-    // Write the entry to the default graph's redo log and replay it
+    // Write the entry to the graph's redo log and replay it
     // into the in-memory state so the worker can immediately see changes.
     // redo_log.append() uses synchronous Condvar — defer to spawn_blocking.
-    let default_name = state.gm.get_default_name();
-    let graph = match state.gm.get(&default_name) {
+    let graph_name = entry.graph_name.clone();
+    let graph = match state.gm.get(&graph_name) {
         Ok(g) => g,
         Err(e) => {
-            log::error!("replicate: failed to get default graph: {}", e);
+            log::error!("replicate: failed to get graph '{}': {}", graph_name, e);
             return Json(ReplicationAck {
                 worker_id: "local".to_string(),
                 acked_seq: entry.cluster_seq,
                 success: false,
-                error: Some(format!("Failed to get default graph: {}", e)),
+                error: Some(format!("Failed to get graph '{}': {}", graph_name, e)),
             });
         }
     };
@@ -417,9 +444,11 @@ pub async fn process_touch(
         if !workers.is_empty() {
             for entry in entries {
                 let seq = reg.next_seq();
+                let graph_name = graph.name.clone();
                 let replicated = ReplicatedEntry {
                     cluster_seq: seq,
                     entry,
+                    graph_name,
                     master_timestamp: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
