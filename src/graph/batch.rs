@@ -16,7 +16,7 @@ use crate::storage::types::PropertyValue;
 use crate::storage::types::StorageResult;
 
 /// A batch import item describing a vertex.
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct BatchEntity {
     pub name: String,
@@ -37,7 +37,7 @@ impl Default for BatchEntity {
 }
 
 /// A batch import item describing an edge, with source/target as vertex names.
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct BatchRelation {
     pub source: String,
     pub target: String,
@@ -55,7 +55,7 @@ pub struct BatchRelation {
 fn default_strength() -> f32 { 1.0 }
 
 /// A batch delete item for an edge, identified by source/target names and edge name.
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct BatchDeleteEdge {
     pub source: String,
     pub target: String,
@@ -63,12 +63,12 @@ pub struct BatchDeleteEdge {
 }
 
 /// Result of a batch delete operation.
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct BatchDeleteResult {
     pub vertices_deleted: usize,
     pub edges_deleted: usize,
 }
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct BatchImportResult {
     pub vertices_created: usize,
     pub vertices_updated: usize,

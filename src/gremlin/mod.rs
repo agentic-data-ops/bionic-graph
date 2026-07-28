@@ -1196,7 +1196,7 @@ pub async fn put_graph_config_handler(
 
 // ── POST /batch/load — batch import vertices and edges ────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct BatchImportBody {
     #[serde(default)]
     pub entities: Vec<crate::graph::batch::BatchEntity>,
@@ -1211,8 +1211,26 @@ pub async fn handle_batch_import(
     headers: axum::http::HeaderMap,
     Json(body): Json<BatchImportBody>,
 ) -> Result<Json<crate::graph::batch::BatchImportResult>, StatusCode> {
+    // Worker → Master forwarding
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    let body_str = serde_json::to_string(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
+    if let Some(resp) = try_forward_json(
+        &state, "POST", "/batch/load", None, graph_name, Some(&body_str),
+    ).await {
+        let json_val = resp.map_err(|e| e)?;
+        let result: crate::graph::batch::BatchImportResult = serde_json::from_value(json_val.0).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        return Ok(Json(result));
+    }
+
     let graph = crate::gremlin::resolve_graph_from_request(&state, &headers)
         .map_err(|_| StatusCode::NOT_FOUND)?;
+    let result = crate::graph::batch::batch_import(
+        &graph, &body.entities, &body.relations, "", body.update_existing,
+    );
+    // Broadcast result to workers (individual entity broadcasts handled by CRUD)
+    let graph_name = graph.name.clone();
+    let res_body = serde_json::to_string(&result).unwrap_or_default();
+    broadcast_write_result(&state.cluster_registry, &graph, "POST", "/batch/load", &graph_name, &res_body);
     let result = crate::graph::batch::batch_import(
         &graph, &body.entities, &body.relations, "", body.update_existing,
     );
@@ -1221,7 +1239,7 @@ pub async fn handle_batch_import(
 
 // ── POST /batch/delete — batch delete vertices and edges ─────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct BatchDeleteBody {
     #[serde(default)]
     pub vertices: Vec<String>,
