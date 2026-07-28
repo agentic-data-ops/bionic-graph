@@ -18,14 +18,14 @@ use std::{
 use crate::storage::types::{BlockIdx, StorageResult};
 
 /// Number of free-block slots to keep pre-filled in memory.
-const FREE_LIST_TARGET: usize = 128;
+const DEFAULT_PRE_ALLOC_BLOCKS: usize = 128;
 
 /// Block-level bitmap manager.
 ///
 /// # Invariants
 ///
 /// - `free_blocks` is always sorted ascending.
-/// - `free_blocks.len()` ≤ `FREE_LIST_TARGET`.
+/// - `free_blocks.len()` ≤ `pre_alloc_blocks`.
 /// - The on-disk bitmap is always in sync with the in-memory `bitmap` vec.
 pub struct BitmapFile {
     file: Mutex<File>,
@@ -36,6 +36,8 @@ pub struct BitmapFile {
     free_blocks: Vec<BlockIdx>,
     /// Position in the bitmap where the last 0-bit was found during scan.
     last_scan_pos: usize,
+    /// 块预分配数量（free list 补货阈值）。
+    pre_alloc_blocks: usize,
 }
 
 impl BitmapFile {
@@ -44,7 +46,7 @@ impl BitmapFile {
     /// `initial_data_blocks` is the current number of 16 KB blocks in the
     /// associated data file. The bitmap is sized to cover that many blocks
     /// (rounded up to the nearest byte).
-    pub fn open<P: AsRef<Path>>(path: P, initial_data_blocks: u64) -> StorageResult<Self> {
+    pub fn open<P: AsRef<Path>>(path: P, initial_data_blocks: u64, pre_alloc_blocks: usize) -> StorageResult<Self> {
         let path = path.as_ref().to_path_buf();
         let bitmap_len = (initial_data_blocks as usize).div_ceil(8);
         let mut file = OpenOptions::new()
@@ -78,7 +80,7 @@ impl BitmapFile {
         for block_idx in 0..initial_data_blocks as u32 {
             if !Self::is_bit_set(&bitmap, block_idx) {
                 free_blocks.push(block_idx);
-                if free_blocks.len() >= FREE_LIST_TARGET {
+                if free_blocks.len() >= pre_alloc_blocks {
                     break;
                 }
             }
@@ -93,6 +95,7 @@ impl BitmapFile {
             bitmap,
             free_blocks,
             last_scan_pos,
+            pre_alloc_blocks,
         })
     }
 
@@ -109,7 +112,7 @@ impl BitmapFile {
         }
 
         // No free blocks — allocate a batch of new blocks from the data file.
-        let count = FREE_LIST_TARGET as u32;
+        let count = self.pre_alloc_blocks as u32;
         let start = allocate_new(count)?;
 
         // Extend bitmap if needed.
@@ -149,7 +152,7 @@ impl BitmapFile {
             self.free_blocks.insert(pos, idx);
         }
         // Trim if we have too many.
-        while self.free_blocks.len() > FREE_LIST_TARGET {
+        while self.free_blocks.len() > self.pre_alloc_blocks {
             self.free_blocks.pop();
         }
         self.sync_bitmap()?;
@@ -171,13 +174,13 @@ impl BitmapFile {
     }
 
     /// Scan from `last_scan_pos` forward, collecting 0-bits into free_blocks
-    /// until we have `FREE_LIST_TARGET` entries.
+    /// until we have `pre_alloc_blocks` entries.
     fn scan_for_free_blocks(&mut self) {
         let start = self.last_scan_pos;
         let total_blocks = self.bitmap.len() * 8;
 
         for block_idx in start..total_blocks {
-            if self.free_blocks.len() >= FREE_LIST_TARGET {
+            if self.free_blocks.len() >= self.pre_alloc_blocks {
                 break;
             }
             if !Self::is_bit_set(&self.bitmap, block_idx as u32) {
@@ -218,7 +221,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.bitmap");
 
-        let mut bf = BitmapFile::open(&path, 0).unwrap();
+        let mut bf = BitmapFile::open(&path, 0, DEFAULT_PRE_ALLOC_BLOCKS).unwrap();
         assert_eq!(bf.free_block_count(), 0);
 
         // Allocate — should trigger extension.
@@ -236,7 +239,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.bitmap");
 
-        let mut bf = BitmapFile::open(&path, 10).unwrap();
+        let mut bf = BitmapFile::open(&path, 10, DEFAULT_PRE_ALLOC_BLOCKS).unwrap();
         // Initially all 10 blocks are free.
         assert!(bf.free_block_count() > 0);
 

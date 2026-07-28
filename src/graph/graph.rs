@@ -61,8 +61,8 @@ pub struct GraphStorageConfig {
     pub rotation_threshold_mb: u64,
     /// WAL 文件旋转时间（秒）。超过此时间自动旋转。null 表示不启用时间旋转
     pub rotation_max_age_secs: Option<u64>,
-    /// 位图空闲块列表预填充数量
-    pub free_list_target: usize,
+    /// 块预分配数量（free list 补货阈值）。
+    pub pre_alloc_blocks: usize,
     /// 顶点/边历史记录最大条目数。
     pub max_history: usize,
     /// 是否启用日志批量写入（批量导入时合并日志记录）。
@@ -77,7 +77,7 @@ impl Default for GraphStorageConfig {
             cache_capacity: 4096,
             rotation_threshold_mb: 64,
             rotation_max_age_secs: Some(900),
-            free_list_target: 128,
+            pre_alloc_blocks: 128,
             max_history: 32,
             log_flush_batch_enable: true,
             log_flush_batch_size: 256,
@@ -183,7 +183,7 @@ impl Graph {
         // ── Open storage files ───────────────────────────────────────────
         let data_file = DataFile::open(graph_dir.join("data"))?;
         let data_blocks = data_file.block_count()?;
-        let bitmap_file = RwLock::new(BitmapFile::open(graph_dir.join("bitmap"), data_blocks)?);
+        let bitmap_file = RwLock::new(BitmapFile::open(graph_dir.join("bitmap"), data_blocks, config.storage.pre_alloc_blocks)?);
         let block_cache = ShardedBlockCache::new(config.storage.cache_capacity, crate::storage::block_cache::DEFAULT_SHARD_COUNT);
         let redo_log = RedoLog::open_with_config(
             &graph_dir,
