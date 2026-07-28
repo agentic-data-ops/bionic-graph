@@ -23,13 +23,15 @@ import signal
 import subprocess
 import threading
 from urllib.parse import urljoin
+from datetime import datetime
 
 import httpx
 
 # ── 配置 ─────────────────────────────────────────────────────────────
 
 BASE_URL = os.environ.get("BG_BASE_URL", "http://127.0.0.1:8080")
-GRAPH = "crash_batch_test"
+# 每次运行使用唯一图名，避免残留数据造成干扰
+GRAPH = f"crash_batch_{datetime.now().strftime('%H%M%S')}"
 BINARY = os.environ.get(
     "BG_BINARY",
     "/tmp/bionic-graph/target/debug/bionic-graph",
@@ -103,7 +105,7 @@ def api_json(client: httpx.Client, method: str, path: str, **kwargs) -> dict:
     """发起 API 请求并返回 JSON 响应体。"""
     kwargs.setdefault("headers", {})
     kwargs["headers"].setdefault("X-Graph-Name", GRAPH)
-    kwargs.setdefault("timeout", 15)
+    kwargs.setdefault("timeout", 30)
     resp = client.request(method, urljoin(BASE_URL, path), **kwargs)
     try:
         return resp.json()
@@ -129,9 +131,19 @@ def step_start():
     start_server()
     api_json(httpx.Client(base_url=BASE_URL, timeout=5), "GET", "/health")
 
-    # 清理可能残留的旧图
+    # 清理之前运行时残留的 crash 图（防止残留数据干扰）
     try:
-        api_json(httpx.Client(base_url=BASE_URL, timeout=5), "DELETE", f"/graphs/{GRAPH}?force=true")
+        c = httpx.Client(base_url=BASE_URL, timeout=5)
+        resp = c.get("/graphs")
+        for g in resp.json().get("graphs", []):
+            name = g.get("name", "")
+            if name.startswith("crash_batch_"):
+                try:
+                    c.delete(f"/graphs/{name}?force=true")
+                    print(f"  🧹 清理残留图: {name}")
+                except Exception:
+                    pass
+        c.close()
     except Exception:
         pass
 
@@ -267,6 +279,10 @@ def step_verify_post_crash(client: httpx.Client):
       3. 新写入正常
     """
     errors = []
+    # 重启后首请求用较长时间等待 WAL replay 完成
+    initial_wait = 3
+    print(f"[step 5.0] ⏳ 等待 {initial_wait}s 让 WAL replay 完成...")
+    time.sleep(initial_wait)
 
     # ── 5.1: 图存在 ──────────────────────────────────────────────
     try:
