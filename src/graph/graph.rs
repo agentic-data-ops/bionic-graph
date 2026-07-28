@@ -69,6 +69,8 @@ pub struct GraphStorageConfig {
     pub log_flush_batch_enable: bool,
     /// WAL 批量 flush 的批次大小。
     pub log_flush_batch_size: usize,
+    /// WAL 批量缓存在内存中的最大时长（微秒）。达到该时间时自动 flush，无论批次是否已满。0 表示禁用时间触发。
+    pub log_flush_max_age_us: u64,
 }
 
 impl Default for GraphStorageConfig {
@@ -81,6 +83,7 @@ impl Default for GraphStorageConfig {
             time_travel_max_history: 32,
             log_flush_batch_enable: true,
             log_flush_batch_size: 256,
+            log_flush_max_age_us: 1000,
         }
     }
 }

@@ -224,7 +224,12 @@ pub fn batch_import(
     // Enable WAL batch mode when configured
     let wal_batch_enabled = graph.config.storage.log_flush_batch_enable;
     if wal_batch_enabled {
-        graph.redo_log.start_batch();
+        let max_age = graph.config.storage.log_flush_max_age_us;
+        if max_age > 0 {
+            graph.redo_log.start_batch_with_max_age(max_age);
+        } else {
+            graph.redo_log.start_batch();
+        }
     }
 
     // Import vertices

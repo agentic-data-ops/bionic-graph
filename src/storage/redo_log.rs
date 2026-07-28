@@ -72,6 +72,8 @@ struct WriteState {
 struct BatchBuffer {
     entries: Vec<Vec<u8>>,
     start_time: Instant,
+    /// 最大缓存时长（微秒）。Some(0) 或 None 表示禁用时间触发。
+    max_age_us: Option<u64>,
 }
 
 /// Messages sent from the API to the background writer.
@@ -207,6 +209,18 @@ impl RedoLog {
         {
             let mut guard = self.batch_buffer.lock().unwrap();
             if let Some(ref mut buf) = *guard {
+                // Time-based auto-flush: if buffer exceeds max age, flush first
+                if let Some(max_age) = buf.max_age_us {
+                    if max_age > 0 && buf.start_time.elapsed() > Duration::from_micros(max_age) {
+                        drop(guard);
+                        self.flush_batch()?;
+                        let mut guard = self.batch_buffer.lock().unwrap();
+                        if let Some(ref mut buf) = *guard {
+                            buf.entries.push(bytes);
+                        }
+                        return Ok(());
+                    }
+                }
                 buf.entries.push(bytes);
                 return Ok(());
             }
@@ -236,7 +250,16 @@ impl RedoLog {
     pub fn start_batch(&self) {
         let mut guard = self.batch_buffer.lock().unwrap();
         if guard.is_none() {
-            *guard = Some(BatchBuffer { entries: Vec::with_capacity(128), start_time: Instant::now() });
+            *guard = Some(BatchBuffer { entries: Vec::with_capacity(128), start_time: Instant::now(), max_age_us: None });
+        }
+    }
+
+    /// Start a batch with a max age timeout (microseconds).
+    /// When `max_age_us > 0`, the batch will auto-flush after this duration.
+    pub fn start_batch_with_max_age(&self, max_age_us: u64) {
+        let mut guard = self.batch_buffer.lock().unwrap();
+        if guard.is_none() {
+            *guard = Some(BatchBuffer { entries: Vec::with_capacity(128), start_time: Instant::now(), max_age_us: Some(max_age_us) });
         }
     }
 
