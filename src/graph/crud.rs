@@ -520,6 +520,9 @@ pub fn update_edge(
 
 /// Soft-delete a vertex: mark as deleted in header, but keep data for time-travel.
 pub fn soft_delete_vertex(graph: &Graph, vid: u32) -> StorageResult<()> {
+    // 级联软删除所有关联边
+    cascade_delete_edges(graph, vid, false)?;
+
     let ptr = {
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
         mi.vertex_id.get(vid).copied()
@@ -546,6 +549,9 @@ pub fn soft_delete_vertex(graph: &Graph, vid: u32) -> StorageResult<()> {
 
 /// Hard-delete a vertex: remove data entirely.
 pub fn hard_delete_vertex(graph: &Graph, vid: u32) -> StorageResult<()> {
+    // 级联硬删除所有关联边
+    cascade_delete_edges(graph, vid, true)?;
+
     let ptr = {
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
         mi.vertex_id.get(vid).copied()
@@ -639,6 +645,35 @@ pub fn hard_delete_edge(graph: &Graph, eid: u32) -> StorageResult<()> {
     }
 
     graph.redo_log.append(OpType::EdgeDelete, eid as u64, &[])?;
+    Ok(())
+}
+
+/// 级联删除顶点关联的所有边。
+///
+/// `hard: true` 表示硬删除（释放数据块），`false` 表示软删除（标记 Deleted）。
+fn cascade_delete_edges(graph: &Graph, vid: u32, hard: bool) -> StorageResult<()> {
+    // 收集所有关联边的 ID（outgoing + incoming），避免在遍历中修改索引
+    let edge_ids: Vec<u32> = {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        let out = mi.vertex_adjacency.out_edges(vid);
+        let inc = mi.vertex_adjacency.in_edges(vid);
+        let mut ids: Vec<u32> = Vec::with_capacity(out.len() + inc.len());
+        for (eid, _, _) in out {
+            ids.push(*eid);
+        }
+        for (eid, _, _) in inc {
+            ids.push(*eid);
+        }
+        ids
+    };
+
+    for eid in &edge_ids {
+        if hard {
+            hard_delete_edge(graph, *eid)?;
+        } else {
+            soft_delete_edge(graph, *eid)?;
+        }
+    }
     Ok(())
 }
 
