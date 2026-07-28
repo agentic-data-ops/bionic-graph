@@ -31,6 +31,7 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
+        atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, Sender},
         Arc, Condvar, Mutex,
     },
@@ -113,8 +114,12 @@ pub struct RedoLog {
     /// File size threshold for rotation (bytes).
     #[allow(dead_code)]
     rotation_threshold: u64,
-    #[allow(dead_code)]
-    batch_buffer: Mutex<Option<BatchBuffer>>,
+    /// In-memory batch buffer (shared with the flush checker thread).
+    batch_buffer: Arc<Mutex<Option<BatchBuffer>>>,
+    /// Periodic flush checker thread handle (Mutex for interior mutability with &self).
+    flush_checker: Mutex<Option<JoinHandle<()>>>,
+    /// Stop signal for the flush checker thread.
+    flush_checker_stop: Arc<AtomicBool>,
 }
 
 impl RedoLog {
@@ -171,7 +176,9 @@ impl RedoLog {
             state,
             handle: Some(handle),
             rotation_threshold,
-            batch_buffer: Mutex::new(None),
+            batch_buffer: Arc::new(Mutex::new(None)),
+            flush_checker: Mutex::new(None),
+            flush_checker_stop: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -246,6 +253,7 @@ impl RedoLog {
     }
 
     pub fn start_batch(&self) {
+        self.stop_flush_checker();
         let mut guard = self.batch_buffer.lock().unwrap();
         if guard.is_none() {
             *guard = Some(BatchBuffer { entries: Vec::with_capacity(128), start_time: Instant::now(), max_age_us: None });
@@ -254,10 +262,77 @@ impl RedoLog {
 
     /// Start a batch with a max age timeout (microseconds).
     /// When `max_age_us > 0`, the batch will auto-flush after this duration.
+    /// Spawns a background checker thread that periodically checks the buffer age.
     pub fn start_batch_with_max_age(&self, max_age_us: u64) {
+        self.stop_flush_checker();
         let mut guard = self.batch_buffer.lock().unwrap();
         if guard.is_none() {
             *guard = Some(BatchBuffer { entries: Vec::with_capacity(128), start_time: Instant::now(), max_age_us: Some(max_age_us) });
+        }
+        drop(guard);
+
+        if max_age_us > 0 {
+            self.flush_checker_stop.store(false, Ordering::Relaxed);
+            let stop = self.flush_checker_stop.clone();
+            let buf = self.batch_buffer.clone();
+            let tx = self.writer_tx.clone();
+
+            // 检查间隔：max_age/2，至少 500μs，最多 10ms
+            let interval = Duration::from_micros(max_age_us.max(500).min(10_000) / 2);
+            let max_age = Duration::from_micros(max_age_us);
+
+            *self.flush_checker.lock().unwrap() = Some(thread::Builder::new()
+                .name("bg-wal-flush-check".into())
+                .spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        thread::sleep(interval);
+
+                        let should_flush = {
+                            let guard = buf.lock().unwrap();
+                            guard.as_ref().map_or(false, |b| {
+                                !b.entries.is_empty() && b.start_time.elapsed() >= max_age
+                            })
+                        };
+
+                        if should_flush {
+                            // Take entries and flush them
+                            let entries = {
+                                let mut g = buf.lock().unwrap();
+                                g.as_mut().map(|b| std::mem::take(&mut b.entries))
+                            };
+
+                            if let Some(entries) = entries {
+                                if !entries.is_empty() {
+                                    // Send to writer and wait for flush
+                                    let _ = tx.send(WriterMessage::BatchEntries(entries));
+                                    let done = Arc::new((Mutex::new(false), Condvar::new()));
+                                    let done2 = done.clone();
+                                    let _ = tx.send(WriterMessage::Flush { done });
+                                    let mut g = done2.0.lock().unwrap();
+                                    while !*g {
+                                        g = done2.1.wait(g).unwrap();
+                                    }
+                                    // Reset start_time after flush
+                                    if let Ok(mut g) = buf.lock() {
+                                        if let Some(ref mut b) = *g {
+                                            b.start_time = Instant::now();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                })
+                .expect("failed to spawn flush checker thread"));
+        }
+    }
+
+    fn stop_flush_checker(&self) {
+        self.flush_checker_stop.store(true, Ordering::Relaxed);
+        if let Ok(mut guard) = self.flush_checker.lock() {
+            if let Some(h) = guard.take() {
+                let _ = h.join();
+            }
         }
     }
 
@@ -286,6 +361,7 @@ impl RedoLog {
 
     pub fn end_batch(&self) -> StorageResult<()> {
         let r = self.flush_batch();
+        self.stop_flush_checker();
         *self.batch_buffer.lock().unwrap() = None;
         r
     }
@@ -384,6 +460,7 @@ impl RedoLog {
     /// This is called during graph shutdown to ensure all pending entries
     /// are flushed before the process exits.
     pub fn stop(&mut self) {
+        self.stop_flush_checker();
         // Signal shutdown.
         let _ = self.writer_tx.send(WriterMessage::Shutdown);
         // Drop the sender so the writer sees channel disconnection.
