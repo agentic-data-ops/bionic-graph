@@ -231,11 +231,14 @@ impl Graph {
         // ── Replay redo log ──────────────────────────────────────────────
         // The WAL replay applies any un-checkpointed operations to the
         // in-memory index and data blocks.
+        crate::graph::crud::REPLAYING.store(true, Ordering::Relaxed);
         let g = Arc::downgrade(&graph);
-        RedoLog::replay(&graph_dir, |entry| {
+        let replay_result = RedoLog::replay(&graph_dir, |entry| {
             let graph = g.upgrade().ok_or_else(|| StorageError::Other("graph dropped during replay".into()))?;
             crate::graph::crud::replay_entry(&graph, &entry)
-        })?;
+        });
+        crate::graph::crud::REPLAYING.store(false, Ordering::Relaxed);
+        replay_result?;
 
         // After replay, switch to a fresh WAL file so crash recovery
         // during this session works (the file stays on disk with a real

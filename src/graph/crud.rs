@@ -1,10 +1,11 @@
 //! Vertex/Edge CRUD operations for the block-based graph engine.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::graph::graph::Graph;
 use crate::graph::profile;
-use crate::graph::serialize::{self, deserialize_edge, deserialize_vertex, serialize_edge, serialize_vertex};
+use crate::graph::serialize::{self, deserialize_edge, deserialize_token, deserialize_vertex, serialize_edge, serialize_vertex};
 use crate::graph::tokenizer::Tokenizer;
 use crate::storage::block_allocator::BlockAllocator;
 use crate::storage::memory_index::MetaPointer;
@@ -14,6 +15,10 @@ use crate::storage::types::{
     OpType, PropertyValue, StorageError, StorageResult, TokenPayload, TokenRef, VertexPayload,
     BLOCK_SIZE, DATA_HEADER_SIZE, timestamp_us,
 };
+
+/// Flag set during WAL replay — guards against recursive WAL writes
+/// when token operations are triggered by replay_initiated vertex/edge creation.
+pub(crate) static REPLAYING: AtomicBool = AtomicBool::new(false);
 
 const MAX_STORABLE_DATA: usize = (CHUNKS_PER_BLOCK - 1) * CHUNK_SIZE; // 255 * 64 = 16320
 const MAX_TOKEN_PAYLOAD: usize = 14000;
@@ -784,8 +789,21 @@ pub fn replay_entry(graph: &Graph, entry: &RedoLogEntry) -> StorageResult<()> {
                 }
             }
         }
-        OpType::TokenCreate | OpType::TokenUpdate | OpType::TokenDelete => {
-            // Token state is rebuilt from data file at startup; no WAL replay needed.
+        OpType::TokenCreate => {
+            if let Ok(payload) = deserialize_token(&entry.data) {
+                replay_create_token(graph, &payload, &entry.data)?;
+            }
+        }
+        OpType::TokenUpdate => {
+            if let Ok(payload) = deserialize_token(&entry.data) {
+                // Remove old pointers for this token then insert the new segment.
+                replay_update_token(graph, &payload, &entry.data)?;
+            }
+        }
+        OpType::TokenDelete => {
+            // Token delete removes all segments from memory index and frees chunks.
+            let token_str = String::from_utf8_lossy(&entry.data);
+            replay_delete_token(graph, &token_str)?;
         }
     }
     Ok(())
@@ -929,6 +947,62 @@ fn replay_create_edge_always(graph: &Graph, id: u32, payload: &EdgePayload, wal_
     drop(mi);
 
     tokenize_edge(graph, id, payload)?;
+    Ok(())
+}
+
+// ── Token replay helpers ─────────────────────────────────────────
+
+/// Replay helper: create a token record from WAL data.
+fn replay_create_token(graph: &Graph, payload: &TokenPayload, wal_data: &[u8]) -> StorageResult<()> {
+    let serialized = wal_data.to_vec();
+    let header = DataHeader::new_token(payload.id, serialized.len() as u16);
+    let ptr = write_data_record(graph, &header, &serialized)?;
+    let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+    mi.token.insert(payload.token.clone(), ptr);
+    Ok(())
+}
+
+/// Replay helper: update (replace) a token record from WAL data.
+/// Free old segments' data chunks and insert the new segment.
+fn replay_update_token(graph: &Graph, payload: &TokenPayload, wal_data: &[u8]) -> StorageResult<()> {
+    // Free all existing segments for this token.
+    {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        if let Some(ptrs) = mi.token.get(&payload.token) {
+            for p in ptrs {
+                if let Ok(header) = read_data_header(graph, *p) {
+                    let total = DATA_HEADER_SIZE + header.payload_len as usize;
+                    let chunks = BlockAllocator::chunks_needed(total);
+                    let _ = free_data_chunks(graph, p.block_idx, p.chunk_offset, chunks as u8);
+                }
+            }
+        }
+    }
+
+    let serialized = wal_data.to_vec();
+    let header = DataHeader::new_token(payload.id, serialized.len() as u16);
+    let ptr = write_data_record(graph, &header, &serialized)?;
+    let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+    mi.token.remove_token(&payload.token);
+    mi.token.insert(payload.token.clone(), ptr);
+    Ok(())
+}
+
+/// Replay helper: delete all segments of a token from memory index and free chunks.
+fn replay_delete_token(graph: &Graph, token_str: &str) -> StorageResult<()> {
+    let ptrs = {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        mi.token.get(token_str).cloned().unwrap_or_default()
+    };
+    for p in &ptrs {
+        if let Ok(header) = read_data_header(graph, *p) {
+            let total = DATA_HEADER_SIZE + header.payload_len as usize;
+            let chunks = BlockAllocator::chunks_needed(total);
+            let _ = free_data_chunks(graph, p.block_idx, p.chunk_offset, chunks as u8);
+        }
+    }
+    let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+    mi.token.remove_token(token_str);
     Ok(())
 }
 
@@ -1242,6 +1316,9 @@ pub(crate) fn add_token_immediate(graph: &Graph, token_str: &str, ref_type: u8, 
                     let seg_data = crate::graph::serialize::serialize_token(&seg_payload)?;
                     let seg_header = DataHeader::new_token(seg_payload.id, seg_data.len() as u16);
                     let seg_ptr = profile::time("token_write", || write_data_record(graph, &seg_header, &seg_data))?;
+                    if !REPLAYING.load(Ordering::Relaxed) {
+                        graph.redo_log.append(OpType::TokenCreate, seg_payload.id as u64, &seg_data)?;
+                    }
                     let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
                     mi.token.insert(token_str.to_string(), seg_ptr);
                     return Ok(());
@@ -1261,6 +1338,11 @@ pub(crate) fn add_token_immediate(graph: &Graph, token_str: &str, ref_type: u8, 
 
                 // Allocate new space and write DataHeader + payload.
                 let new_ptr = profile::time("token_write", || write_data_record(graph, &new_header, &new_data))?;
+
+                // WAL
+                if !REPLAYING.load(Ordering::Relaxed) {
+                    graph.redo_log.append(OpType::TokenUpdate, token_payload.id as u64, &new_data)?;
+                }
 
                 // Update token pointer in memory index.
                 let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
@@ -1289,6 +1371,11 @@ pub(crate) fn add_token_immediate(graph: &Graph, token_str: &str, ref_type: u8, 
         let data = serialize::serialize_token(&token_payload)?;
         let header = DataHeader::new_token(token_payload.id, data.len() as u16);
         let ptr = write_data_record(graph, &header, &data)?;
+
+        // WAL
+        if !REPLAYING.load(Ordering::Relaxed) {
+            graph.redo_log.append(OpType::TokenCreate, token_payload.id as u64, &data)?;
+        }
 
         // Update memory index.
         let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
