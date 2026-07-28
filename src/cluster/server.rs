@@ -100,65 +100,36 @@ async fn handle_forward(
     // Proxy the request to the master's main API server.
     let result = proxy_to_api(&state.api_addr, &req).await;
 
-    // If the write succeeded, broadcast to all workers.
-    if result.success {
-        // Tokenizer operations: broadcast directly to workers' tokenizer-sync endpoint.
-        if req.path == "/settings/tokenizer/words" {
-            let workers = state.registry.alive_workers();
-            let op = match req.method.to_uppercase().as_str() {
-                "POST" => "add",
-                "DELETE" => "remove",
-                _ => "",
-            };
-            if !op.is_empty() && !workers.is_empty() {
-                if let Some(ref req_body) = req.body {
-                    let workers_for_broadcast = workers.clone();
-                    let body_clone = req_body.clone();
-                    let op_str = op.to_string();
-                    tokio::spawn(async move {
-                        for worker in &workers_for_broadcast {
-                            let url = format!("http://{}/cluster/tokenizer-sync", worker.cluster_addr);
-                            let client = reqwest::Client::new();
-                            let sync_body = serde_json::json!({
-                                "operation": &op_str,
-                                "words": serde_json::from_str::<serde_json::Value>(&body_clone)
-                                    .ok().and_then(|v| v.get("words").cloned())
-                                    .unwrap_or(serde_json::Value::Null),
-                            });
-                            if let Err(e) = client.post(&url)
-                                .json(&sync_body)
-                                .send().await
-                            {
-                                log::warn!("Tokenizer sync to worker {} failed: {}", worker.node_id, e);
-                            }
-                        }
-                    });
-                }
-            }
-            return Json(result);
-        }
-
+    // Tokenizer operations: broadcast directly to workers' tokenizer-sync endpoint.
+    // Regular vertex/edge operations are already broadcast by the REST API
+    // handlers via broadcast_write_result, so skip them here.
+    if result.success && req.path == "/settings/tokenizer/words" {
         let workers = state.registry.alive_workers();
-        if !workers.is_empty() {
-            let entries = build_broadcast_entries(&state, &req, &result);
-            for entry in entries {
-                let seq = state.registry.next_seq();
-                let graph_name = req.graph.clone().unwrap_or_else(|| state.gm.get_default_name());
-                let replicated = ReplicatedEntry {
-                    cluster_seq: seq,
-                    entry,
-                    graph_name,
-                    master_timestamp: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_micros() as u64,
-                };
-                let w = workers.clone();
+        let op = match req.method.to_uppercase().as_str() {
+            "POST" => "add",
+            "DELETE" => "remove",
+            _ => "",
+        };
+        if !op.is_empty() && !workers.is_empty() {
+            if let Some(ref req_body) = req.body {
+                let workers_for_broadcast = workers.clone();
+                let body_clone = req_body.clone();
+                let op_str = op.to_string();
                 tokio::spawn(async move {
-                    let results = crate::cluster::replication::broadcast_entry(&w, &replicated).await;
-                    for (wid, res) in &results {
-                        if let Err(e) = res {
-                            log::warn!("Replication to worker {} failed: {}", wid, e);
+                    for worker in &workers_for_broadcast {
+                        let url = format!("http://{}/cluster/tokenizer-sync", worker.cluster_addr);
+                        let client = reqwest::Client::new();
+                        let sync_body = serde_json::json!({
+                            "operation": &op_str,
+                            "words": serde_json::from_str::<serde_json::Value>(&body_clone)
+                                .ok().and_then(|v| v.get("words").cloned())
+                                .unwrap_or(serde_json::Value::Null),
+                        });
+                        if let Err(e) = client.post(&url)
+                            .json(&sync_body)
+                            .send().await
+                        {
+                            log::warn!("Tokenizer sync to worker {} failed: {}", worker.node_id, e);
                         }
                     }
                 });
