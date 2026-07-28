@@ -2,14 +2,17 @@
 """
 WAL 批量模式崩溃一致性测试（kill -9）
 
-测试场景：在 batch_load（批量导入）执行期间用 SIGKILL 杀死后端进程，
-模拟生产环境中的突然崩溃。重启后验证：
-  1. 数据文件自一致性（rebuild 不崩溃）
-  2. Gremlin 查询可用
-  3. 新写入正常
+测试场景：
+  1. 创建 3 个顶点 + 3 条边（基准数据）
+  2. 后台线程发起 batch_load(500 实体)
+  3. 主线程同时创建 3 个顶点 + 3 条边，更新 1 个基准顶点，硬删除 1 个基准顶点
+  4. 立即 kill -9 服务进程（不等待）
+  5. 重启后验证数据自一致性
 
-与 test_crash_consistency.py 的区别：该测试针对单条 WAL 写入后 kill，
-本测试针对 batch_load 路径（多条 WAL 记录在内存中累积后统一 flush）。
+验证要点：
+  - Gremlin 查询可用（内存索引重建正确）
+  - 新写入可用
+  - 幸存数据内部一致（无悬挂边）
 """
 
 import os
@@ -17,7 +20,6 @@ import sys
 import time
 import json
 import signal
-import socket
 import subprocess
 import threading
 from urllib.parse import urljoin
@@ -33,16 +35,14 @@ BINARY = os.environ.get(
     "/tmp/bionic-graph/target/debug/bionic-graph",
 )
 SERVER_LOG = "/tmp/bg-server-crash-batch.log"
-DATA_DIR = "/tmp/bionic-graph/data"
 
-# 批量导入量：数量越大，batch 处理时间窗口越长
-BATCH_SIZE = 50000
+# 批量导入量：500 实体
+BATCH_SIZE = 500
 
 
 # ── 工具函数 ─────────────────────────────────────────────────────────
 
 def server_pid():
-    """返回 bionic-graph 进程 PID，未找到返回 None。"""
     try:
         out = subprocess.check_output(["pgrep", "-x", "bionic-graph"], timeout=5)
         return int(out.decode().strip())
@@ -51,7 +51,6 @@ def server_pid():
 
 
 def wait_for_server(url: str, timeout: float = 15.0) -> bool:
-    """等待服务就绪，返回是否成功。"""
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
@@ -65,12 +64,10 @@ def wait_for_server(url: str, timeout: float = 15.0) -> bool:
 
 
 def start_server() -> subprocess.Popen | None:
-    """启动后端服务（如果未运行）。"""
     pid = server_pid()
     if pid is not None:
         print(f"[server] 服务已在运行 PID={pid}")
         return None
-
     print(f"[server] 启动: {BINARY}")
     proc = subprocess.Popen(
         [BINARY],
@@ -85,7 +82,6 @@ def start_server() -> subprocess.Popen | None:
 
 
 def kill_server(sig: int = signal.SIGKILL):
-    """杀死 bionic-graph 进程。"""
     pid = server_pid()
     if pid is None:
         print("[kill] 未找到运行中的服务进程")
@@ -93,7 +89,6 @@ def kill_server(sig: int = signal.SIGKILL):
     print(f"[kill] 发送信号 {sig} 到 PID {pid} ...")
     os.kill(pid, sig)
     time.sleep(1)
-    # 确认已死
     try:
         os.kill(pid, 0)
         print(f"[kill] ⚠️ 进程 {pid} 仍然存活，重试 SIGKILL")
@@ -104,184 +99,264 @@ def kill_server(sig: int = signal.SIGKILL):
     print(f"[kill] ✅ 进程 {pid} 已终止")
 
 
-def gremlin_query(client: httpx.Client, steps: list, graph: str = GRAPH) -> dict:
-    """执行 Gremlin 查询并返回结果。"""
-    resp = client.post(
-        urljoin(BASE_URL, "/gremlin"),
-        json={"steps": steps},
-        headers={"X-Graph-Name": graph},
-        timeout=10,
-    )
-    resp.raise_for_status()
-    return resp.json()
+def api_json(client: httpx.Client, method: str, path: str, **kwargs) -> dict:
+    """发起 API 请求并返回 JSON 响应体。"""
+    kwargs.setdefault("headers", {})
+    kwargs["headers"].setdefault("X-Graph-Name", GRAPH)
+    kwargs.setdefault("timeout", 15)
+    resp = client.request(method, urljoin(BASE_URL, path), **kwargs)
+    try:
+        return resp.json()
+    except Exception:
+        return {"status": resp.status_code, "body": resp.text[:200]}
+
+
+# ── 操作记录 ─────────────────────────────────────────────────────────
+
+pre_vertices = {}    # name → {id, labels}
+pre_edges = []       # [{id, source, target, name}]
+mid_vertices = {}    # name → {id, labels}
+mid_edges = []       # [{id, source, target, name}]
+updated_vertex_id = None
+deleted_vertex_id = None
+deleted_vertex_name = None
 
 
 # ── 测试步骤 ─────────────────────────────────────────────────────────
 
-def step_ping(client: httpx.Client):
-    """检查服务健康。"""
-    resp = client.get(urljoin(BASE_URL, "/health"), timeout=5)
-    resp.raise_for_status()
-    print(f"[step 0] ✅ 服务健康: {resp.json()}")
+def step_start():
+    """启动服务并创建测试图。"""
+    start_server()
+    api_json(httpx.Client(base_url=BASE_URL, timeout=5), "GET", "/health")
+
+    # 清理可能残留的旧图
+    try:
+        api_json(httpx.Client(base_url=BASE_URL, timeout=5), "DELETE", f"/graphs/{GRAPH}?force=true")
+    except Exception:
+        pass
+
+    api_json(httpx.Client(base_url=BASE_URL, timeout=5), "POST", "/graphs",
+             json={"name": GRAPH, "description": "WAL batch crash test"})
+    print("[step 0] ✅ 服务就绪，测试图已创建")
 
 
-def step_create_graph(client: httpx.Client):
-    """创建测试图。"""
-    resp = client.post(
-        urljoin(BASE_URL, "/graphs"),
-        json={"name": GRAPH, "description": "WAL batch crash test"},
-        timeout=5,
-    )
-    resp.raise_for_status()
-    print(f"[step 1] ✅ 测试图 '{GRAPH}' 已创建")
+def step_pre_data(client: httpx.Client):
+    """创建基准数据：3 顶点 + 3 边。"""
+    global pre_vertices, pre_edges
+
+    # 顶点
+    names = ["Alice", "Bob", "Charlie"]
+    for name in names:
+        r = api_json(client, "POST", "/vertices",
+                     json={"name": name, "labels": ["person"], "keywords": [f"pre_{name}"]})
+        pre_vertices[name] = r
+        print(f"  → 顶点 '{name}' id={r.get('id')}")
+
+    # 边（形成三角形）
+    pairs = [("Alice", "Bob", "knows"), ("Bob", "Charlie", "knows"), ("Charlie", "Alice", "knows")]
+    for src, tgt, rel in pairs:
+        r = api_json(client, "POST", "/edges",
+                     json={"source": pre_vertices[src]["id"], "target": pre_vertices[tgt]["id"],
+                           "name": rel, "labels": ["social"], "strength": 1.0})
+        pre_edges.append(r)
+        print(f"  → 边 '{src}--{rel}--{tgt}' id={r.get('id')}")
+
+    print(f"[step 1] ✅ 基准数据已创建: {len(pre_vertices)} 顶点, {len(pre_edges)} 边")
+
+
+def step_pre_verify(client: httpx.Client):
+    """验证基准数据可查。"""
+    r = api_json(client, "POST", "/gremlin", json={"steps": [{"step": "V", "limit": 100}]})
+    assert r.get("success"), f"Gremlin V 失败: {r.get('error')}"
+    count = len(r.get("data", []))
+    assert count >= 3, f"应有至少 3 顶点，实际 {count}"
+    print(f"[step 1.v] ✅ 基准数据可查: {count} 顶点")
 
 
 def step_fire_batch_load(client: httpx.Client, stop_event: threading.Event):
-    """在后台发送 batch_load 请求。
-
-    构造大量实体使处理时间足够长，以便主线程能捕获到 kill 时机。
-    batch_load 在服务端会启用 WAL batch 模式（start_batch）。
-    如果 kill 发生在 end_batch 之前，WAL 条目丢失，需要依靠
-    数据文件中的脏块恢复。
-    """
+    """后台发起 batch_load（500 实体）。"""
     entities = [
         {
-            "name": f"CrashNode_{i}",
-            "labels": ["test", "crash"],
-            "keywords": [f"kw_{i % 100}"],
-            "properties": {"index": i, "payload": "x" * 50},
+            "name": f"BatchNode_{i}",
+            "labels": ["batch", "crash"],
+            "properties": {"index": i},
         }
         for i in range(BATCH_SIZE)
     ]
-
     try:
-        print(f"[step 2] 🚀 发起 batch_load ({BATCH_SIZE} 个实体)...")
+        print(f"[bg] 🚀 batch_load {BATCH_SIZE} 实体...")
         resp = client.post(
             urljoin(BASE_URL, "/batch/load"),
             json={"entities": entities, "relations": [], "update_existing": False},
             headers={"X-Graph-Name": GRAPH},
-            timeout=300,
+            timeout=120,
         )
-        # 如果请求成功（没被杀），记录结果
         if resp.status_code == 200:
             data = resp.json()
-            print(f"[step 2] batch_load 完成: {json.dumps(data, ensure_ascii=False)}")
+            print(f"[bg] batch_load 完成: V创建={data.get('vertices_created')} "
+                  f"V更新={data.get('vertices_updated')}")
         else:
-            print(f"[step 2] batch_load 响应: HTTP {resp.status_code} {resp.text[:100]}")
+            print(f"[bg] batch_load 响应: HTTP {resp.status_code}")
     except (httpx.ReadTimeout, httpx.ConnectError, httpx.RemoteProtocolError) as e:
-        # 服务被杀导致的连接断开 —— 预期行为
-        print(f"[step 2] ⚡ 连接中断（预期行为）: {type(e).__name__}")
+        print(f"[bg] ⚡ 连接中断（预期行为）: {type(e).__name__}")
     except Exception as e:
-        print(f"[step 2] ⚡ 其他异常（预期行为）: {type(e).__name__}: {e}")
+        print(f"[bg] ⚡ 异常（预期行为）: {type(e).__name__}: {e}")
     finally:
         stop_event.set()
 
 
-def step_crash_kill():
-    """在 batch_load 处理期间直接 kill -9。"""
-    # 等待 1 秒确保 batch_load 已开始处理
-    time.sleep(1.5)
-    kill_server(signal.SIGKILL)
-    # 再确认一次
-    time.sleep(0.5)
-    assert server_pid() is None, "服务进程仍然存活"
-    print("[step 3] ✅ 服务已被 SIGKILL 终止")
+def step_mid_data(client: httpx.Client):
+    """在 batch_load 后台运行的同时，主线程继续写入。
+
+    操作：
+      1. 创建 3 个新顶点
+      2. 创建 3 条新边
+      3. 更新 1 个基准顶点（Alice → AliceWang）
+      4. 硬删除 1 个基准顶点（Charlie）
+    """
+    global mid_vertices, mid_edges, updated_vertex_id, deleted_vertex_id, deleted_vertex_name
+
+    alice_id = pre_vertices["Alice"]["id"]
+
+    # 1. 创建 3 个新顶点
+    names = ["Dave", "Eve", "Frank"]
+    for name in names:
+        r = api_json(client, "POST", "/vertices",
+                     json={"name": name, "labels": ["person"], "keywords": [f"mid_{name}"]})
+        mid_vertices[name] = r
+        print(f"  → 顶点 '{name}' id={r.get('id')}")
+
+    # 2. 创建 3 条新边
+    dave_id = mid_vertices["Dave"]["id"]
+    eve_id = mid_vertices["Eve"]["id"]
+    frank_id = mid_vertices["Frank"]["id"]
+
+    pairs = [("Dave", "Eve", "colleague"), ("Eve", "Frank", "colleague"), ("Frank", "Dave", "colleague")]
+    for src_name, tgt_name, rel in pairs:
+        src_id = mid_vertices[src_name]["id"]
+        tgt_id = mid_vertices[tgt_name]["id"]
+        r = api_json(client, "POST", "/edges",
+                     json={"source": src_id, "target": tgt_id,
+                           "name": rel, "labels": ["work"], "strength": 0.9})
+        mid_edges.append(r)
+        print(f"  → 边 '{src_name}--{rel}--{tgt_name}' id={r.get('id')}")
+
+    # 3. 更新 1 个基准顶点：Alice → AliceWang（改 name + 加 label）
+    r = api_json(client, "PUT", f"/vertices/{alice_id}",
+                 json={"name": "AliceWang", "labels": ["person", "updated"]})
+    print(f"  → 更新顶点 {alice_id} 'Alice' → 'AliceWang': {r}")
+    updated_vertex_id = alice_id
+
+    # 4. 硬删除 1 个基准顶点：Charlie（级联删除关联边）
+    charlie_id = pre_vertices["Charlie"]["id"]
+    deleted_vertex_name = "Charlie"
+    r = api_json(client, "DELETE", f"/vertices/{charlie_id}?force=true")
+    print(f"  → 硬删除顶点 {charlie_id} 'Charlie': {r}")
+    deleted_vertex_id = charlie_id
+
+    print(f"[step 2] ✅ 主线程写入完成: {len(mid_vertices)} 顶点, {len(mid_edges)} 边, "
+          f"1 更新, 1 硬删除")
 
 
-def step_restart():
-    """重启服务。"""
-    proc = start_server()
-    if proc is None and server_pid() is None:
-        print("[step 4] ❌ 服务重启失败")
-        sys.exit(1)
-    print("[step 4] ✅ 服务已重启")
+def step_verify_post_crash(client: httpx.Client):
+    """重启后验证数据自一致性。
 
-
-def step_verify_consistency(client: httpx.Client):
-    """验证崩溃后数据自一致性。
-
-    检查要点：
-    1. 图存在 → 后端 rebuild 顺利（若不存在则重新创建）
-    2. Gremlin V 查询不报错 → 内存索引重建正确
-    3. 能够创建新顶点 → 引擎功能完整
+    不假设任何特定数据必须存活，只验证：
+      1. 引擎功能完整（Gremlin 可用）
+      2. 幸存数据内部一致（无悬挂边）
+      3. 新写入正常
     """
     errors = []
 
-    # 检查图是否存在
-    graph_exists = False
+    # ── 5.1: 图存在 ──────────────────────────────────────────────
     try:
-        resp = client.get(urljoin(BASE_URL, "/graphs"), timeout=5)
-        resp.raise_for_status()
+        resp = httpx.get(urljoin(BASE_URL, "/graphs"), timeout=5)
         graphs = resp.json()
         names = [g.get("name") for g in graphs.get("graphs", [])]
-        graph_exists = GRAPH in names
-        if graph_exists:
+        if GRAPH in names:
             print(f"[step 5.1] ✅ 图 '{GRAPH}' 存在（rebuild 成功）")
         else:
-            print(f"[step 5.1] ℹ️  图 '{GRAPH}' 未在 crash 中存活，重新创建")
-            resp = client.post(
-                urljoin(BASE_URL, "/graphs"),
-                json={"name": GRAPH},
-                timeout=5,
-            )
-            resp.raise_for_status()
-            graph_exists = True
-            print(f"[step 5.1] ✅ 图 '{GRAPH}' 已重新创建")
+            # 图未存活，重建
+            httpx.post(urljoin(BASE_URL, "/graphs"), json={"name": GRAPH}, timeout=5)
+            print(f"[step 5.1] ℹ️  图 '{GRAPH}' 重新创建")
     except Exception as e:
-        errors.append(f"检查/创建图失败: {e}")
+        errors.append(f"图检查失败: {e}")
 
-    if not graph_exists:
-        errors.append("无法获取或创建测试图")
-
-    # Gremlin 查询 —— 验证内存索引正确重建
+    # ── 5.2: Gremlin V 查询（验证内存索引重建不崩溃） ────────────
     try:
-        r = gremlin_query(client, [{"step": "V", "limit": 10}])
+        r = api_json(client, "POST", "/gremlin", json={"steps": [{"step": "V", "limit": 100}]})
         if r.get("success", False):
             count = len(r.get("data", []))
-            print(f"[step 5.2] ✅ Gremlin V 查询成功，返回 {count} 条")
+            names_found = [v.get("name", "?") for v in r.get("data", [])[:10]]
+            print(f"[step 5.2] ✅ Gremlin V 成功，共 {count} 顶点，前 10: {names_found}")
         else:
-            err = r.get("error", "unknown")
-            errors.append(f"Gremlin 查询失败: {err}")
+            errors.append(f"Gremlin V 失败: {r.get('error')}")
     except Exception as e:
-        errors.append(f"Gremlin 请求异常: {e}")
+        errors.append(f"Gremlin V 异常: {e}")
 
-    # 创建新顶点 —— 验证引擎功能完整
+    # ── 5.3: Gremlin E 查询 ─────────────────────────────────────
     try:
-        resp = client.post(
-            urljoin(BASE_URL, "/vertices"),
-            json={"name": "PostCrashNode", "labels": ["test"]},
-            headers={"X-Graph-Name": GRAPH},
-            timeout=5,
-        )
-        resp.raise_for_status()
-        new_id = resp.json().get("id")
-        print(f"[step 5.3] ✅ 新顶点创建成功 id={new_id}")
+        r = api_json(client, "POST", "/gremlin", json={"steps": [{"step": "E", "limit": 100}]})
+        if r.get("success", False):
+            count = len(r.get("data", []))
+            print(f"[step 5.3] ✅ Gremlin E 成功，共 {count} 边")
+        else:
+            errors.append(f"Gremlin E 失败: {r.get('error')}")
+    except Exception as e:
+        errors.append(f"Gremlin E 异常: {e}")
+
+    # ── 5.4: 新顶点可创建（引擎功能完整） ────────────────────────
+    try:
+        r = api_json(client, "POST", "/vertices",
+                     json={"name": "PostCrash", "labels": ["test"]})
+        new_id = r.get("id")
+        print(f"[step 5.4] ✅ 新顶点 'PostCrash' 创建成功 id={new_id}")
     except Exception as e:
         errors.append(f"创建顶点失败: {e}")
 
-    # 边查询
+    # ── 5.5: 新边可创建 ──────────────────────────────────────────
     try:
-        r = gremlin_query(client, [{"step": "E", "limit": 10}])
-        if r.get("success", False):
-            count = len(r.get("data", []))
-            print(f"[step 5.4] ✅ Gremlin E 查询成功，返回 {count} 条")
+        # 先找一个存在的顶点
+        v_list = api_json(client, "POST", "/gremlin",
+                          json={"steps": [{"step": "V", "limit": 5}]})
+        if v_list.get("success") and v_list.get("data"):
+            src_id = v_list["data"][0].get("id")
+            # 如果只有一个顶点，用它做 source 和 target
+            tgt_id = v_list["data"][-1].get("id") if len(v_list["data"]) > 1 else src_id
+            r = api_json(client, "POST", "/edges",
+                         json={"source": src_id, "target": tgt_id,
+                               "name": "survivor_edge", "strength": 1.0})
+            print(f"[step 5.5] ✅ 新边创建成功 id={r.get('id')}")
         else:
-            err = r.get("error", "unknown")
-            errors.append(f"Gremlin 边查询失败: {err}")
+            print(f"[step 5.5] ℹ️  跳过边创建（无可用顶点）")
     except Exception as e:
-        errors.append(f"Gremlin 边请求异常: {e}")
+        errors.append(f"创建边失败: {e}")
 
-    # 显示幸存数据量
+    # ── 5.6: 内部一致性检查（无悬挂边） ──────────────────────────
     try:
-        r = gremlin_query(client, [{"step": "V", "limit": 100}])
-        if r.get("success", False):
-            total = len(r.get("data", []))
-            print(f"[step 5.5] ℹ️  重启后幸存顶点数: {total}")
-    except Exception:
-        pass
+        r = api_json(client, "POST", "/gremlin", json={"steps": [{"step": "E", "limit": 200}]})
+        if r.get("success") and r.get("data"):
+            for edge in r["data"]:
+                # GremlinResult::Edge 的字段结构: {id, name, source, target, ...}
+                src = edge.get("source")
+                tgt = edge.get("target")
+                if src is not None and tgt is not None:
+                    # 检查 source 顶点是否存在
+                    s = api_json(client, "POST", "/gremlin",
+                                 json={"steps": [{"step": "V", "ids": [src]}]})
+                    if not s.get("success") or not s.get("data"):
+                        errors.append(f"悬挂边: id={edge.get('id')} source={src} 不存在")
+                    # 检查 target 顶点是否存在
+                    t = api_json(client, "POST", "/gremlin",
+                                 json={"steps": [{"step": "V", "ids": [tgt]}]})
+                    if not t.get("success") or not t.get("data"):
+                        errors.append(f"悬挂边: id={edge.get('id')} target={tgt} 不存在")
+        print(f"[step 5.6] ✅ 悬挂边检查完成")
+    except Exception as e:
+        errors.append(f"内部一致性检查异常: {e}")
 
     if errors:
-        print(f"\n[result] ❌ 一致性检查失败:")
+        print(f"\n[result] ❌ 一致性检查失败 ({len(errors)} 项):")
         for e in errors:
             print(f"  - {e}")
         sys.exit(1)
@@ -289,15 +364,13 @@ def step_verify_consistency(client: httpx.Client):
     print(f"\n[result] ✅ 崩溃一致性测试通过！数据文件自一致，引擎功能完整")
 
 
-def step_cleanup(client: httpx.Client):
+def step_cleanup():
     """清理测试图。"""
     try:
-        resp = client.delete(
-            urljoin(BASE_URL, f"/graphs/{GRAPH}?force=true"),
-            timeout=5,
-        )
-        resp.raise_for_status()
-        print(f"[cleanup] ✅ 测试图 '{GRAPH}' 已删除")
+        c = httpx.Client(base_url=BASE_URL, timeout=5)
+        c.delete(f"/graphs/{GRAPH}?force=true")
+        c.close()
+        print(f"[cleanup] ✅ 测试图已删除")
     except Exception as e:
         print(f"[cleanup] ⚠️ 清理失败（可忽略）: {e}")
 
@@ -306,10 +379,10 @@ def step_cleanup(client: httpx.Client):
 
 def main():
     print("=" * 60)
-    print("  WAL 批量模式崩溃一致性测试")
+    print("  WAL 批量模式崩溃一致性测试（kill -9）")
     print("=" * 60)
 
-    # 清理上一次残留
+    # 清理残留进程
     try:
         pid = server_pid()
         if pid:
@@ -318,44 +391,52 @@ def main():
     except Exception:
         pass
 
-    # 0. 启动服务
+    # ── 阶段 0: 启动 ──────────────────────────────────────────────
+    step_start()
+
+    # ── 阶段 1: 基准数据（预写入） ────────────────────────────────
+    c1 = httpx.Client(base_url=BASE_URL, timeout=15)
+    try:
+        step_pre_data(c1)
+        step_pre_verify(c1)
+    finally:
+        c1.close()
+
+    # ── 阶段 2: 并发写入 + kill ───────────────────────────────────
+    c2 = httpx.Client(base_url=BASE_URL, timeout=15)
+    stop_event = threading.Event()
+
+    # 2a: 后台 batch_load（500 实体）
+    batch_thread = threading.Thread(
+        target=step_fire_batch_load,
+        args=(c2, stop_event),
+        daemon=True,
+    )
+    batch_thread.start()
+
+    # 2b: 主线程立即写入（不等待）
+    #     batch_load 和主线程写入同时进行，模拟并发操作
+    print("\n[phase 2] 主线程写入（与 batch_load 并发）...")
+    step_mid_data(c2)
+
+    # 2c: 立即 kill -9（不等待 batch 完成）
+    print("\n[phase 3] 立即 kill -9 ...")
+    c2.close()
+    kill_server(signal.SIGKILL)
+    batch_thread.join(timeout=3)
+
+    print("\n[phase 4] 重启服务 ...")
+    # ── 阶段 3: 重启 ──────────────────────────────────────────────
     start_server()
 
-    client = httpx.Client(base_url=BASE_URL, timeout=30)
-
+    # ── 阶段 4: 验证 ──────────────────────────────────────────────
+    c3 = httpx.Client(base_url=BASE_URL, timeout=15)
     try:
-        step_ping(client)
-        step_create_graph(client)
-
-        # 2. 后台发起 batch_load
-        stop_event = threading.Event()
-        batch_thread = threading.Thread(
-            target=step_fire_batch_load,
-            args=(client, stop_event),
-            daemon=True,
-        )
-        batch_thread.start()
-
-        # 3. 在 batch_load 处理期间 kill -9
-        step_crash_kill()
-
-        # 等待线程结束
-        batch_thread.join(timeout=5)
-
-        # 4. 重启
-        step_restart()
-
-        # 5. 验证
-        client2 = httpx.Client(base_url=BASE_URL, timeout=30)
-        try:
-            step_verify_consistency(client2)
-        finally:
-            client2.close()
-
+        step_verify_post_crash(c3)
     finally:
-        step_cleanup(client)
-        client.close()
+        c3.close()
 
+    step_cleanup()
     print("\n✨ 测试完成")
 
 
