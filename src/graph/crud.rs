@@ -1036,7 +1036,7 @@ pub fn add_token_batch(graph: &Graph, token_str: &str, refs: &[crate::graph::tok
     let new_data = serialize::serialize_token(&token_payload)?;
 
     // If the combined payload would overflow, fall back to per-ref writes.
-    if old_payload_len + new_data.len() > MAX_TOKEN_PAYLOAD {
+    if new_data.len() > MAX_TOKEN_PAYLOAD {
         for pr in refs {
             add_token_immediate(graph, token_str, pr.ref_type, pr.ref_id, &pr.hits)?;
         }
@@ -1096,7 +1096,7 @@ pub(crate) fn add_token_immediate(graph: &Graph, token_str: &str, ref_type: u8, 
                 let new_data = crate::graph::serialize::serialize_token(&token_payload)?;
 
                 // If appending would exceed the safe limit, create a new segment.
-                if payload_len + new_data.len() > MAX_TOKEN_PAYLOAD {
+                if new_data.len() > MAX_TOKEN_PAYLOAD {
                     let seg_payload = TokenPayload {
                         id: graph.alloc_token_id(),
                         token: token_str.to_string(),
