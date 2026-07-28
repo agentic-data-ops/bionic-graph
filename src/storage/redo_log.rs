@@ -277,8 +277,8 @@ impl RedoLog {
             let buf = self.batch_buffer.clone();
             let tx = self.writer_tx.clone();
 
-            // 检查间隔：max_age/2，至少 500μs，最多 10ms
-            let interval = Duration::from_micros(max_age_us.max(500).min(10_000) / 2);
+            // 检查间隔 = max_age / 2
+            let interval = Duration::from_micros(max_age_us / 2);
             let max_age = Duration::from_micros(max_age_us);
 
             *self.flush_checker.lock().unwrap() = Some(thread::Builder::new()
@@ -503,13 +503,35 @@ impl RedoLog {
                 let op_id = u64::from_le_bytes(header[1..9].try_into().unwrap());
                 let data_len = u32::from_le_bytes(header[9..13].try_into().unwrap()) as usize;
 
-                // Read data.
-                let mut data = vec![0u8; data_len];
-                file.read_exact(&mut data)?;
+                // 防御：data_len 超过合理上限 → 视为截断，停止回放
+                // 单个 entry 最大有效数据约为 16KB（MAX_STORABLE_DATA）
+                const MAX_WAL_DATA_LEN: usize = 1024 * 1024;
+                if data_len > MAX_WAL_DATA_LEN {
+                    log::warn!("WAL replay: entry {} has invalid data_len={} (> {}), truncated", seq, data_len, MAX_WAL_DATA_LEN);
+                    break;
+                }
 
-                // Read CRC32.
+                // 读数据体：捕获 UnexpectedEof → 截断
+                let mut data = vec![0u8; data_len];
+                match file.read_exact(&mut data) {
+                    Ok(_) => {}
+                    Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                        log::warn!("WAL replay: entry {} data truncated at {} bytes, stopping replay", seq, data.len());
+                        break;
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+
+                // 读 CRC32：捕获 UnexpectedEof → 截断
                 let mut crc_bytes = [0u8; 4];
-                file.read_exact(&mut crc_bytes)?;
+                match file.read_exact(&mut crc_bytes) {
+                    Ok(_) => {}
+                    Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                        log::warn!("WAL replay: entry {} CRC truncated, stopping replay", seq);
+                        break;
+                    }
+                    Err(e) => return Err(e.into()),
+                }
                 let stored_crc = u32::from_le_bytes(crc_bytes);
 
                 // Verify CRC32.
@@ -521,13 +543,8 @@ impl RedoLog {
                 let computed_crc = crc32fast::hash(&crc_buf);
 
                 if stored_crc != computed_crc {
-                    return Err(StorageError::RedoLogReplay {
-                        seq,
-                        message: format!(
-                            "CRC mismatch: stored={:#x}, computed={:#x}",
-                            stored_crc, computed_crc
-                        ),
-                    });
+                    log::warn!("WAL replay: entry {} CRC mismatch — truncated entry, stopping replay", seq);
+                    break;
                 }
 
                 let op_type = OpType::try_from(op_type_byte).map_err(|_| {

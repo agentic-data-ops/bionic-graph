@@ -110,25 +110,27 @@ impl BitmapFile {
         if !self.free_blocks.is_empty() {
             return Ok(self.free_blocks.remove(0));
         }
+        self.alloc_new_blocks(allocate_new)?;
+        Ok(self.free_blocks.remove(0))
+    }
 
-        // No free blocks — allocate a batch of new blocks from the data file.
+    /// Allocate a batch of new blocks from the data file and add them to the free list.
+    pub fn alloc_new_blocks<F>(&mut self, allocate_new: F) -> StorageResult<()>
+    where
+        F: FnOnce(u32) -> StorageResult<BlockIdx>,
+    {
         let count = self.pre_alloc_blocks as u32;
         let start = allocate_new(count)?;
-
-        // Extend bitmap if needed.
         let needed_bytes = ((start + count) as usize).div_ceil(8);
         if needed_bytes > self.bitmap.len() {
             self.bitmap.resize(needed_bytes, 0u8);
             self.sync_bitmap()?;
         }
-
-        // Add new blocks to free list (bits are already 0 in a fresh bitmap).
         for i in start..start + count {
             self.free_blocks.push(i);
         }
         self.last_scan_pos = (start + count) as usize;
-
-        Ok(self.free_blocks.remove(0))
+        Ok(())
     }
 
     /// Mark a block as full (all chunks used).
@@ -157,6 +159,28 @@ impl BitmapFile {
         }
         self.sync_bitmap()?;
         Ok(())
+    }
+
+    /// Return a block that has been partially used back to the free list
+    /// without modifying the bit-level bitmap (it's already marked "not full").
+    pub fn mark_partial(&mut self, idx: BlockIdx) {
+        if let Err(pos) = self.free_blocks.binary_search(&idx) {
+            self.free_blocks.insert(pos, idx);
+        }
+        while self.free_blocks.len() > self.pre_alloc_blocks {
+            self.free_blocks.pop();
+        }
+    }
+
+    /// Peek at the first free block without removing it from the free list.
+    /// Returns `None` when the free list is empty (caller should allocate new blocks).
+    pub fn peek_free_block(&self) -> Option<BlockIdx> {
+        self.free_blocks.first().copied()
+    }
+
+    /// Remove a block from the free list (after a successful allocation).
+    pub fn consume_free_block(&mut self, idx: BlockIdx) {
+        self.free_blocks.retain(|&b| b != idx);
     }
 
     /// Return the current count of free blocks tracked.

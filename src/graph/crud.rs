@@ -864,9 +864,17 @@ fn allocate_chunks(graph: &Graph, chunks_needed: u8) -> StorageResult<(u32, u8)>
     let mut bf = graph.bitmap_file.write().unwrap_or_else(|e| e.into_inner());
 
     loop {
-        let block_idx = bf.alloc_block(|count| {
-            graph.data_file.allocate_blocks(count)
-        })?;
+        let block_idx = match bf.peek_free_block() {
+            Some(idx) => idx,
+            None => {
+                // No free blocks — allocate a batch from the data file.
+                bf.alloc_new_blocks(|count| {
+                    graph.data_file.allocate_blocks(count)
+                })?;
+                // After allocation, there's at least one free block.
+                bf.peek_free_block().expect("fresh blocks must exist")
+            }
+        };
 
         let block_data = graph.block_cache.read_block_data(block_idx,
             |idx| graph.data_file.read_block(idx),
@@ -884,13 +892,17 @@ fn allocate_chunks(graph: &Graph, chunks_needed: u8) -> StorageResult<(u32, u8)>
 
             if was_full {
                 bf.mark_full(block_idx)?;
+            } else {
+                bf.mark_partial(block_idx);
             }
             return Ok((block_idx, off));
         }
 
-        // This block doesn't have enough contiguous free chunks (fragmented).
-        // Mark it full so alloc_block skips it, then try the next block.
-        bf.mark_full(block_idx)?;
+        // This block doesn't have enough contiguous free chunks.
+        // Skip it — it will be tried again on the next allocation call.
+        // (Not marking it full, so it stays available in free_blocks,
+        // just removed from the in-memory free list for this session.)
+        bf.consume_free_block(block_idx);
         // Continue loop to try next block
     }
 }
@@ -936,12 +948,9 @@ pub(crate) fn read_data_chunks(graph: &Graph, block_idx: u32, chunk_offset: u8, 
 
 /// Free previously allocated data chunks.
 fn free_data_chunks(graph: &Graph, block_idx: u32, chunk_offset: u8, chunks: u8) -> StorageResult<()> {
-    // Only modify block if it's in cache (avoids loading just to free).
-    let is_cached = graph.block_cache.peek_block(block_idx, |opt| opt.is_some());
-    if !is_cached {
-        return Ok(());
-    }
-
+    // Load block (from cache or disk) and free the chunks.
+    // Always load even if not cached — avoiding the load causes chunk leaks
+    // during WAL replay and other bulk operations.
     let was_full = graph.block_cache.with_block(block_idx,
         |idx| graph.data_file.read_block(idx),
         &|idx, data| graph.data_file.write_block(idx, data).map_err(|e| e.into()),

@@ -14,6 +14,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use std::sync::Mutex;
+use tokio::task::spawn_blocking;
 
 use crate::config::Settings;
 use crate::documents::DocumentManager;

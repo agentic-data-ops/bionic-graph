@@ -16,6 +16,9 @@ impl BlockAllocator {
     /// 1-based data-chunk offset of the first chunk. Returns `None` when
     /// there aren't enough contiguous free slots.
     ///
+    /// Uses a single-pass scan with running count (sliding window)
+    /// instead of the previous two-pass (find + check consecutive) approach.
+    ///
     /// Bit positions 0..=255 map to chunks as follows:
     /// - Bit 0 = always-set header bit (chunk 1, never allocated as data)
     /// - Bits 1..=255 = data chunks, where bit N → data offset N
@@ -26,29 +29,26 @@ impl BlockAllocator {
             return None;
         }
         let run = count as usize;
-        // Start scanning from bit 1 (skip header bit 0).
-        let start = 1usize;
-        let mut pos = start;
-        loop {
-            // Find first free bit starting from `pos`
-            let free_start = match Self::find_next_free_from(bitmap, pos) {
-                Some(s) => s,
-                None => return None,
-            };
-            // Check if we have `run` consecutive free bits
-            if Self::has_consecutive_free(bitmap, free_start, run) {
-                // Mark them allocated
-                for i in free_start..free_start + run {
-                    Self::set_bit(bitmap, i, true);
+        let mut current_run = 0usize;
+
+        for pos in 1..CHUNKS_PER_BLOCK {
+            if !Self::test_bit(bitmap, pos) {
+                // Free chunk — extend current run
+                current_run += 1;
+                if current_run == run {
+                    // Found enough consecutive free chunks
+                    let start = pos + 1 - run; // 1-based offset
+                    for i in start..=pos {
+                        Self::set_bit(bitmap, i, true);
+                    }
+                    return Some(start as u8);
                 }
-                // Bit position N ↔ data offset N (1-indexed, ≥1)
-                return Some(free_start as u8);
-            }
-            pos = free_start + 1;
-            if pos >= CHUNKS_PER_BLOCK {
-                return None;
+            } else {
+                // Allocated chunk — reset run
+                current_run = 0;
             }
         }
+        None
     }
 
     /// Free `count` chunks starting at 1-based `offset`.
