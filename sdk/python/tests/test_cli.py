@@ -56,7 +56,7 @@ def test_graph_delete(runner, mock):
 
 
 def test_graph_get_config(runner, mock):
-    mock.get("/graphs/g0/config").respond(json={"cache_capacity": 4096})
+    mock.get("/graphs/g0/config").respond(json={"lru_cache_size_mb": 4096})
     result = runner.invoke(main, ["--base-url", BASE_URL, "graph", "get-config", "g0"])
     assert result.exit_code == 0
     assert "4096" in result.output
@@ -78,7 +78,7 @@ def test_graph_update_meta(runner, mock):
 
 def test_graph_set_config(runner, mock):
     mock.put("/graphs/g0/config").respond(json={"status": "ok"})
-    result = runner.invoke(main, ["--base-url", BASE_URL, "graph", "set-config", "g0", "--config", '{"cache_capacity": 8192}'])
+    result = runner.invoke(main, ["--base-url", BASE_URL, "graph", "set-config", "g0", "--config", '{"lru_cache_size_mb": 8192}'])
     assert result.exit_code == 0
     assert "ok" in result.output
 

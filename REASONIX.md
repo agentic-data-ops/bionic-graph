@@ -152,7 +152,7 @@ src/ui/
 │   └── <graph_name>/
 │       ├── data                — Data file (16KB blocks)
 │       ├── bitmap              — Bitmap (block-level free space tracking)
-│       ├── config.json         — Per-graph config (cache_capacity, rotation_thresholds, etc.)
+│       ├── config.json         — Per-graph config (lru_cache_size_mb, log_rotation_size_mb, etc.)
 │       └── redo_<yyyymmddHHMMss>_<######>  — WAL files (size + time-based rotation)
 └── documents/
     ├── index.json              — Document metadata index

@@ -168,7 +168,7 @@ def graph_get_config(ctx, name):
 @graph.command("set-config")
 @click.argument("name")
 @click.option("--config", required=True, callback=_parse_json_arg,
-              help='JSON: storage config. Fields: cache_capacity (int), rotation_size_mb (int), rotation_interval_min (int). Example: \'{"cache_capacity": 8192, "rotation_size_mb": 64}\'')
+              help='JSON: storage config. Fields: lru_cache_size_mb (int, default 64), log_rotation_size_mb (int), log_rotation_age_secs (int). Example: \'{"lru_cache_size_mb": 64, "log_rotation_size_mb": 64}\'')
 @click.pass_context
 def graph_set_config(ctx, name, config):
     c = _client(ctx)

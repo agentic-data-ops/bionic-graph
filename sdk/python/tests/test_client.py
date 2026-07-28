@@ -68,14 +68,14 @@ def test_update_graph_meta(client, mock):
 
 
 def test_get_graph_config(client, mock):
-    mock.get("/graphs/g0/config").respond(json={"cache_capacity": 4096})
+    mock.get("/graphs/g0/config").respond(json={"lru_cache_size_mb": 4096})
     cfg = client.get_graph_config("g0")
-    assert cfg["cache_capacity"] == 4096
+    assert cfg["lru_cache_size_mb"] == 4096
 
 
 def test_set_graph_config(client, mock):
     mock.put("/graphs/g0/config").respond(json={"status": "ok"})
-    resp = client.set_graph_config("g0", {"cache_capacity": 2048})
+    resp = client.set_graph_config("g0", {"lru_cache_size_mb": 2048})
     assert resp.status == "ok"
 
 

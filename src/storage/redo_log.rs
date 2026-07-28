@@ -130,7 +130,7 @@ impl RedoLog {
     pub fn open_with_config(
         dir: &Path,
         rotation_threshold: u64,
-        rotation_max_age_secs: Option<u64>,
+        log_rotation_age_secs: Option<u64>,
     ) -> StorageResult<Self> {
         fs::create_dir_all(dir)?;
 
@@ -161,7 +161,7 @@ impl RedoLog {
         let handle = thread::Builder::new()
             .name("bgraph-wal-writer".into())
             .spawn(move || {
-                writer_main_loop(rx, state_clone, dir_buf, rotation_threshold, rotation_max_age_secs, writer);
+                writer_main_loop(rx, state_clone, dir_buf, rotation_threshold, log_rotation_age_secs, writer);
             })
             .map_err(|e| StorageError::Other(format!("failed to spawn WAL writer thread: {e}")))?;
 
@@ -493,7 +493,7 @@ fn writer_main_loop(
     state: Arc<(Mutex<WriteState>, Condvar)>,
     dir: PathBuf,
     rotation_threshold: u64,
-    rotation_max_age_secs: Option<u64>,
+    log_rotation_age_secs: Option<u64>,
     mut writer: RedoLogWriter,
 ) {
     let mut batch: Vec<Vec<u8>> = Vec::with_capacity(DEFAULT_BATCH_SIZE);
@@ -520,40 +520,40 @@ fn writer_main_loop(
                         Ok(other) => {
                             // Control message arrived mid-batch.
                             // Flush the partial batch, then handle control.
-                            writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, rotation_max_age_secs, &mut checkpoint_seq, &state);
+                            writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, log_rotation_age_secs, &mut checkpoint_seq, &state);
                             handle_control_msg(other, &mut writer, &dir, &mut checkpoint_seq, &state);
                             continue;
                         }
                         Err(TryRecvError::Empty) => break,
                         Err(TryRecvError::Disconnected) => {
-                            flush_entries(writer, &mut batch, &dir, rotation_threshold, rotation_max_age_secs, &mut checkpoint_seq, &state);
+                            flush_entries(writer, &mut batch, &dir, rotation_threshold, log_rotation_age_secs, &mut checkpoint_seq, &state);
                             return;
                         }
                     }
                 }
 
                 // Flush accumulated batch.
-                writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, rotation_max_age_secs, &mut checkpoint_seq, &state);
+                writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, log_rotation_age_secs, &mut checkpoint_seq, &state);
             }
             WriterMessage::BatchEntries(mut entries) => {
                 batch.append(&mut entries);
                 // Flush immediately if batch is large enough.
                 if batch.len() >= DEFAULT_BATCH_SIZE {
-                    writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, rotation_max_age_secs, &mut checkpoint_seq, &state);
+                    writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, log_rotation_age_secs, &mut checkpoint_seq, &state);
                 }
             }
             WriterMessage::Shutdown => {
-                flush_entries(writer, &mut batch, &dir, rotation_threshold, rotation_max_age_secs, &mut checkpoint_seq, &state);
+                flush_entries(writer, &mut batch, &dir, rotation_threshold, log_rotation_age_secs, &mut checkpoint_seq, &state);
                 return;
             }
             WriterMessage::Flush { done } => {
-                writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, rotation_max_age_secs, &mut checkpoint_seq, &state);
+                writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, log_rotation_age_secs, &mut checkpoint_seq, &state);
                 let mut guard = done.0.lock().unwrap();
                 *guard = true;
                 done.1.notify_all();
             }
             WriterMessage::Renew { done } => {
-                writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, rotation_max_age_secs, &mut checkpoint_seq, &state);
+                writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, log_rotation_age_secs, &mut checkpoint_seq, &state);
                 let _ = writer.file.sync_all();
                 let files = list_redo_files(&dir);
                 for fname in &files {
@@ -572,7 +572,7 @@ fn writer_main_loop(
                 done.1.notify_all();
             }
             WriterMessage::Checkpoint { flush_fn, done } => {
-                writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, rotation_max_age_secs, &mut checkpoint_seq, &state);
+                writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, log_rotation_age_secs, &mut checkpoint_seq, &state);
                 if let Err(e) = flush_fn() {
                     advance_epoch(&state, Some(e));
                     let mut guard = done.0.lock().unwrap();
@@ -607,11 +607,11 @@ fn flush_entries(
     batch: &mut Vec<Vec<u8>>,
     dir: &Path,
     rotation_threshold: u64,
-    rotation_max_age_secs: Option<u64>,
+    log_rotation_age_secs: Option<u64>,
     checkpoint_seq: &mut u64,
     state: &Arc<(Mutex<WriteState>, Condvar)>,
 ) -> RedoLogWriter {
-    let result = try_flush_entries(&mut writer, batch, dir, rotation_threshold, rotation_max_age_secs, checkpoint_seq);
+    let result = try_flush_entries(&mut writer, batch, dir, rotation_threshold, log_rotation_age_secs, checkpoint_seq);
     match result {
         Ok(()) => {
             advance_epoch(state, None);
@@ -630,7 +630,7 @@ fn try_flush_entries(
     batch: &[Vec<u8>],
     dir: &Path,
     rotation_threshold: u64,
-    rotation_max_age_secs: Option<u64>,
+    log_rotation_age_secs: Option<u64>,
     checkpoint_seq: &mut u64,
 ) -> Result<(), StorageError> {
     if batch.is_empty() {
@@ -638,7 +638,7 @@ fn try_flush_entries(
     }
 
     // Check time-based rotation.
-    if let Some(max_age) = rotation_max_age_secs {
+    if let Some(max_age) = log_rotation_age_secs {
         if writer.created_at.elapsed() > Duration::from_secs(max_age) {
             let old_path = writer.path.clone();
             let new_writer = create_new_file(dir, *checkpoint_seq)?;

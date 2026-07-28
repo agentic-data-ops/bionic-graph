@@ -365,7 +365,7 @@ pub fn update_vertex(
             data: old_bytes,
         });
         // Cap history to prevent unbounded growth.
-        let max_history = graph.config.storage.max_history;
+        let max_history = graph.config.storage.time_travel_max_history;
         while new_payload.history.len() > max_history {
             new_payload.history.remove(0);
         }
@@ -470,7 +470,7 @@ pub fn update_edge(
             timestamp: old_header.mtime,
             data: old_bytes,
         });
-        let max_history = graph.config.storage.max_history;
+        let max_history = graph.config.storage.time_travel_max_history;
         while new_payload.history.len() > max_history {
             new_payload.history.remove(0);
         }

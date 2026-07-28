@@ -55,16 +55,16 @@ impl Default for GraphConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GraphStorageConfig {
-    /// LRU 块缓存容量（块数 × 16KB = 内存占用）。默认 4096 = 64 MB
-    pub cache_capacity: usize,
+    /// LRU 块缓存容量（MB）。默认 64 MB
+    pub lru_cache_size_mb: usize,
     /// WAL 文件旋转大小（MB）
-    pub rotation_threshold_mb: u64,
+    pub log_rotation_size_mb: u64,
     /// WAL 文件旋转时间（秒）。超过此时间自动旋转。null 表示不启用时间旋转
-    pub rotation_max_age_secs: Option<u64>,
+    pub log_rotation_age_secs: Option<u64>,
     /// 块预分配数量（free list 补货阈值）。
     pub pre_alloc_blocks: usize,
     /// 顶点/边历史记录最大条目数。
-    pub max_history: usize,
+    pub time_travel_max_history: usize,
     /// 是否启用日志批量写入（批量导入时合并日志记录）。
     pub log_flush_batch_enable: bool,
     /// WAL 批量 flush 的批次大小。
@@ -74,11 +74,11 @@ pub struct GraphStorageConfig {
 impl Default for GraphStorageConfig {
     fn default() -> Self {
         Self {
-            cache_capacity: 4096,
-            rotation_threshold_mb: 64,
-            rotation_max_age_secs: Some(900),
+            lru_cache_size_mb: 64,
+            log_rotation_size_mb: 64,
+            log_rotation_age_secs: Some(900),
             pre_alloc_blocks: 128,
-            max_history: 32,
+            time_travel_max_history: 32,
             log_flush_batch_enable: true,
             log_flush_batch_size: 256,
         }
@@ -184,11 +184,13 @@ impl Graph {
         let data_file = DataFile::open(graph_dir.join("data"))?;
         let data_blocks = data_file.block_count()?;
         let bitmap_file = RwLock::new(BitmapFile::open(graph_dir.join("bitmap"), data_blocks, config.storage.pre_alloc_blocks)?);
-        let block_cache = ShardedBlockCache::new(config.storage.cache_capacity, crate::storage::block_cache::DEFAULT_SHARD_COUNT);
+        // Convert MB to block count (each block is 16 KB)
+        let block_cache_capacity = config.storage.lru_cache_size_mb * 1024 * 1024 / crate::storage::types::BLOCK_SIZE;
+        let block_cache = ShardedBlockCache::new(block_cache_capacity, crate::storage::block_cache::DEFAULT_SHARD_COUNT);
         let redo_log = RedoLog::open_with_config(
             &graph_dir,
-            config.storage.rotation_threshold_mb * 1024 * 1024,
-            config.storage.rotation_max_age_secs,
+            config.storage.log_rotation_size_mb * 1024 * 1024,
+            config.storage.log_rotation_age_secs,
         )?;
         // ── Rebuild in-memory index ──────────────────────────────────────
         let memory_index = RwLock::new(
