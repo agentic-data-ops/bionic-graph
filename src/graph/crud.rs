@@ -724,31 +724,64 @@ pub fn replay_entry(graph: &Graph, entry: &RedoLogEntry) -> StorageResult<()> {
         }
         OpType::VertexDelete => {
             let id = entry.op_id as u32;
-            if graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).vertex_id.get(id).is_some() {
-                let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-                mi.vertex_id.remove(id);
+            // Read the vertex ptr from the rebuilt index.
+            let ptr = graph.memory_index.read().unwrap_or_else(|e| e.into_inner())
+                .vertex_id.get(id).copied();
+            if let Some(ptr) = ptr {
+                // Read payload to get name / labels / properties for index cleanup.
+                if let Ok(header) = read_data_header(graph, ptr) {
+                    let payload_len = header.payload_len as usize;
+                    let data = read_data_chunks(graph, ptr.block_idx, ptr.chunk_offset + 1, payload_len as u16)
+                        .unwrap_or_default();
+                    if let Ok(payload) = deserialize_vertex(&data) {
+                        let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+                        mi.vertex_name.remove(&payload.name);
+                        for l in &payload.labels {
+                            mi.remove_vertex_label(l, &ptr);
+                        }
+                        unindex_vertex_properties(&mut mi, &payload.properties, &ptr);
+                        mi.rank.remove(header.rank, &ptr);
+                        mi.vertex_id.remove(id);
+                        // Free the data chunks so the next restart doesn't find them.
+                        drop(mi);
+                        let total_len = DATA_HEADER_SIZE + payload_len;
+                        let chunks = BlockAllocator::chunks_needed(total_len);
+                        let _ = free_data_chunks(graph, ptr.block_idx, ptr.chunk_offset, chunks as u8);
+                    } else {
+                        // Couldn't read payload — remove what we can.
+                        let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+                        mi.rank.remove(header.rank, &ptr);
+                        mi.vertex_id.remove(id);
+                    }
+                }
             }
         }
         OpType::EdgeDelete => {
             let id = entry.op_id as u32;
-            if let Some(&ptr) = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).edge_id.get(id) {
-                // Read source/target from data header payload before removal.
-                let (source, target) = {
-                    let header = read_data_header(graph, ptr)?;
+            let ptr = graph.memory_index.read().unwrap_or_else(|e| e.into_inner())
+                .edge_id.get(id).copied();
+            if let Some(ptr) = ptr {
+                // Read payload to get name / labels / source / target / properties.
+                if let Ok(header) = read_data_header(graph, ptr) {
                     let payload_len = header.payload_len as usize;
                     let data = read_data_chunks(graph, ptr.block_idx, ptr.chunk_offset + 1, payload_len as u16)
                         .unwrap_or_default();
                     if let Ok(payload) = deserialize_edge(&data) {
-                        (payload.source, payload.target)
-                    } else {
-                        (0, 0)
+                        let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+                        mi.edge_name.remove(&payload.name);
+                        mi.vertex_adjacency.remove_edge(payload.source, payload.target, &ptr);
+                        for l in &payload.labels {
+                            mi.remove_edge_label(l, &ptr);
+                        }
+                        unindex_edge_properties(&mut mi, &payload.properties, &ptr);
+                        mi.rank.remove(header.rank, &ptr);
+                        mi.edge_id.remove(id);
+                        drop(mi);
+                        let total_len = DATA_HEADER_SIZE + payload_len;
+                        let chunks = BlockAllocator::chunks_needed(total_len);
+                        let _ = free_data_chunks(graph, ptr.block_idx, ptr.chunk_offset, chunks as u8);
                     }
-                };
-                let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-                mi.edge_id.remove(id);
-                // Use the real source/target vertex IDs, NOT edge_id, to properly
-                // clean up the adjacency index.
-                mi.vertex_adjacency.remove_edge(source, target, &ptr);
+                }
             }
         }
         OpType::TokenCreate | OpType::TokenUpdate | OpType::TokenDelete => {
