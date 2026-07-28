@@ -85,6 +85,7 @@ pub(crate) async fn try_forward_status(
     method: &str,
     path: &str,
     query: Option<&str>,
+    graph_name: Option<&str>,
 ) -> Option<StatusCode> {
     let (is_worker, master_addr) = {
         let settings = state.settings.lock().unwrap();
@@ -99,7 +100,7 @@ pub(crate) async fn try_forward_status(
         path: path.to_string(),
         query: query.map(|s| s.to_string()),
         body: None,
-        graph: None,
+        graph: graph_name.map(|s| s.to_string()),
     };
     match crate::cluster::forward::forward_write(master_addr, &req).await {
         Ok(resp) => {
@@ -689,7 +690,7 @@ pub async fn delete_vertex(
     let query_str = params.force.map(|f| format!("force={}", f));
     let path = format!("/vertices/{}", id);
     if let Some(status) = try_forward_status(
-        &state, "DELETE", &path, query_str.as_deref(),
+        &state, "DELETE", &path, query_str.as_deref(), graph_name,
     ).await {
         return status;
     }
@@ -927,7 +928,7 @@ pub async fn delete_edge(
     let query_str = params.force.map(|f| format!("force={}", f));
     let path = format!("/edges/{}", id);
     if let Some(status) = try_forward_status(
-        &state, "DELETE", &path, query_str.as_deref(),
+        &state, "DELETE", &path, query_str.as_deref(), graph_name,
     ).await {
         return status;
     }
