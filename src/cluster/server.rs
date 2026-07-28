@@ -169,38 +169,31 @@ async fn handle_forward(
     Json(result)
 }
 
-/// After a successful forwarded write, build redo-log entries from the
-/// actual data stored on the master so workers can replay them correctly.
-fn build_broadcast_entries(
-    state: &ClusterAppState,
+/// Build broadcast entries using a raw GraphManager (used by both
+/// the cluster forward handler and direct write broadcast).
+pub(crate) fn build_broadcast_entries_raw(
+    gm: &crate::graph_manager::GraphManager,
     req: &ForwardedRequest,
     result: &ForwardedResponse,
 ) -> Vec<crate::storage::redo_log::RedoLogEntry> {
     let mut entries = Vec::new();
     let method = req.method.to_uppercase();
 
-    // Use the graph from the request, or fall back to default.
-    let graph_name = req.graph.clone().unwrap_or_else(|| state.gm.get_default_name());
-    let graph = match state.gm.get(&graph_name) {
+    let graph_name = req.graph.clone().unwrap_or_else(|| gm.get_default_name());
+    let graph = match gm.get(&graph_name) {
         Ok(g) => g,
         Err(_) => return entries,
     };
 
-    // Parse ID from path (e.g. "/vertices/3?force=true" → 3).
     let path_id: Option<u32> = {
         let path = req.path.split('?').next().unwrap_or(&req.path);
         let parts: Vec<&str> = path.split('/').collect();
         parts.last().and_then(|s| s.parse().ok())
     };
 
-    // Parse response body.
-    let body = match result.body {
-        Some(ref b) => b.clone(),
-        None => return entries,
-    };
+    let body = match result.body { Some(ref b) => b.clone(), None => return entries };
     let parsed: std::collections::HashMap<String, serde_json::Value> = match serde_json::from_str(&body) {
-        Ok(v) => v,
-        Err(_) => return entries,
+        Ok(v) => v, Err(_) => return entries,
     };
 
     match (method.as_str(), req.path.as_str()) {
@@ -275,6 +268,16 @@ fn build_broadcast_entries(
         _ => {}
     }
     entries
+}
+
+/// After a successful forwarded write, build redo-log entries from the
+/// actual data stored on the master so workers can replay them correctly.
+fn build_broadcast_entries(
+    state: &ClusterAppState,
+    req: &ForwardedRequest,
+    result: &ForwardedResponse,
+) -> Vec<crate::storage::redo_log::RedoLogEntry> {
+    build_broadcast_entries_raw(&state.gm, req, result)
 }
 
 /// Proxy a ForwardedRequest to the master's main API server via HTTP.

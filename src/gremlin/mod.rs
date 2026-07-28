@@ -16,12 +16,13 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tokio::task::spawn_blocking;
 
+use crate::cluster::node::NodeRegistry;
+
 use crate::config::Settings;
 use crate::documents::DocumentManager;
 use crate::graph::graph::Graph;
 use crate::graph::gremlin::{execute_gremlin, GremlinQuery, GremlinResponse, GremlinResult};
 use crate::graph_manager::GraphManager;
-use crate::cluster::node::NodeRegistry;
 use crate::task::{TaskManager, TaskResponse, TaskStatus, default_extraction_steps, update_step, compute_overall_pct};
 
 pub mod settings;
@@ -40,6 +41,105 @@ pub struct AppState {
     pub cluster_registry: Option<Arc<NodeRegistry>>,
     /// Master's API address for worker→master forwarding (None on master / standalone).
     pub master_api_addr: Option<String>,
+}
+
+/// Broadcast a write result from the master to all workers.
+/// Called by write handlers after a successful mutation on the master.
+pub(crate) fn broadcast_write_result(
+    cluster_registry: &Option<Arc<NodeRegistry>>,
+    graph: &Arc<Graph>,
+    method: &str,
+    path: &str,
+    graph_name: &str,
+    response_body: &str,
+) {
+    let Some(registry) = cluster_registry.as_ref() else { return };
+    let workers = registry.alive_workers();
+    if workers.is_empty() { return; }
+
+    // Determine op_type and op_id.
+    let (op_type, op_id) = match method {
+        "POST" | "PUT" => {
+            let id = serde_json::from_str::<serde_json::Value>(response_body)
+                .ok().and_then(|v| v.get("id").and_then(|id| id.as_u64()))
+                .unwrap_or(0);
+            if id == 0 { return; }
+            let op = if path == "/vertices" || path.starts_with("/vertices/") {
+                crate::storage::types::OpType::VertexCreate
+            } else if path == "/edges" || path.starts_with("/edges/") {
+                crate::storage::types::OpType::EdgeCreate
+            } else { return };
+            (op, id)
+        }
+        "DELETE" => {
+            let clean = path.split('?').next().unwrap_or(path);
+            let id: u64 = match clean.rsplit('/').next().and_then(|s| s.parse().ok()) {
+                Some(v) => v, None => return,
+            };
+            let op = if path.starts_with("/vertices/") {
+                crate::storage::types::OpType::VertexDelete
+            } else if path.starts_with("/edges/") {
+                crate::storage::types::OpType::EdgeDelete
+            } else { return };
+            (op, id)
+        }
+        _ => return,
+    };
+
+    // Read the actual data from the graph to build a proper replay entry.
+    let data = if method != "DELETE" {
+        let g = graph.clone();
+        (move || -> Vec<u8> {
+            if let Ok(dh) = crate::graph::crud::read_header_by_ptr(&g, &crate::storage::memory_index::MetaPointer::new(0, 0)) {
+                // skip — will use simpler approach below
+            }
+            // Build the entry data by reading from the memory index
+            let id_u32 = op_id as u32;
+            let ptr = g.memory_index.read().ok()
+                .and_then(|mi| if op_type == crate::storage::types::OpType::VertexCreate {
+                    mi.vertex_id.get(id_u32).copied()
+                } else {
+                    mi.edge_id.get(id_u32).copied()
+                });
+            if let Some(ptr) = ptr {
+                if let Ok(dh) = crate::graph::crud::read_header_by_ptr(&g, &ptr) {
+                    let plen = dh.payload_len as usize;
+                    if let Ok(data) = crate::graph::crud::read_data_chunks(
+                        &g, ptr.block_idx, ptr.chunk_offset + 1, dh.payload_len as u16,
+                    ) {
+                        return data[..plen.min(data.len())].to_vec();
+                    }
+                }
+            }
+            Vec::new()
+        })()
+    } else {
+        Vec::new()
+    };
+
+    let entry = crate::storage::redo_log::RedoLogEntry { op_type, op_id, data };
+    let reg = registry.clone();
+    let gn = graph_name.to_string();
+    let w = workers.clone();
+
+    tokio::spawn(async move {
+        let seq = reg.next_seq();
+        let replicated = crate::cluster::replication::ReplicatedEntry {
+            cluster_seq: seq,
+            entry,
+            graph_name: gn,
+            master_timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_micros() as u64,
+        };
+        let results = crate::cluster::replication::broadcast_entry(&w, &replicated).await;
+        for (wid, res) in &results {
+            if let Err(e) = res {
+                log::warn!("Broadcast to worker {} failed: {}", wid, e);
+            }
+        }
+    });
 }
 
 /// Build the axum router for all block-engine graph routes.
@@ -392,6 +492,16 @@ pub async fn create_vertex(
         &body.properties,
     )
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Broadcast to workers in cluster mode.
+    let graph_name = graph.name.clone();
+    let response_body = serde_json::json!({"id": vid}).to_string();
+    broadcast_write_result(
+        &state.cluster_registry, &graph,
+        "POST", "/vertices",
+        &graph_name, &response_body,
+    );
+
     Ok(Json(CreateVertexResponse { id: vid }))
 }
 
@@ -461,7 +571,15 @@ pub async fn delete_vertex(
     };
 
     match result {
-        Ok(_) => StatusCode::OK,
+        Ok(_) => {
+            let graph_name = graph.name.clone();
+            let path = format!("/vertices/{}?force=true", id);
+            broadcast_write_result(
+                &state.cluster_registry, &graph,
+                "DELETE", &path, &graph_name, "{}",
+            );
+            StatusCode::OK
+        }
         Err(_) => StatusCode::NOT_FOUND,
     }
 }
