@@ -1125,6 +1125,13 @@ pub async fn delete_graph(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Json<serde_json::Value> {
+    // Worker → Master forwarding
+    if let Some(resp) = try_forward_json(&state, "DELETE", &format!("/graphs/{}", name), None, None, None).await {
+        return match resp {
+            Ok(json) => json,
+            Err(_) => Json(serde_json::json!({"status": "error", "message": "forward failed"})),
+        };
+    }
     match state.gm.delete(&name) {
         Ok(_) => Json(serde_json::json!({"status": "ok"})),
         Err(_) => Json(serde_json::json!({"status": "error", "message": "not found"})),
@@ -1268,7 +1275,7 @@ pub async fn list_documents(
 }
 
 /// Create a new document.
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct CreateDocumentBody {
     pub title: String,
     pub content: String,
@@ -1286,6 +1293,19 @@ pub async fn create_document(
     State(state): State<AppState>,
     Json(body): Json<CreateDocumentBody>,
 ) -> Json<CreateDocumentResponse> {
+    // Worker → Master forwarding
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
+    if let Some(resp) = try_forward_json(&state, "POST", "/documents", None, None, Some(&body_str)).await {
+        return match resp {
+            Ok(json) => Json(CreateDocumentResponse {
+                id: json.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                title: json.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                created: json.get("created").and_then(|v| v.as_bool()).unwrap_or(false),
+            }),
+            Err(_) => Json(CreateDocumentResponse { id: String::new(), title: body.title.clone(), created: false }),
+        };
+    }
+
     let id = uuid::Uuid::new_v4().to_string();
     // Documents are created without a graph association.
     // The graph is assigned during extraction.
@@ -1308,7 +1328,7 @@ pub async fn get_document(
 }
 
 /// Update document metadata.
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct UpdateDocumentBody {
     pub title: Option<String>,
     pub tags: Option<Vec<String>>,
