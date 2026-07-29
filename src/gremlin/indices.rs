@@ -31,8 +31,11 @@ pub struct UnregisterKeysBody {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-fn get_graph(state: &AppState) -> Arc<Graph> {
-    let name = state.gm.get_default_name();
+fn get_graph(state: &AppState, graph_name: Option<&str>) -> Arc<Graph> {
+    let name = match graph_name {
+        Some(n) => n.to_string(),
+        None => state.gm.get_default_name(),
+    };
     state.gm.get(&name).unwrap()
 }
 
@@ -87,15 +90,17 @@ fn scan_edge_property(graph: &Graph, key: &str) {
 
 pub async fn create_vertex_property_index(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<RegisterKeyBody>,
 ) -> Json<serde_json::Value> {
     // Worker → Master forwarding
     let body_str = serde_json::to_string(&body).unwrap_or_default();
-    if let Some(resp) = try_forward_json(&state, "POST", "/indices/vertex/properties", None, None, Some(&body_str)).await {
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    if let Some(resp) = try_forward_json(&state, "POST", "/indices/vertex/properties", None, graph_name, Some(&body_str)).await {
         return match resp { Ok(json) => json, Err(_) => Json(serde_json::json!({"status": "error"})) };
     }
 
-    let graph = get_graph(&state);
+    let graph = get_graph(&state, graph_name);
     let already = {
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
         mi.has_vertex_property(&body.key)
@@ -106,7 +111,7 @@ pub async fn create_vertex_property_index(
         drop(mi);
         scan_vertex_property(&graph, &body.key);
     }
-    broadcast_request_to_workers(&state.cluster_registry, "POST", "/indices/vertex/properties", None, Some(&body_str));
+    broadcast_request_to_workers(&state.cluster_registry, "POST", "/indices/vertex/properties", graph_name, Some(&body_str));
     Json(serde_json::json!({
         "status": "ok", "key": body.key, "type": "vertex", "created": !already,
     }))
@@ -116,7 +121,8 @@ pub async fn show_vertex_property_index(
     State(state): State<AppState>,
     Path(key): Path<String>,
 ) -> Json<serde_json::Value> {
-    let graph = get_graph(&state);
+    let graph_name = None;
+    let graph = get_graph(&state, graph_name);
     let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
     match mi.vertex_properties.get(&key) {
         Some(data) => {
@@ -136,7 +142,8 @@ pub async fn show_vertex_property_index(
 pub async fn list_vertex_property_indices(
     State(state): State<AppState>,
 ) -> Json<serde_json::Value> {
-    let graph = get_graph(&state);
+    let graph_name = None;
+    let graph = get_graph(&state, graph_name);
     let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
     let mut indices = Vec::new();
     for key in mi.list_vertex_property_keys() {
@@ -153,23 +160,32 @@ pub async fn list_vertex_property_indices(
 pub async fn delete_vertex_property_index(
     State(state): State<AppState>,
     Path(key): Path<String>,
+    headers: axum::http::HeaderMap,
 ) -> Json<serde_json::Value> {
     // Worker → Master forwarding
-    if let Some(resp) = try_forward_json(&state, "DELETE", &format!("/indices/vertex/properties/{}", key), None, None, None).await {
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    if let Some(resp) = try_forward_json(&state, "DELETE", &format!("/indices/vertex/properties/{}", key), None, graph_name, None).await {
         return match resp { Ok(json) => json, Err(_) => Json(serde_json::json!({"status": "error"})) };
     }
-    let graph = get_graph(&state);
+    let graph = get_graph(&state, graph_name);
     let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
     let deleted = mi.unregister_vertex_property(&key);
-    broadcast_request_to_workers(&state.cluster_registry, "DELETE", &format!("/indices/vertex/properties/{}", key), None, None);
+    broadcast_request_to_workers(&state.cluster_registry, "DELETE", &format!("/indices/vertex/properties/{}", key), graph_name, None);
     Json(serde_json::json!({"status": "ok", "key": key, "deleted": deleted}))
 }
 
 pub async fn delete_vertex_property_indices(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<UnregisterKeysBody>,
 ) -> Json<serde_json::Value> {
-    let graph = get_graph(&state);
+    // Worker → Master forwarding
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    if let Some(resp) = try_forward_json(&state, "DELETE", "/indices/vertex/properties", None, graph_name, Some(&body_str)).await {
+        return match resp { Ok(json) => json, Err(_) => Json(serde_json::json!({"status": "error"})) };
+    }
+    let graph = get_graph(&state, graph_name);
     let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
     let mut deleted = Vec::new();
     for k in &body.keys {
@@ -177,6 +193,7 @@ pub async fn delete_vertex_property_indices(
             deleted.push(k.clone());
         }
     }
+    broadcast_request_to_workers(&state.cluster_registry, "DELETE", "/indices/vertex/properties", graph_name, Some(&body_str));
     Json(serde_json::json!({"status": "ok", "deleted": deleted}))
 }
 
@@ -184,15 +201,17 @@ pub async fn delete_vertex_property_indices(
 
 pub async fn create_edge_property_index(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<RegisterKeyBody>,
 ) -> Json<serde_json::Value> {
     // Worker → Master forwarding
     let body_str = serde_json::to_string(&body).unwrap_or_default();
-    if let Some(resp) = try_forward_json(&state, "POST", "/indices/edge/properties", None, None, Some(&body_str)).await {
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    if let Some(resp) = try_forward_json(&state, "POST", "/indices/edge/properties", None, graph_name, Some(&body_str)).await {
         return match resp { Ok(json) => json, Err(_) => Json(serde_json::json!({"status": "error"})) };
     }
 
-    let graph = get_graph(&state);
+    let graph = get_graph(&state, graph_name);
     let already = {
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
         mi.has_edge_property(&body.key)
@@ -203,7 +222,7 @@ pub async fn create_edge_property_index(
         drop(mi);
         scan_edge_property(&graph, &body.key);
     }
-    broadcast_request_to_workers(&state.cluster_registry, "POST", "/indices/edge/properties", None, Some(&body_str));
+    broadcast_request_to_workers(&state.cluster_registry, "POST", "/indices/edge/properties", graph_name, Some(&body_str));
     Json(serde_json::json!({
         "status": "ok", "key": body.key, "type": "edge", "created": !already,
     }))
@@ -213,7 +232,8 @@ pub async fn show_edge_property_index(
     State(state): State<AppState>,
     Path(key): Path<String>,
 ) -> Json<serde_json::Value> {
-    let graph = get_graph(&state);
+    let graph_name = None;
+    let graph = get_graph(&state, graph_name);
     let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
     match mi.edge_properties.get(&key) {
         Some(data) => {
@@ -233,7 +253,8 @@ pub async fn show_edge_property_index(
 pub async fn list_edge_property_indices(
     State(state): State<AppState>,
 ) -> Json<serde_json::Value> {
-    let graph = get_graph(&state);
+    let graph_name = None;
+    let graph = get_graph(&state, graph_name);
     let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
     let mut indices = Vec::new();
     for key in mi.list_edge_property_keys() {
@@ -250,28 +271,32 @@ pub async fn list_edge_property_indices(
 pub async fn delete_edge_property_index(
     State(state): State<AppState>,
     Path(key): Path<String>,
+    headers: axum::http::HeaderMap,
 ) -> Json<serde_json::Value> {
     // Worker → Master forwarding
-    if let Some(resp) = try_forward_json(&state, "DELETE", &format!("/indices/edge/properties/{}", key), None, None, None).await {
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    if let Some(resp) = try_forward_json(&state, "DELETE", &format!("/indices/edge/properties/{}", key), None, graph_name, None).await {
         return match resp { Ok(json) => json, Err(_) => Json(serde_json::json!({"status": "error"})) };
     }
-    let graph = get_graph(&state);
+    let graph = get_graph(&state, graph_name);
     let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
     let deleted = mi.unregister_edge_property(&key);
-    broadcast_request_to_workers(&state.cluster_registry, "DELETE", &format!("/indices/edge/properties/{}", key), None, None);
+    broadcast_request_to_workers(&state.cluster_registry, "DELETE", &format!("/indices/edge/properties/{}", key), graph_name, None);
     Json(serde_json::json!({"status": "ok", "key": key, "deleted": deleted}))
 }
 
 pub async fn delete_edge_property_indices(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<UnregisterKeysBody>,
 ) -> Json<serde_json::Value> {
     // Worker → Master forwarding
     let body_str = serde_json::to_string(&body).unwrap_or_default();
-    if let Some(resp) = try_forward_json(&state, "DELETE", "/indices/edge/properties", None, None, Some(&body_str)).await {
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    if let Some(resp) = try_forward_json(&state, "DELETE", "/indices/edge/properties", None, graph_name, Some(&body_str)).await {
         return match resp { Ok(json) => json, Err(_) => Json(serde_json::json!({"status": "error"})) };
     }
-    let graph = get_graph(&state);
+    let graph = get_graph(&state, graph_name);
     let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
     let mut deleted = Vec::new();
     for k in &body.keys {
@@ -279,6 +304,6 @@ pub async fn delete_edge_property_indices(
             deleted.push(k.clone());
         }
     }
-    broadcast_request_to_workers(&state.cluster_registry, "DELETE", "/indices/edge/properties", None, Some(&body_str));
+    broadcast_request_to_workers(&state.cluster_registry, "DELETE", "/indices/edge/properties", graph_name, Some(&body_str));
     Json(serde_json::json!({"status": "ok", "deleted": deleted}))
 }

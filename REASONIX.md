@@ -382,19 +382,16 @@ Decay ←─ spawn_rank_decay (background, every period secs)   checkpoint flush
 - **ID isolation**: each graph has independent ID space. Counters computed from index max at startup (no longer in config.json).
 - **Graph name resolution**: via `X-Graph-Name` header on all CRUD/Gremlin/search/batch/document endpoints. No `?graph=` query parameter.
 
-## Implemented Plans
-- `100-graph-rearch-design.md` — Block-based storage architecture
-- `101-graph-rearch-plan.md` — Re-architecture coding plan (Phase 1-8)
-- `--- edge-data-structure-update.md` — EdgePayload label→name, +labels
-- `201-sdk-python-test-plan.md` — Python SDK CLI full test coverage (57 tests)
-- `--- task-module.md` — Generic task module extracted from extraction pipeline
-- `--- proxy-api-restructure.md` — Unified `/proxy/*` API paths, CLI theme restructure
-- `300-self-awareness-plan.md` — Self-awareness KG Python CLI pipeline
-- `301-example-social-activity-plan.md` — Social activities KG Python CLI pipeline
-
 ## TODO
-1. **前端测试** — 使用 Playwright 对前端交互进行端到端测试
-2. **构建个体自我意识图谱模板** — 设计并实现个体自我意识的知识图谱模板（已完成示例）
-3. **设计个体自我行为机制** — 在 GraphAgent 框架中实现个体自主行为决策机制
-4. **构建社会图谱** — 构建多个体间的社会关系图谱（已完成示例）
-5. **设计社会行为机制** — 实现群体层面的社会行为机制
+- [ ] 顶点和边被读取到时更新atime和rank元数据，由读请求节点向其他所有节点广播touch操作
+- [ ] 检查是否仍然有写操作未进行广播
+- [ ] 将tokenizer配置文件持久化到数据目录：tokenizer/dict.json，不放到~/.config/bionic-graph下，不提供命令行入口
+- [ ] 使用~/.config/bionic/graph下的master.json, workder1.json, workder2.json 启动集群 （先清理各自的数据目录）
+- [ ] 测试workder1写入，workder2读取，覆盖所有涉及转发和广播的场景
+- [ ] 验证master, workder1的前端是否正常
+- [ ] 刷新代码注释，涉及广播的场景，不再使用WAL日志了
+- [ ] 刷新REASONIX.md 和 README.md
+- [ ] master将连接的节点信息进行持久化: cluster/nodes.json
+- [ ] workder首次连接到master时检查每个图库的配置与master是否一致，如果不一致，报错退出，不允许加入集群
+- [ ] 如果workder离线，master将未被成功处理的节点广播请求持久化到数据目录下的文件：cluster/broadcast.bin，并在节点状态正常时进行重试
+- [ ] 自定义索引的配置进行持久化，保存到图库的config.json中（indecies.properties）
