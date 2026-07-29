@@ -56,7 +56,8 @@ src/
 ├── gremlin/                 # REST API routes + handlers (axum)
 │   ├── mod.rs               # AppState, build_router (50+ routes), handlers
 │   ├── settings.rs          # GET/PUT /settings/graph/search, /settings/llm, /settings/graph/rank, /settings/web-search
-│   └── tokenizer_settings.rs # Custom tokenizer dictionary words CRUD (GET/POST/DELETE /settings/tokenizer/words)
+│   ├── tokenizer_settings.rs # Custom tokenizer dictionary words CRUD (GET/POST/DELETE /settings/tokenizer/words)
+│   └── indices.rs           # Custom property index management (POST/GET/DELETE /indices/vertex|edge/properties)
 ├── graph_manager.rs         # Multi-graph manager (HashMap<String, Arc<Graph>>), close_all()
 ├── documents.rs             # Document CRUD (file storage + JSON index)
 ├── extract/                 # LLM-based document extraction pipeline
@@ -152,7 +153,7 @@ src/ui/
 │   └── <graph_name>/
 │       ├── data                — Data file (16KB blocks)
 │       ├── bitmap              — Bitmap (block-level free space tracking)
-│       ├── config.json         — Per-graph config (lru_cache_size_mb, log_rotation_size_mb, etc.)
+│       ├── config.json         — Per-graph config (storage, lock, indices)
 │       └── redo_<yyyymmddHHMMss>_<######>  — WAL files (size + time-based rotation)
 ├── tokenizer/
 │   └── words.json             — Custom dictionary words for jieba-rs tokenizer
@@ -199,41 +200,44 @@ App.jsx
 
 > Time travel is no longer a Gremlin step. Use `X-Time-Travel` HTTP header with a microsecond timestamp instead. The header applies to all steps in the query.
 
-## REST API Endpoints (44 routes)
+## REST API Endpoints (55 routes)
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | System health |
 | GET/POST/PUT | `/graphs` | List / create / set-default graph |
 | DELETE/PUT | `/graphs/:name` | Delete / update graph metadata |
-| GET/PUT | `/graphs/:name/config` | Per-graph storage config |
+| GET/PUT | `/graphs/:name/config` | Per-graph storage + indices config |
 | POST | `/gremlin` | Gremlin pipeline query |
 | GET | `/search` | Token search shortcut |
 | POST/PUT/DELETE | `/vertices`, `/vertices/:id` | Vertex CRUD |
 | GET/PUT | `/vertices/:id/meta` | Vertex metadata (rank/atime/status) |
 | POST/PUT/DELETE | `/edges`, `/edges/:id` | Edge CRUD |
 | GET/PUT | `/edges/:id/meta` | Edge metadata |
-| GET/PUT | `/settings/search` | Search settings (greedy/exact) |
-| GET/PUT | `/settings/rank` | Rank decay config |
+| GET/PUT | `/settings/graph/search` | Search settings (greedy/exact) |
+| GET/PUT | `/settings/graph/rank` | Rank decay config |
 | GET/PUT | `/settings/llm` | LLM provider config |
+| GET/PUT | `/settings/web-search` | Web search provider config |
 | GET | `/settings/tokenizer/words` | Tokenizer custom dictionary words (list) |
 | POST/DELETE | `/settings/tokenizer/words` | Add / remove custom tokenizer words |
+| POST/GET/DELETE | `/indices/vertex/properties` | Register / list / unregister vertex property index keys |
+| GET/DELETE | `/indices/vertex/properties/:key` | Show stats / unregister a specific vertex property key |
+| POST/GET/DELETE | `/indices/edge/properties` | Register / list / unregister edge property index keys |
+| GET/DELETE | `/indices/edge/properties/:key` | Show stats / unregister a specific edge property key |
 | GET/POST | `/documents` | List / create documents |
 | GET/PUT/DELETE | `/documents/:id` | Get / update / delete document metadata |
 | GET | `/documents/:id/content` | Document body |
 | POST | `/extract` | Submit extraction task |
 | POST | `/documents/:id/extract` | Extract from document by ID |
-| GET | `/extract/task/:task_id` | Task polling |
-| GET | `/extract/tasks` | List extraction tasks |
-| GET | `/proxy/openai/v1/models` | Model listing |
-| POST | `/proxy/openai/v1/chat/completions` | Chat proxy (SSE) |
-| POST | `/proxy/web-search` | Web search proxy |
 | POST | `/extract` | Submit extraction task |
 | POST | `/documents/:id/extract` | Extract from document by ID |
 | GET | `/tasks/:task_id` | Task polling |
 | GET | `/tasks` | List tasks |
 | POST | `/batch/load` | Batch import vertices/edges (upsert by name) |
 | POST | `/batch/delete` | Batch delete vertices/edges by name |
+| GET | `/proxy/openai/v1/models` | Model listing |
+| POST | `/proxy/openai/v1/chat/completions` | Chat proxy (SSE) |
+| POST | `/proxy/web-search` | Web search proxy |
 
 > Graph selection via `X-Graph-Name` header (all CRUD + Gremlin + search + batch + document endpoints).
 > No `?graph=` query parameter support. Default graph: `"graph0"` when header omitted.
@@ -314,6 +318,10 @@ Settings under `"rank"` key in settings.json:
 | `entity_tokens` | HashMap<(u8, u32), Vec<String>> | Entity → token strings (for hard delete cleanup) |
 | `vertex_names` | BTreeMap<String, u32> | Name → vertex ID |
 | `edge_names` | BTreeMap<String, u32> | Name → edge ID |
+| `vertex_label` | BTreeMap<String, Vec<MetaPointer>> | Label → vertex pointers |
+| `edge_label` | BTreeMap<String, Vec<MetaPointer>> | Label → edge pointers |
+| `vertex_properties` | HashMap<String, BTreeMap<String, Vec<MetaPointer>>> | Custom property key → value → vertex pointers (opt-in per key) |
+| `edge_properties` | HashMap<String, BTreeMap<String, Vec<MetaPointer>>> | Custom property key → value → edge pointers (opt-in per key) |
 
 ## Cluster Architecture
 
@@ -371,7 +379,9 @@ Decay ←─ spawn_rank_decay (background, every period secs)   checkpoint flush
 - **Time travel**: via `X-Time-Travel` HTTP header (microsecond timestamp). Applies to all Gremlin steps and search. No longer a dedicated step.
 - **traverse step**: BFS via score * decay * edge_strength; stops when score < activate.
 - **rank step**: source mode iterates rank index descending; filter mode sorts input by rank.
-- **Memory index rebuilt at startup** — scans data file blocks (bitmap → DataHeader → payload), populates vertices, edges, tokens, ranks, atime_index, adjacency.
+- **Memory index rebuilt at startup** — scans data file blocks (bitmap → DataHeader → payload), populates vertices, edges, tokens, ranks, atime_index, adjacency. When `config.json` has `indices.vertex_properties` / `edge_properties` keys, the builder also populates the custom property index during this single scan (no second pass needed).
+- **Custom property indices**: opt-in per key via `POST /indices/vertex|edge/properties`. Each key stores a `HashMap<key, BTreeMap<value, Vec<MetaPointer>>>` for fast property-based lookups. Registered keys are persisted in `config.json` under the `indices` key. After a crash + restart, `build_memory_index()` re-indexes registered properties during the data file scan — no manual re-registration required.
+- **PUT /graphs/:name/config syncs indices**: when the `indices.vertex_properties` or `indices.edge_properties` sections of the per-graph config change, the in-memory property index is automatically synchronized — new keys are registered and populated by scanning existing entities, while removed keys are unregistered and their index data is dropped.
 - **Lock order**: metadata → block → vertex → edge (enforced by helpers).
 - **Properties as JSON strings** inside binary blob (bincode incompatibility).
 - **`touch src/ui_serve.rs`** needed after frontend changes.
@@ -397,4 +407,4 @@ Decay ←─ spawn_rank_decay (background, every period secs)   checkpoint flush
 - [ ] master将连接的节点信息进行持久化: cluster/nodes.json
 - [ ] workder首次连接到master时检查每个图库的配置与master是否一致，如果不一致，报错退出，不允许加入集群
 - [ ] 如果workder离线，master将未被成功处理的节点广播请求持久化到数据目录下的文件：cluster/broadcast.bin，并在节点状态正常时进行重试
-- [ ] 自定义索引的配置进行持久化，保存到图库的config.json中（indecies.properties），如果数据库崩溃，则需要重配置文件中加载自定义索引配置，并扫描数据文件进行重建
+- [x] 自定义索引的配置进行持久化，保存到图库的config.json中（indecies.properties），如果数据库崩溃，则需要重配置文件中加载自定义索引配置，并扫描数据文件进行重建

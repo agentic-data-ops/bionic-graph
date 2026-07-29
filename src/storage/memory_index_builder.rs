@@ -4,19 +4,49 @@
 //! The scanner visits every occupied chunk in every data block via the
 //! block header's bitmap, reads the `DataHeader` (first 64 bytes of each
 //! record), deserializes the payload, and populates all index structures.
+//!
+//! When `vertex_prop_keys` / `edge_prop_keys` are provided, the scanner
+//! also populates the custom property index for those keys.
 
 use crate::graph::serialize::{deserialize_edge, deserialize_token, deserialize_vertex};
 use crate::storage::block_allocator::BlockAllocator;
 use crate::storage::memory_index::{MetaPointer, MemoryIndex};
 use crate::storage::data_file::DataFile;
-use crate::storage::types::{BlockHeader, ChunkType, DataHeader, DataStatus, StorageResult, BLOCK_SIZE, DATA_HEADER_SIZE};
+use crate::storage::types::{BlockHeader, ChunkType, DataHeader, DataStatus, PropertyValue, StorageResult, BLOCK_SIZE, DATA_HEADER_SIZE};
+
+/// Convert a PropertyValue to a string for property index lookup.
+fn prop_val_str(pv: &PropertyValue) -> String {
+    match pv {
+        PropertyValue::String(s) => s.clone(),
+        PropertyValue::Integer(i) => i.to_string(),
+        PropertyValue::Float(f) => f.to_string(),
+        PropertyValue::Boolean(b) => b.to_string(),
+        PropertyValue::List(_) | PropertyValue::Null => String::new(),
+    }
+}
 
 /// Scan the entire data file and build the in-memory index.
 ///
 /// Called once during `Graph::open()`. For large graphs this may take
 /// several seconds.
-pub fn build_memory_index(data_file: &DataFile) -> StorageResult<MemoryIndex> {
+///
+/// `vertex_prop_keys` and `edge_prop_keys` list property keys that should
+/// be indexed for fast lookup. Pass keys from the persisted `IndicesConfig`.
+pub fn build_memory_index(
+    data_file: &DataFile,
+    vertex_prop_keys: &[String],
+    edge_prop_keys: &[String],
+) -> StorageResult<MemoryIndex> {
     let mut mem = MemoryIndex::new();
+
+    // Pre-register property keys so the scanner can populate them.
+    for key in vertex_prop_keys {
+        mem.register_vertex_property(key);
+    }
+    for key in edge_prop_keys {
+        mem.register_edge_property(key);
+    }
+
     let block_count = data_file.block_count()?;
 
     for block_idx in 0..block_count {
@@ -71,6 +101,15 @@ pub fn build_memory_index(data_file: &DataFile) -> StorageResult<MemoryIndex> {
                             for l in &payload.labels {
                                 mem.add_vertex_label(l, ptr);
                             }
+                            // Index registered vertex properties.
+                            for (key, val) in &payload.properties {
+                                if mem.has_vertex_property(key) {
+                                    let s = prop_val_str(val);
+                                    if !s.is_empty() {
+                                        mem.insert_vertex_property(key, &s, ptr);
+                                    }
+                                }
+                            }
                         }
                         ChunkType::Edge => {
                             let payload = deserialize_edge(payload_bytes)?;
@@ -83,6 +122,15 @@ pub fn build_memory_index(data_file: &DataFile) -> StorageResult<MemoryIndex> {
                             }
                             for l in &payload.labels {
                                 mem.add_edge_label(l, ptr);
+                            }
+                            // Index registered edge properties.
+                            for (key, val) in &payload.properties {
+                                if mem.has_edge_property(key) {
+                                    let s = prop_val_str(val);
+                                    if !s.is_empty() {
+                                        mem.insert_edge_property(key, &s, ptr);
+                                    }
+                                }
                             }
                         }
                         ChunkType::Token => {
@@ -164,7 +212,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("data");
         let df = DataFile::open(&path).unwrap();
-        let mem = build_memory_index(&df).unwrap();
+        let mem = build_memory_index(&df, &[], &[]).unwrap();
         assert_eq!(mem.vertex_id.len(), 0);
         assert_eq!(mem.edge_id.len(), 0);
         assert_eq!(mem.token.len(), 0);
@@ -180,7 +228,7 @@ mod tests {
             write_vertex_data(&df, vid, &format!("vertex-{}", vid)).unwrap();
         }
 
-        let mem = build_memory_index(&df).unwrap();
+        let mem = build_memory_index(&df, &[], &[]).unwrap();
         assert_eq!(mem.vertex_id.len(), 3);
         for vid in 0..3 {
             assert!(mem.vertex_id.contains(vid));
