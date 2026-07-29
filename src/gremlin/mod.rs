@@ -1836,18 +1836,33 @@ Return ONLY valid JSON with this structure:
 pub async fn get_task_handler(
     State(state): State<AppState>,
     Path(task_id): Path<String>,
-) -> Result<Json<TaskResponse>, StatusCode> {
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    // Worker → Master forwarding (tasks run on master)
+    if let Some(resp) = try_forward_json(&state, "GET", &format!("/tasks/{}", task_id), None, None, None).await {
+        return resp;
+    }
     state.task_mgr.get_task(&task_id)
-        .map(|t| Json(t.into()))
+        .map(|t| {
+            let resp: TaskResponse = t.into();
+            Json(serde_json::to_value(resp).unwrap_or_default())
+        })
         .ok_or(StatusCode::NOT_FOUND)
 }
 
 /// List all tasks (newest first).
 pub async fn list_tasks_handler(
     State(state): State<AppState>,
-) -> Json<Vec<TaskResponse>> {
-    let tasks = state.task_mgr.list_tasks();
-    Json(tasks.into_iter().map(|t| t.into()).collect())
+) -> Json<serde_json::Value> {
+    // Worker → Master forwarding (tasks run on master)
+    if let Some(resp) = try_forward_json(&state, "GET", "/tasks", None, None, None).await {
+        match resp {
+            Ok(json) => return json,
+            Err(_) => return Json(serde_json::json!([])),
+        }
+    }
+    let tasks: Vec<TaskResponse> = state.task_mgr.list_tasks()
+        .into_iter().map(|t| t.into()).collect();
+    Json(serde_json::to_value(tasks).unwrap_or_default())
 }
 
 /// POST /documents/:id/extract — extract from a document by ID.
