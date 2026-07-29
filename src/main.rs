@@ -300,7 +300,7 @@ async fn main() {
                     loop {
                         let heartbeat = bionic_graph::cluster::node::ClusterMessage::Heartbeat {
                             node_id: "worker".to_string(),
-                            api_addr: settings.server.host.clone(),
+                            api_addr: format!("{}:{}", settings.server.host, settings.server.port),
                             cluster_addr: settings.cluster.bind_addr.clone(),
                             last_acked_seq: 0,
                         };

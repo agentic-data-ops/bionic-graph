@@ -49,6 +49,10 @@ pub(crate) async fn try_forward_json(
         let addr = state.master_api_addr.clone();
         (is_worker, addr)
     };
+    // During replay, skip forwarding to prevent recursion.
+    if crate::graph::graph::REPLAYING.load(Ordering::Relaxed) {
+        return None;
+    }
     if !is_worker { return None; }
     let master_addr = master_addr.as_ref()?;
     let req = crate::cluster::forward::ForwardedRequest {
@@ -94,6 +98,10 @@ pub(crate) async fn try_forward_status(
         let addr = state.master_api_addr.clone();
         (is_worker, addr)
     };
+    // During replay, skip forwarding to prevent recursion.
+    if crate::graph::graph::REPLAYING.load(Ordering::Relaxed) {
+        return None;
+    }
     if !is_worker { return None; }
     let master_addr = master_addr.as_ref()?;
     let req = crate::cluster::forward::ForwardedRequest {
@@ -1125,6 +1133,11 @@ pub async fn create_graph(
     if let Some(resp) = try_forward_json(
         &state, "POST", "/graphs", None, None, Some(&body_str),
     ).await {
+        // Forward succeeded — worker also creates the graph locally
+        // so it's available immediately (broadcast may lag).
+        if let Ok(g) = state.gm.get(&params.name) {
+            let _ = state.gm.update_meta(&params.name, &params.description, params.time_travel);
+        }
         return resp.map(|json| {
             Json(CreateGraphResponse {
                 name: json.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
@@ -1156,6 +1169,7 @@ pub async fn create_graph(
         Ok(_) => {
             // Persist the provided description / time_travel to the registry.
             let _ = state.gm.update_meta(&params.name, &params.description, params.time_travel);
+            broadcast_request_to_workers(&state.cluster_registry, "POST", "/graphs", None, Some(&body_str));
             Ok(Json(CreateGraphResponse {
                 name: params.name,
                 description: params.description,
@@ -1373,12 +1387,20 @@ pub async fn create_document(
     let body_str = serde_json::to_string(&body).unwrap_or_default();
     if let Some(resp) = try_forward_json(&state, "POST", "/documents", None, None, Some(&body_str)).await {
         return match resp {
-            Ok(json) => Json(CreateDocumentResponse {
-                id: json.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                title: json.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                created: json.get("created").and_then(|v| v.as_bool()).unwrap_or(false),
-            }),
-            Err(_) => Json(CreateDocumentResponse { id: String::new(), title: body.title.clone(), created: false }),
+            Ok(json) => {
+                let master_id = json.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                // Also create locally so the Worker has immediate access
+                if !master_id.is_empty() {
+                    let tags = body.tags.as_deref().unwrap_or(&[]);
+                    state.doc_mgr.add(&master_id, &body.title, &body.content, tags, "");
+                }
+                Json(CreateDocumentResponse {
+                    id: master_id,
+                    title: body.title.clone(),
+                    created: true,
+                })
+            }
+            Err(_) => Json(CreateDocumentResponse { id: String::new(), title: body.title, created: false }),
         };
     }
 
