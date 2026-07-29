@@ -1268,7 +1268,11 @@ pub async fn put_graph_config_handler(
         return status;
     }
     match state.gm.set_graph_config(&name, &body) {
-        Ok(_) => StatusCode::OK,
+        Ok(_) => {
+            let body_str = serde_json::to_string(&body).unwrap_or_default();
+            broadcast_request_to_workers(&state.cluster_registry, "PUT", &format!("/graphs/{}/config", name), None, Some(&body_str));
+            StatusCode::OK
+        }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
@@ -1384,6 +1388,7 @@ pub async fn create_document(
     let graph_name = "";
     let tags = body.tags.unwrap_or_default();
     state.doc_mgr.add(&id, &body.title, &body.content, &tags, graph_name);
+    broadcast_request_to_workers(&state.cluster_registry, "POST", &format!("/documents/{}", id), None, Some(&serde_json::json!({"title": &body.title}).to_string()));
     Json(CreateDocumentResponse {
         id,
         title: body.title,
@@ -1424,7 +1429,10 @@ pub async fn update_document(
     let tags = body.tags.as_deref().unwrap_or(&[]);
     // Document graph association is set only during extraction, not via update.
     match state.doc_mgr.update(&id, title, tags, None) {
-        Some(_) => Json(serde_json::json!({"status": "ok"})),
+        Some(_) => {
+            broadcast_request_to_workers(&state.cluster_registry, "PUT", &format!("/documents/{}", id), None, Some(&body_str));
+            Json(serde_json::json!({"status": "ok"}))
+        }
         None => Json(serde_json::json!({"status": "error", "message": "not found"})),
     }
 }
@@ -1496,6 +1504,7 @@ pub async fn delete_document(
     }
 
     if deleted {
+        broadcast_request_to_workers(&state.cluster_registry, "DELETE", &format!("/documents/{}", id), None, None);
         Json(serde_json::json!({"status": "ok"}))
     } else {
         Json(serde_json::json!({"status": "error", "message": "not found"}))
@@ -1513,7 +1522,7 @@ pub async fn get_document_content(
 // ── Extraction ──────────────────────────────────────────────────────────────
 
 /// Submit an extraction task.
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct SubmitExtractionBody {
     pub document_id: String,
 }
@@ -1530,6 +1539,18 @@ pub async fn submit_extraction(
     headers: axum::http::HeaderMap,
     Json(body): Json<SubmitExtractionBody>,
 ) -> Result<Json<SubmitExtractionResponse>, StatusCode> {
+    // Worker → Master forwarding
+    let body_str = serde_json::to_string(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
+    if let Some(resp) = try_forward_json(&state, "POST", "/extract", None, None, Some(&body_str)).await {
+        return resp.map(|json| {
+            Json(SubmitExtractionResponse {
+                task_id: json.get("task_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                status: json.get("status").and_then(|v| v.as_str()).unwrap_or("error").to_string(),
+                message: json.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            })
+        });
+    }
+
     let default_name = state.gm.get_default_name();
     let graph_name = headers
         .get("X-Graph-Name")

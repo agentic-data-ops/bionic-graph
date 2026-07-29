@@ -12,19 +12,19 @@ use axum::{extract::{Path, State}, Json};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::gremlin::AppState;
+use crate::gremlin::{AppState, try_forward_json, broadcast_request_to_workers};
 use crate::graph::graph::Graph;
 use crate::storage::memory_index::MetaPointer;
 use crate::storage::types::PropertyValue;
 
 // ── Request types ──────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct RegisterKeyBody {
     pub key: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct UnregisterKeysBody {
     pub keys: Vec<String>,
 }
@@ -89,6 +89,12 @@ pub async fn create_vertex_property_index(
     State(state): State<AppState>,
     Json(body): Json<RegisterKeyBody>,
 ) -> Json<serde_json::Value> {
+    // Worker → Master forwarding
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
+    if let Some(resp) = try_forward_json(&state, "POST", "/indices/vertex/properties", None, None, Some(&body_str)).await {
+        return match resp { Ok(json) => json, Err(_) => Json(serde_json::json!({"status": "error"})) };
+    }
+
     let graph = get_graph(&state);
     let already = {
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
@@ -100,6 +106,7 @@ pub async fn create_vertex_property_index(
         drop(mi);
         scan_vertex_property(&graph, &body.key);
     }
+    broadcast_request_to_workers(&state.cluster_registry, "POST", "/indices/vertex/properties", None, Some(&body_str));
     Json(serde_json::json!({
         "status": "ok", "key": body.key, "type": "vertex", "created": !already,
     }))
@@ -147,9 +154,14 @@ pub async fn delete_vertex_property_index(
     State(state): State<AppState>,
     Path(key): Path<String>,
 ) -> Json<serde_json::Value> {
+    // Worker → Master forwarding
+    if let Some(resp) = try_forward_json(&state, "DELETE", &format!("/indices/vertex/properties/{}", key), None, None, None).await {
+        return match resp { Ok(json) => json, Err(_) => Json(serde_json::json!({"status": "error"})) };
+    }
     let graph = get_graph(&state);
     let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
     let deleted = mi.unregister_vertex_property(&key);
+    broadcast_request_to_workers(&state.cluster_registry, "DELETE", &format!("/indices/vertex/properties/{}", key), None, None);
     Json(serde_json::json!({"status": "ok", "key": key, "deleted": deleted}))
 }
 
