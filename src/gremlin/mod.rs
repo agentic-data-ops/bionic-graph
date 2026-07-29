@@ -1584,6 +1584,7 @@ pub async fn submit_extraction(
     let graph_arc = graph.clone();
     let doc_mgr = state.doc_mgr.clone();
     let gname = graph_name.to_string();
+    let cluster_registry = state.cluster_registry.clone();
 
     tokio::spawn(async move {
         let tid = task_id_clone.clone();
@@ -1778,6 +1779,17 @@ Return ONLY valid JSON with this structure:
 
         let vertex_count = batch_result.vertices_created + batch_result.vertices_updated;
         let edge_count = batch_result.edges_created + batch_result.edges_updated;
+
+        // Broadcast the batch import to workers so they can replay the same data.
+        let batch_body = serde_json::json!({
+            "entities": batch_entities,
+            "relations": batch_relations,
+            "update_existing": true,
+        }).to_string();
+        broadcast_request_to_workers(
+            &cluster_registry, "POST", "/batch/load",
+            Some(&gname), Some(&batch_body),
+        );
 
         task_mgr.complete_step(&tid, "Importing graph data");
 
