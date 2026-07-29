@@ -58,7 +58,8 @@ class IdResponse(BaseModel):
 
 class MetaResponse(BaseModel):
     """Vertex/edge metadata from backend. Backend returns:
-    {atime: int, ctime: int, mtime: int, rank: int, status: int, success: bool, version: int}"""
+    {id, atime, ctime, mtime, rank, status, success, version}"""
+    id: int = 0
     atime: int
     ctime: int = 0
     mtime: int = 0

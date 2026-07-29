@@ -44,9 +44,10 @@ def test_list_graphs(client, mock):
 
 
 def test_create_graph(client, mock):
-    mock.post("/graphs").respond(json={"status": "ok"})
+    mock.post("/graphs").respond(json={"name": "test", "description": "desc", "time_travel": True, "created": True})
     resp = client.create_graph("test", "desc", True)
-    assert resp.status == "ok"
+    assert resp.name == "test"
+    assert resp.created is True
 
 
 def test_set_default_graph(client, mock):
@@ -104,7 +105,7 @@ def test_delete_vertex_force(client, mock):
 
 
 def test_get_vertex_meta(client, mock):
-    mock.get("/vertices/1/meta").respond(json={"id": 1, "rank": 5, "atime": "2026-01-01", "status": "active"})
+    mock.get("/vertices/1/meta").respond(json={"id": 1, "rank": 5, "atime": 1700000000000000, "ctime": 1700000000000000, "mtime": 1700000000000000, "status": 0, "version": 1, "success": True})
     meta = client.get_vertex_meta(1)
     assert meta.id == 1
     assert meta.rank == 5
@@ -135,7 +136,7 @@ def test_delete_edge(client, mock):
 
 
 def test_get_edge_meta(client, mock):
-    mock.get("/edges/1/meta").respond(json={"id": 1, "rank": 3, "atime": "2026-01-01", "status": "active"})
+    mock.get("/edges/1/meta").respond(json={"id": 1, "rank": 3, "atime": 1700000000000000, "ctime": 1700000000000000, "mtime": 1700000000000000, "status": 0, "version": 1, "success": True})
     meta = client.get_edge_meta(1)
     assert meta.id == 1
 
@@ -172,10 +173,10 @@ def test_search(client, mock):
 
 
 def test_list_documents(client, mock):
-    mock.get("/documents").respond(json={"documents": [{"id": "d1", "title": "Doc1", "tags": [], "created_at": "", "updated_at": "", "graph_name": ""}]})
+    mock.get("/documents").respond(json=[{"id": "d1", "title": "Doc1", "tags": [], "created_at": "", "updated_at": "", "graph_name": ""}])
     docs = client.list_documents()
-    assert len(docs.documents) == 1
-    assert docs.documents[0].title == "Doc1"
+    assert len(docs) == 1
+    assert docs[0].title == "Doc1"
 
 
 def test_create_document(client, mock):
@@ -211,7 +212,7 @@ def test_submit_extraction(client, mock):
 
 
 def test_get_extraction_task(client, mock):
-    mock.get("/extract/task/t1").respond(json={"task_id": "t1", "status": "completed", "steps": [], "overall_pct": 100.0})
+    mock.get("/tasks/t1").respond(json={"task_id": "t1", "status": "completed", "steps": [], "overall_pct": 100.0})
     task = client.get_extraction_task("t1")
     assert task.status == "completed"
 
