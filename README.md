@@ -2,7 +2,7 @@
 
 > **A Graph build for AI Agent**
 >
-> Pure Rust | Gremlin API | Chat UI | Full-text Search | Bionic Neuronal Spreads Traverse | Time Travel | Self-update Ranking |
+> Pure Rust | Gremlin API | Chat UI | Full-text Search | Bionic Neuronal Spreads Traverse | Time Travel | Self-update Ranking | Custom Property Index |
 
 ---
 
@@ -55,9 +55,9 @@ Bionic-Graph is built from the ground up with Rust, organized in five layers fro
 | Layer | Module | Key Features |
 |-------|--------|-------------|
 | **Frontend** | `src/ui/` | React 19 + vis-network. Chat UI, graph visualization, knowledge base management. All LLM calls proxied through backend. |
-| **REST API** | `src/gremlin/` | 45+ axum routes: graph CRUD, Gremlin queries, settings, document extraction, OpenAI-compatible proxy, web search proxy, async task tracking. |
-| **Graph Engine** | `src/graph/` | Gremlin pipeline (23 steps), jieba-rs tokenizer, lock-safe CRUD with WAL, rank/atime tracking, time travel. |
-| **In-Memory Index** | `src/storage/` | BTreeMap (by ID), TokenMap (prefix+word), RankIndex, AdjacencyIndex. Rebuilt from disk at startup. |
+| **REST API** | `src/gremlin/` | 55+ axum routes: graph CRUD, Gremlin queries, settings, document extraction, custom property indices, OpenAI-compatible proxy, web search proxy, async task tracking. |
+| **Graph Engine** | `src/graph/` | Gremlin pipeline (24 steps), jieba-rs tokenizer, lock-safe CRUD with WAL, rank/atime tracking, time travel, custom property indices. |
+| **In-Memory Index** | `src/storage/` | BTreeMap (by ID), TokenMap (prefix+word), RankIndex, AdjacencyIndex, opt-in property key index. Rebuilt from disk at startup. |
 | **Storage Engine** | `src/storage/` | 16KB block-based, 64B fixed records, LRU BlockCache (64MB), WAL redo log with crash recovery, deadlock-free RwLock pools. |
 | **Python SDK** | `sdk/python/` | Full REST API client. CLI tool `bgcli` with 12 topics, interactive chat with web + graph search. |
 
@@ -588,7 +588,7 @@ curl localhost:8080/tasks/<task_id>
 | `PUT` | `/graphs` | Set default graph |
 | `DELETE` | `/graphs/:name` | Delete a graph |
 | `PUT` | `/graphs/:name` | Update graph metadata |
-| `GET/PUT` | `/graphs/:name/config` | Per-graph storage config |
+| `GET/PUT` | `/graphs/:name/config` | Per-graph storage, lock & indices config |
 | `POST` | `/gremlin` | Gremlin pipeline query |
 | `GET` | `/search` | Token search shortcut (`?text=&mode=&limit=`) |
 | `POST` | `/vertices` | Create a vertex |
@@ -605,6 +605,10 @@ curl localhost:8080/tasks/<task_id>
 | `GET/PUT` | `/settings/web-search` | Web search provider config |
 | `POST` | `/proxy/web-search` | Web search proxy |
 | `GET/POST/DELETE` | `/settings/tokenizer/words` | List / add / remove custom tokenizer words |
+| `POST/GET/DELETE` | `/indices/vertex/properties` | Register / list / unregister vertex property index keys |
+| `GET/DELETE` | `/indices/vertex/properties/:key` | Show stats / unregister a specific vertex property key |
+| `POST/GET/DELETE` | `/indices/edge/properties` | Register / list / unregister edge property index keys |
+| `GET/DELETE` | `/indices/edge/properties/:key` | Show stats / unregister a specific edge property key |
 | `GET` | `/documents` | List documents |
 | `POST` | `/documents` | Create a document |
 | `GET/PUT/DELETE` | `/documents/:id` | Get/update/delete document metadata |
@@ -683,9 +687,10 @@ src/
 │   ├── tokenizer.rs           # jieba-rs tokenizer
 │   └── tests.rs               # Integration tests
 ├── gremlin/                   # REST API (axum)
-│   ├── mod.rs                 # 45+ route handlers
+│   ├── mod.rs                 # 55+ route handlers
 │   ├── settings.rs            # /settings/graph/search, /settings/llm, /settings/graph/rank, /settings/web-search, /web-search/proxy
-│   └── tokenizer_settings.rs  # /settings/tokenizer/words (GET/POST/DELETE)
+│   ├── tokenizer_settings.rs  # /settings/tokenizer/words (GET/POST/DELETE)
+│   └── indices.rs             # /indices/vertex|edge/properties (POST/GET/DELETE)
 ├── extract/                   # Document extraction pipeline
 │   ├── config.rs, document.rs, extraction.rs
 │   ├── llm_client.rs, task_manager.rs
@@ -728,6 +733,7 @@ src/
 9. **Multi-graph** — multiple named graphs, isolated `data/graphs/<name>/` directories
 10. **Fine-grained concurrency** — striped RwLock pools with deadlock-free ordering
 11. **Web Search** — backend proxy for web search, configurable providers (Bing, Baidu API). LLM extracts keywords before searching for better results.
+12. **Custom Property Indices** — opt-in per-key property index on vertices/edges, persisted in per-graph `config.json`. Crash-proof: auto-rebuilt from data file on restart.
 12. **Python SDK** — `pip install git+https://github.com/agentic-data-ops/bionic-graph.git#subdirectory=sdk/python`, full REST API client with CLI tool `bgcli` and interactive chat mode.
 13. **Batch operations** — `/batch/load` and `/batch/delete` for bulk upsert/delete by vertex name.
 14. **Examples** — self-awareness KG (`examples/self_awareness/`) and social activities KG (`examples/social_activities/`) with LLM-driven load/plan/act pipelines.
