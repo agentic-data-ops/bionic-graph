@@ -638,34 +638,39 @@ def vertex_property():
 @click.option("--graph", default=None, help="Graph name")
 @click.pass_context
 def vp_create(ctx, key, graph):
-    _output(ctx.obj["client"].create_vertex_property_index(key, graph), ctx.obj["fmt"])
+    c = _client(ctx)
+    _output(c.create_vertex_property_index(key, graph), _fmt(ctx))
 
 @vertex_property.command("show")
 @click.argument("key")
 @click.option("--graph", default=None, help="Graph name")
 @click.pass_context
 def vp_show(ctx, key, graph):
-    _output(ctx.obj["client"].show_vertex_property_index(key, graph), ctx.obj["fmt"])
+    c = _client(ctx)
+    _output(c.show_vertex_property_index(key, graph), _fmt(ctx))
 
 @vertex_property.command("list")
 @click.option("--graph", default=None, help="Graph name")
 @click.pass_context
 def vp_list(ctx, graph):
-    _output(ctx.obj["client"].list_vertex_property_indices(graph), ctx.obj["fmt"])
+    c = _client(ctx)
+    _output(c.list_vertex_property_indices(graph), _fmt(ctx))
 
 @vertex_property.command("delete")
 @click.argument("key")
 @click.option("--graph", default=None, help="Graph name")
 @click.pass_context
 def vp_delete(ctx, key, graph):
-    _output(ctx.obj["client"].delete_vertex_property_index(key, graph), ctx.obj["fmt"])
+    c = _client(ctx)
+    _output(c.delete_vertex_property_index(key, graph), _fmt(ctx))
 
 @vertex_property.command("delete-batch")
 @click.option("--keys", required=True, callback=_parse_json_arg, help='JSON array of keys')
 @click.option("--graph", default=None, help="Graph name")
 @click.pass_context
 def vp_delete_batch(ctx, keys, graph):
-    _output(ctx.obj["client"].delete_vertex_property_indices(keys, graph), ctx.obj["fmt"])
+    c = _client(ctx)
+    _output(c.delete_vertex_property_indices(keys, graph), _fmt(ctx))
 
 @index.group(name="edge-property")
 def edge_property():
@@ -676,34 +681,39 @@ def edge_property():
 @click.option("--graph", default=None, help="Graph name")
 @click.pass_context
 def ep_create(ctx, key, graph):
-    _output(ctx.obj["client"].create_edge_property_index(key, graph), ctx.obj["fmt"])
+    c = _client(ctx)
+    _output(c.create_edge_property_index(key, graph), _fmt(ctx))
 
 @edge_property.command("show")
 @click.argument("key")
 @click.option("--graph", default=None, help="Graph name")
 @click.pass_context
 def ep_show(ctx, key, graph):
-    _output(ctx.obj["client"].show_edge_property_index(key, graph), ctx.obj["fmt"])
+    c = _client(ctx)
+    _output(c.show_edge_property_index(key, graph), _fmt(ctx))
 
 @edge_property.command("list")
 @click.option("--graph", default=None, help="Graph name")
 @click.pass_context
 def ep_list(ctx, graph):
-    _output(ctx.obj["client"].list_edge_property_indices(graph), ctx.obj["fmt"])
+    c = _client(ctx)
+    _output(c.list_edge_property_indices(graph), _fmt(ctx))
 
 @edge_property.command("delete")
 @click.argument("key")
 @click.option("--graph", default=None, help="Graph name")
 @click.pass_context
 def ep_delete(ctx, key, graph):
-    _output(ctx.obj["client"].delete_edge_property_index(key, graph), ctx.obj["fmt"])
+    c = _client(ctx)
+    _output(c.delete_edge_property_index(key, graph), _fmt(ctx))
 
 @edge_property.command("delete-batch")
 @click.option("--keys", required=True, callback=_parse_json_arg, help='JSON array of keys')
 @click.option("--graph", default=None, help="Graph name")
 @click.pass_context
 def ep_delete_batch(ctx, keys, graph):
-    _output(ctx.obj["client"].delete_edge_property_indices(keys, graph), ctx.obj["fmt"])
+    c = _client(ctx)
+    _output(c.delete_edge_property_indices(keys, graph), _fmt(ctx))
 
 
 # ── proxy ──────────────────────────────────────────────────────────

@@ -83,6 +83,79 @@ def test_graph_set_config(runner, mock):
     assert "ok" in result.output
 
 
+# ── Property Index ────────────────────────────────────────────────
+
+
+def test_index_vp_create(runner, mock):
+    mock.post("/indices/vertex/properties").respond(json={"status": "ok", "key": "age", "created": True})
+    result = runner.invoke(main, ["--base-url", BASE_URL, "index", "vertex-property", "create", "--key", "age"])
+    assert result.exit_code == 0
+    assert "ok" in result.output
+
+
+def test_index_vp_list(runner, mock):
+    mock.get("/indices/vertex/properties").respond(json={"status": "ok", "indices": [{"key": "age", "total_entities": 3}]})
+    result = runner.invoke(main, ["--base-url", BASE_URL, "index", "vertex-property", "list"])
+    assert result.exit_code == 0
+    assert "age" in result.output
+
+
+def test_index_vp_show(runner, mock):
+    mock.get("/indices/vertex/properties/age").respond(json={"status": "ok", "key": "age", "total_entities": 3})
+    result = runner.invoke(main, ["--base-url", BASE_URL, "index", "vertex-property", "show", "age"])
+    assert result.exit_code == 0
+    assert "age" in result.output
+
+
+def test_index_vp_delete(runner, mock):
+    mock.delete("/indices/vertex/properties/age").respond(json={"status": "ok", "deleted": True})
+    result = runner.invoke(main, ["--base-url", BASE_URL, "index", "vertex-property", "delete", "age"])
+    assert result.exit_code == 0
+    assert "ok" in result.output
+
+
+def test_index_vp_delete_batch(runner, mock):
+    mock.delete("/indices/vertex/properties").respond(json={"status": "ok", "deleted": ["a", "b"]})
+    result = runner.invoke(main, ["--base-url", BASE_URL, "index", "vertex-property", "delete-batch", "--keys", '["a","b"]'])
+    assert result.exit_code == 0
+    assert "ok" in result.output
+
+
+def test_index_ep_create(runner, mock):
+    mock.post("/indices/edge/properties").respond(json={"status": "ok", "key": "weight", "created": True})
+    result = runner.invoke(main, ["--base-url", BASE_URL, "index", "edge-property", "create", "--key", "weight"])
+    assert result.exit_code == 0
+    assert "ok" in result.output
+
+
+def test_index_ep_list(runner, mock):
+    mock.get("/indices/edge/properties").respond(json={"status": "ok", "indices": [{"key": "weight", "total_entities": 2}]})
+    result = runner.invoke(main, ["--base-url", BASE_URL, "index", "edge-property", "list"])
+    assert result.exit_code == 0
+    assert "weight" in result.output
+
+
+def test_index_ep_show(runner, mock):
+    mock.get("/indices/edge/properties/weight").respond(json={"status": "ok", "key": "weight", "total_entities": 2})
+    result = runner.invoke(main, ["--base-url", BASE_URL, "index", "edge-property", "show", "weight"])
+    assert result.exit_code == 0
+    assert "weight" in result.output
+
+
+def test_index_ep_delete(runner, mock):
+    mock.delete("/indices/edge/properties/weight").respond(json={"status": "ok", "deleted": True})
+    result = runner.invoke(main, ["--base-url", BASE_URL, "index", "edge-property", "delete", "weight"])
+    assert result.exit_code == 0
+    assert "ok" in result.output
+
+
+def test_index_ep_delete_batch(runner, mock):
+    mock.delete("/indices/edge/properties").respond(json={"status": "ok", "deleted": ["x", "y"]})
+    result = runner.invoke(main, ["--base-url", BASE_URL, "index", "edge-property", "delete-batch", "--keys", '["x","y"]'])
+    assert result.exit_code == 0
+    assert "ok" in result.output
+
+
 # ── Vertex ─────────────────────────────────────────────────────────
 
 
