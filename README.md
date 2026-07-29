@@ -58,7 +58,7 @@ Bionic-Graph is built from the ground up with Rust, organized in five layers fro
 | **REST API** | `src/gremlin/` | 55+ axum routes: graph CRUD, Gremlin queries, settings, document extraction, custom property indices, OpenAI-compatible proxy, web search proxy, async task tracking. |
 | **Graph Engine** | `src/graph/` | Gremlin pipeline (24 steps), jieba-rs tokenizer, lock-safe CRUD with WAL, rank/atime tracking, time travel, custom property indices. |
 | **In-Memory Index** | `src/storage/` | BTreeMap (by ID), TokenMap (prefix+word), RankIndex, AdjacencyIndex, opt-in property key index. Rebuilt from disk at startup. |
-| **Storage Engine** | `src/storage/` | 16KB block-based, 64B fixed records, LRU BlockCache (64MB), WAL redo log with crash recovery, deadlock-free RwLock pools. |
+| **Storage Engine** | `src/storage/` | 16KB block-based, 64B fixed records, LRU BlockCache (64MB), WAL redo log with size/time rotation + async background dirty-block flush on rotation, deadlock-free RwLock pools. |
 | **Python SDK** | `sdk/python/` | Full REST API client. CLI tool `bgcli` with 12 topics, interactive chat with web + graph search. |
 
 ### How it works — a search flow
@@ -681,7 +681,7 @@ src/
 │   ├── bitmap_file.rs         # Block-level free space tracking
 │   ├── block_allocator.rs     # Chunk-level allocator
 │   ├── block_cache.rs         # LRU cache with dirty tracking
-│   ├── redo_log.rs            # WAL: FIFO queue + batch writer, rotation, CRC32, replay
+│   ├── redo_log.rs            # WAL: FIFO queue + batch writer, rotation, background flush, CRC32, replay
 │   ├── memory_index.rs        # In-memory BTreeMap/HashMap indexes
 │   └── memory_index_builder.rs # Index rebuild by scanning data file at startup
 ├── lock/                      # Concurrency lock manager

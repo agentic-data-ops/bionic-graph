@@ -173,9 +173,9 @@ pub struct Graph {
     pub dir: PathBuf,
 
     // ── Storage engine ───────────────────────────────────────────────────
-    pub data_file: DataFile,
+    pub data_file: Arc<DataFile>,
     pub bitmap_file: RwLock<BitmapFile>,
-    pub block_cache: ShardedBlockCache,
+    pub block_cache: Arc<ShardedBlockCache>,
     pub redo_log: RedoLog,
 
     // ── In-memory index ──────────────────────────────────────────────────
@@ -213,17 +213,18 @@ impl Graph {
         }
 
         // ── Open storage files ───────────────────────────────────────────
-        let data_file = DataFile::open(graph_dir.join("data"))?;
+        let data_file = Arc::new(DataFile::open(graph_dir.join("data"))?);
         let data_blocks = data_file.block_count()?;
         let bitmap_file = RwLock::new(BitmapFile::open(graph_dir.join("bitmap"), data_blocks, config.storage.pre_alloc_blocks)?);
         // Convert MB to block count (each block is 16 KB)
         let block_cache_capacity = config.storage.lru_cache_size_mb * 1024 * 1024 / crate::storage::types::BLOCK_SIZE;
-        let block_cache = ShardedBlockCache::new(block_cache_capacity, crate::storage::block_cache::DEFAULT_SHARD_COUNT);
+        let block_cache = Arc::new(ShardedBlockCache::new(block_cache_capacity, crate::storage::block_cache::DEFAULT_SHARD_COUNT));
         let redo_log = RedoLog::open_with_config(
             &graph_dir,
             config.storage.log_rotation_size_mb * 1024 * 1024,
             config.storage.log_rotation_age_secs,
         )?;
+
         // ── Rebuild in-memory index ──────────────────────────────────────
         let memory_index = RwLock::new(
             match MemoryIndex::load_from_dir(&graph_dir.join("index"))? {
@@ -289,6 +290,20 @@ impl Graph {
         // during this session works (the file stays on disk with a real
         // directory entry).
         graph.redo_log.renew()?;
+
+        // Wire up the flush handler: before WAL rotation deletes old files,
+        // flush all dirty blocks so their data survives in the data file.
+        {
+            let bc = graph.block_cache.clone();
+            let df = graph.data_file.clone();
+            graph.redo_log.set_flush_handler(move || {
+                bc.flush_dirty(&|idx, data| {
+                    df.write_block(idx, data)?;
+                    Ok(())
+                })?;
+                Ok(())
+            });
+        }
 
         Ok(graph)
     }

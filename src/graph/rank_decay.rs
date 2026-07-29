@@ -85,12 +85,18 @@ fn try_decay(
             mi.atime.insert(now, *ptr);
             drop(mi);
 
-            // Persist to DataHeader in-place (no WAL — rank decay is soft state).
+            // Persist to DataHeader in-place.
             let mut hdr = dh;
             hdr.rank = new_rank;
             hdr.atime = now;
             hdr.mtime = now;
             let _ = crate::graph::crud::update_header_in_place(graph, ptr, &hdr);
+
+            // Write WAL entry for crash consistency.
+            if !crate::graph::crud::REPLAYING.load(std::sync::atomic::Ordering::Relaxed) {
+                let data = bincode::serialize(&(new_rank, now)).unwrap_or_default();
+                let _ = graph.redo_log.append(crate::storage::types::OpType::VertexMetaUpdate, hdr.entity_id as u64, &data);
+            }
         }
         crate::storage::types::ChunkType::Edge => {
             let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
@@ -106,6 +112,12 @@ fn try_decay(
             hdr.atime = now;
             hdr.mtime = now;
             let _ = crate::graph::crud::update_header_in_place(graph, ptr, &hdr);
+
+            // Write WAL entry for crash consistency.
+            if !crate::graph::crud::REPLAYING.load(std::sync::atomic::Ordering::Relaxed) {
+                let data = bincode::serialize(&(new_rank, now)).unwrap_or_default();
+                let _ = graph.redo_log.append(crate::storage::types::OpType::EdgeMetaUpdate, hdr.entity_id as u64, &data);
+            }
         }
         _ => return Err("unknown chunk type".to_string()),
     }

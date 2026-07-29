@@ -231,7 +231,7 @@ pub fn get_edge(graph: &Graph, eid: u32) -> StorageResult<Option<EdgePayload>> {
 
 /// Update a vertex's metadata (rank, atime). Name changes go through
 /// `update_vertex` (full payload rewrite) instead.
-/// Updates are persisted to the DataHeader in-place (no WAL entry needed).
+/// Writes a WAL entry (OpType::VertexMetaUpdate) for crash consistency.
 pub fn update_vertex_meta(graph: &Graph, vid: u32, new_rank: Option<u32>, new_atime: Option<u64>) -> StorageResult<()> {
     let ptr = {
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
@@ -261,7 +261,7 @@ pub fn update_vertex_meta(graph: &Graph, vid: u32, new_rank: Option<u32>, new_at
         }
     }
 
-    // Persist to DataHeader in-place (no WAL — rank/atime are soft state).
+    // Persist to DataHeader in-place.
     if let Ok(mut hdr) = read_header_by_ptr(graph, &ptr) {
         hdr.rank = rank;
         hdr.atime = atime;
@@ -269,11 +269,18 @@ pub fn update_vertex_meta(graph: &Graph, vid: u32, new_rank: Option<u32>, new_at
         let _ = update_header_in_place(graph, &ptr, &hdr);
     }
 
+    // Write WAL entry for crash consistency.
+    if !REPLAYING.load(Ordering::Relaxed) {
+        let data = bincode::serialize(&(rank, atime)).unwrap_or_default();
+        let _ = graph.redo_log.append(OpType::VertexMetaUpdate, vid as u64, &data);
+    }
+
     Ok(())
 }
 
 /// Update an edge's metadata (rank, atime). Name changes go through
 /// `update_edge` (full payload rewrite) instead.
+/// Writes a WAL entry (OpType::EdgeMetaUpdate) for crash consistency.
 pub fn update_edge_meta(graph: &Graph, eid: u32, new_rank: Option<u32>, new_atime: Option<u64>) -> StorageResult<()> {
     let ptr = {
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
@@ -309,6 +316,12 @@ pub fn update_edge_meta(graph: &Graph, eid: u32, new_rank: Option<u32>, new_atim
         hdr.atime = atime;
         hdr.mtime = atime;
         let _ = update_header_in_place(graph, &ptr, &hdr);
+    }
+
+    // Write WAL entry for crash consistency.
+    if !REPLAYING.load(Ordering::Relaxed) {
+        let data = bincode::serialize(&(rank, atime)).unwrap_or_default();
+        let _ = graph.redo_log.append(OpType::EdgeMetaUpdate, eid as u64, &data);
     }
 
     Ok(())
@@ -730,6 +743,18 @@ pub fn replay_entry(graph: &Graph, entry: &RedoLogEntry) -> StorageResult<()> {
         OpType::TokenCreate | OpType::TokenUpdate | OpType::TokenDelete => {
             // Tokens are implicitly created by vertex/edge CRUD replay.
         }
+        OpType::VertexMetaUpdate => {
+            let id = entry.op_id as u32;
+            if let Ok((rank, atime)) = bincode::deserialize::<(u32, u64)>(&entry.data) {
+                replay_vertex_meta_update(graph, id, rank, atime)?;
+            }
+        }
+        OpType::EdgeMetaUpdate => {
+            let id = entry.op_id as u32;
+            if let Ok((rank, atime)) = bincode::deserialize::<(u32, u64)>(&entry.data) {
+                replay_edge_meta_update(graph, id, rank, atime)?;
+            }
+        }
     }
     Ok(())
 }
@@ -937,6 +962,76 @@ fn replay_delete_token(graph: &Graph, token_str: &str) -> StorageResult<()> {
     let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
     mi.token.remove_token(token_str);
     Ok(())
+}
+
+/// Replay helper: apply vertex metadata update (rank, atime) from WAL.
+fn replay_vertex_meta_update(graph: &Graph, vid: u32, rank: u32, atime: u64) -> StorageResult<()> {
+    let ptr = {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        mi.vertex_id.get(vid).copied()
+    };
+    match ptr {
+        Some(p) => {
+            // Apply the meta change in-place.
+            if let Ok(mut hdr) = read_header_by_ptr(graph, &p) {
+                let old_rank = hdr.rank;
+                let old_atime = hdr.atime;
+                hdr.rank = rank;
+                hdr.atime = atime;
+                hdr.mtime = atime;
+                let _ = update_header_in_place(graph, &p, &hdr);
+                // Sync memory index.
+                let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+                if old_rank != rank {
+                    mi.rank.remove(old_rank, &p);
+                    mi.rank.insert(rank, p);
+                }
+                if old_atime != atime {
+                    mi.atime.remove(old_atime, &p);
+                    mi.atime.insert(atime, p);
+                }
+            }
+            Ok(())
+        }
+        None => {
+            log::warn!("replay_vertex_meta_update: vertex {} not found, skipping", vid);
+            Ok(())
+        }
+    }
+}
+
+/// Replay helper: apply edge metadata update (rank, atime) from WAL.
+fn replay_edge_meta_update(graph: &Graph, eid: u32, rank: u32, atime: u64) -> StorageResult<()> {
+    let ptr = {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        mi.edge_id.get(eid).copied()
+    };
+    match ptr {
+        Some(p) => {
+            if let Ok(mut hdr) = read_header_by_ptr(graph, &p) {
+                let old_rank = hdr.rank;
+                let old_atime = hdr.atime;
+                hdr.rank = rank;
+                hdr.atime = atime;
+                hdr.mtime = atime;
+                let _ = update_header_in_place(graph, &p, &hdr);
+                let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+                if old_rank != rank {
+                    mi.rank.remove(old_rank, &p);
+                    mi.rank.insert(rank, p);
+                }
+                if old_atime != atime {
+                    mi.atime.remove(old_atime, &p);
+                    mi.atime.insert(atime, p);
+                }
+            }
+            Ok(())
+        }
+        None => {
+            log::warn!("replay_edge_meta_update: edge {} not found, skipping", eid);
+            Ok(())
+        }
+    }
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
@@ -1340,6 +1435,17 @@ fn update_rank_and_atime(graph: &Graph, id: u32, ptr: &MetaPointer) -> StorageRe
 
     // Persist to DataHeader in-place.
     update_header_in_place(graph, ptr, &header)?;
+
+    // Write WAL entry for crash consistency.
+    if !REPLAYING.load(Ordering::Relaxed) {
+        let data = bincode::serialize(&(new_rank, now)).unwrap_or_default();
+        let op_type = match header.chunk_type {
+            crate::storage::types::ChunkType::Vertex => OpType::VertexMetaUpdate,
+            crate::storage::types::ChunkType::Edge => OpType::EdgeMetaUpdate,
+            _ => return Ok(()),
+        };
+        let _ = graph.redo_log.append(op_type, id as u64, &data);
+    }
 
     Ok(())
 }

@@ -34,7 +34,8 @@ src/
 │   ├── block_cache.rs       # LRU cache with dirty tracking (default 4096 blocks = 64MB)
 │   ├── redo_log.rs          # WAL: FIFO queue + background batch writer (≤128 entries),
 │   │                        #   size (64MB) + time (15min, configurable) rotation,
-│   │                        #   checkpoint protocol, CRC32, replay
+│   │                        #   async background flush on rotation (刷脏块+删旧WAL),
+│   │                        #   CRC32, replay
 │   ├── memory_index.rs      # In-memory BTreeMap/HashMap indexes (vertex, edge,
 │   │                        #   token, rank, atime, adjacency)
 │   └── memory_index_builder.rs  # Rebuild in-memory index by scanning data file at startup
@@ -364,21 +365,32 @@ Touch（rank/atime 读取更新）：
 
 ```
 Update → update_vertex/edge: rank += 1, atime = now
-         DataHeader updated in-place (block cache, mark dirty) ──┐
-                                                                 │
-Read → execute_gremlin → process_touch ───► get_vertex_locked    │
-       (async, via settings.auto_inc_rank_when_read)             │
-              │                                                  │
-              ├── in-place DataHeader chunk update               │
-              │       (no WAL entry needed)                      │
-              │                                                  │
-              └── (cluster mode) broadcast TouchRequest ─────────┤
-                   (direct HTTP, no WAL)                         │
-                                                                 ▼
-Decay ←─ spawn_rank_decay (background, every period secs)  checkpoint flushes
-       └── atime_index.range_up_to(threshold)              dirty blocks to disk
-           └── rank = rank.saturating_sub(1)
-               └── update_header_in_place (no WAL)
+         WAL: OpType::VertexUpdate / EdgeUpdate (full payload)
+
+Read (implicit touch) → update_rank_and_atime
+    via settings.auto_inc_rank_when_read
+         ├── DataHeader in-place update (block cache, mark dirty)
+         └── WAL: OpType::VertexMetaUpdate / EdgeMetaUpdate (rank, atime)
+
+Explicit PUT meta → update_vertex_meta / update_edge_meta
+         ├── DataHeader in-place update
+         └── WAL: OpType::VertexMetaUpdate / EdgeMetaUpdate (rank, atime)
+
+Decay → spawn_rank_decay (background, every period secs)
+         ├── atime_index.range_up_to(threshold)
+         ├── rank = rank.saturating_sub(1)
+         ├── update_header_in_place (DataHeader dirty)
+         └── WAL: OpType::VertexMetaUpdate / EdgeMetaUpdate (rank, atime)
+
+Cluster touch broadcast (read报告 + 中继):
+         Worker→Master POST /cluster/touch (直接HTTP，无WAL)
+         Master→所有Worker 中继广播 TouchRequest (直接HTTP，无WAL)
+
+Periodic flush:
+         └── block_cache 脏块被以下机制刷盘:
+              ├── LRU 驱逐 (shard 满时自动)
+              ├── Graph::flush() (手动/close时)
+              └── WAL rotation: 后台线程 flush_dirty() → 刷脏块 → 删旧WAL
 ```
 
 ## Watch out for
@@ -401,8 +413,10 @@ Decay ←─ spawn_rank_decay (background, every period secs)  checkpoint flushe
 - **Properties as JSON strings** inside binary blob (bincode incompatibility).
 - **`touch src/ui_serve.rs`** needed after frontend changes.
 - **Extraction**: uses `crate::graph::batch::batch_import()` internally — upserts vertices by name, edges by (source_name, target_name, name). SYSTEM_PROMPT tells LLM to output `name`, `labels`, `keywords`, `properties` for entities; and `source`, `target`, `name`, `labels`, `keywords`, `strength`, `properties` for relations.
-- **WAL batch writer**: `append()` sends via `mpsc::channel` to background thread. Caller blocks on Condvar until durability confirmed.
-- **SIGINT/SIGTERM**: server calls `GraphManager::close_all()` → flushes dirty blocks + checkpoints all WALs.
+- **WAL batch writer**: `append()` encodes the entry and sends via `mpsc::channel` to background thread. Caller blocks on Condvar until the writer commits the batch and advances epoch.
+- **WAL rotation**: Size (default 64MB) or time (default 900s) triggers rotation. Writer creates new WAL file, syncs old one, spawns **background thread** to flush `block_cache` dirty blocks via `flush_dirty()`, then deletes old WAL file. Writer continues processing new entries immediately (not blocked by flush).
+- **Rank/Atime WAL**: All rank/atime update paths (`update_rank_and_atime`, `update_vertex_meta`, `update_edge_meta`, `rank_decay`) now write WAL entries (`OpType::VertexMetaUpdate` / `EdgeMetaUpdate`, bincode-serialized `(rank, atime)`). Crash consistency is guaranteed via WAL replay on startup.
+- **SIGINT/SIGTERM**: server calls `GraphManager::close_all()` → flushes dirty blocks + syncs + renews WAL.
 - **`Graph::close()`**: calls `flush()` + `sync()` + `renew()`.
 - **Cluster mode**: requires `"role": "master"` or `"role": "worker"` in settings. Heartbeat every 5s by default. **Worker `node_id` 必须唯一**：多个 worker 必须使用不同的 node_id（源码生成 `worker@{bind_addr}`），否则 master 的 HashMap 中后注册者覆盖前者。
 - **Touch broadcast**: 读取触发 rank/atime 更新时，Worker→Master 报告 + Master 中继广播到所有 Worker。直接 HTTP POST `TouchRequest{vertex_ids, edge_ids}` 到各节点的 `/cluster/touch`，**不走 WAL**。
@@ -425,3 +439,5 @@ Decay ←─ spawn_rank_decay (background, every period secs)  checkpoint flushe
 - [ ] worker首次连接到master时检查每个图库的配置与master是否一致，如果不一致，报错退出，不允许加入集群
 - [ ] 如果worker离线，master将未被成功处理的节点广播请求持久化到数据目录下的文件：cluster/broadcast.bin，并在节点状态正常时进行重试
 - [x] 自定义索引的配置进行持久化，保存到图库的config.json中（indecies.properties），如果数据库崩溃，则需要重配置文件中加载自定义索引配置，并扫描数据文件进行重建
+- [x] 检查下顶点和边的元数据更新有没有记录日志，能否保证崩溃一致性 — 已全部添加 WAL（VertexMetaUpdate / EdgeMetaUpdate），SIGKILL 测试通过
+- [x] 修复log checkpoint刷盘机制 — log rotation 时后台线程异步刷脏块，不阻塞 writer

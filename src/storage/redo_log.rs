@@ -120,6 +120,10 @@ pub struct RedoLog {
     flush_checker: Mutex<Option<JoinHandle<()>>>,
     /// Stop signal for the flush checker thread.
     flush_checker_stop: Arc<AtomicBool>,
+    /// Callback to flush dirty data blocks before log rotation.
+    /// Set after Graph creates its block_cache, allowing the WAL writer
+    /// to ensure all dirty blocks are on disk before deleting old WAL files.
+    flush_dirty: Arc<Mutex<Option<Box<dyn Fn() -> StorageResult<()> + Send>>>>,
 }
 
 impl RedoLog {
@@ -162,11 +166,13 @@ impl RedoLog {
 
         let dir_buf = dir.to_path_buf();
         let state_clone = state.clone();
+        let flush_dirty: Arc<Mutex<Option<Box<dyn Fn() -> StorageResult<()> + Send>>>> = Arc::new(Mutex::new(None));
+        let flush_dirty_writer = flush_dirty.clone();
 
         let handle = thread::Builder::new()
             .name("bgraph-wal-writer".into())
             .spawn(move || {
-                writer_main_loop(rx, state_clone, dir_buf, rotation_threshold, log_rotation_age_secs, writer);
+                writer_main_loop(rx, state_clone, dir_buf, rotation_threshold, log_rotation_age_secs, flush_dirty_writer, writer);
             })
             .map_err(|e| StorageError::Other(format!("failed to spawn WAL writer thread: {e}")))?;
 
@@ -179,6 +185,7 @@ impl RedoLog {
             batch_buffer: Arc::new(Mutex::new(None)),
             flush_checker: Mutex::new(None),
             flush_checker_stop: Arc::new(AtomicBool::new(false)),
+            flush_dirty,
         })
     }
 
@@ -348,6 +355,19 @@ impl RedoLog {
             guard.as_ref().map_or(false, |b| b.entries.len() >= max_count || b.start_time.elapsed() >= max_age)
         };
         if should_flush { self.flush_batch()?; Ok(true) } else { Ok(false) }
+    }
+
+    /// Set a callback to flush dirty data blocks before log rotation.
+    ///
+    /// Called after Graph creates its block_cache, so the WAL writer can
+    /// ensure all dirty blocks are on disk before deleting old WAL files.
+    pub fn set_flush_handler<F>(&self, handler: F)
+    where
+        F: Fn() -> StorageResult<()> + Send + 'static,
+    {
+        if let Ok(mut guard) = self.flush_dirty.lock() {
+            *guard = Some(Box::new(handler));
+        }
     }
 
     pub fn flush_batch(&self) -> StorageResult<()> {
@@ -615,6 +635,7 @@ fn writer_main_loop(
     dir: PathBuf,
     rotation_threshold: u64,
     log_rotation_age_secs: Option<u64>,
+    flush_dirty: Arc<Mutex<Option<Box<dyn Fn() -> StorageResult<()> + Send>>>>,
     mut writer: RedoLogWriter,
 ) {
     let mut batch: Vec<Vec<u8>> = Vec::with_capacity(DEFAULT_BATCH_SIZE);
@@ -633,27 +654,27 @@ fn writer_main_loop(
                 batch.push(bytes);
                 // 非 batch 模式：逐条写入并 fsync，不累积等待
                 // 确保每条 append() 在返回前数据已耐久
-                writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, log_rotation_age_secs, &mut checkpoint_seq, &state);
+                writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, log_rotation_age_secs, &mut checkpoint_seq, &state, &flush_dirty);
             }
             WriterMessage::BatchEntries(mut entries) => {
                 batch.append(&mut entries);
                 // Flush immediately if batch is large enough.
                 if batch.len() >= DEFAULT_BATCH_SIZE {
-                    writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, log_rotation_age_secs, &mut checkpoint_seq, &state);
+                    writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, log_rotation_age_secs, &mut checkpoint_seq, &state, &flush_dirty);
                 }
             }
             WriterMessage::Shutdown => {
-                flush_entries(writer, &mut batch, &dir, rotation_threshold, log_rotation_age_secs, &mut checkpoint_seq, &state);
+                flush_entries(writer, &mut batch, &dir, rotation_threshold, log_rotation_age_secs, &mut checkpoint_seq, &state, &flush_dirty);
                 return;
             }
             WriterMessage::Flush { done } => {
-                writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, log_rotation_age_secs, &mut checkpoint_seq, &state);
+                writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, log_rotation_age_secs, &mut checkpoint_seq, &state, &flush_dirty);
                 let mut guard = done.0.lock().unwrap();
                 *guard = true;
                 done.1.notify_all();
             }
             WriterMessage::Renew { done } => {
-                writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, log_rotation_age_secs, &mut checkpoint_seq, &state);
+                writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, log_rotation_age_secs, &mut checkpoint_seq, &state, &flush_dirty);
                 let _ = writer.file.sync_all();
                 let files = list_redo_files(&dir);
                 for fname in &files {
@@ -672,7 +693,7 @@ fn writer_main_loop(
                 done.1.notify_all();
             }
             WriterMessage::Checkpoint { flush_fn, done } => {
-                writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, log_rotation_age_secs, &mut checkpoint_seq, &state);
+                writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, log_rotation_age_secs, &mut checkpoint_seq, &state, &flush_dirty);
                 if let Err(e) = flush_fn() {
                     advance_epoch(&state, Some(e));
                     let mut guard = done.0.lock().unwrap();
@@ -710,8 +731,9 @@ fn flush_entries(
     log_rotation_age_secs: Option<u64>,
     checkpoint_seq: &mut u64,
     state: &Arc<(Mutex<WriteState>, Condvar)>,
+    flush_dirty: &Arc<Mutex<Option<Box<dyn Fn() -> StorageResult<()> + Send>>>>,
 ) -> RedoLogWriter {
-    let result = try_flush_entries(&mut writer, batch, dir, rotation_threshold, log_rotation_age_secs, checkpoint_seq);
+    let result = try_flush_entries(&mut writer, batch, dir, rotation_threshold, log_rotation_age_secs, checkpoint_seq, flush_dirty);
     match result {
         Ok(()) => {
             advance_epoch(state, None);
@@ -732,10 +754,30 @@ fn try_flush_entries(
     rotation_threshold: u64,
     log_rotation_age_secs: Option<u64>,
     checkpoint_seq: &mut u64,
+    flush_dirty: &Arc<Mutex<Option<Box<dyn Fn() -> StorageResult<()> + Send>>>>,
 ) -> Result<(), StorageError> {
     if batch.is_empty() {
         return Ok(());
     }
+
+    // ── helpers ─────────────────────────────────────────────────────────────
+    // Rotate WAL: create new file, spawn background flush + old-file deletion.
+    let flush_and_remove = |old_path: PathBuf, fd: Arc<Mutex<Option<Box<dyn Fn() -> StorageResult<()> + Send>>>>| {
+        log::info!("WAL rotation: spawning background flush for {}", old_path.display());
+        thread::spawn(move || {
+            log::info!("Background flush: flushing dirty blocks...");
+            if let Ok(guard) = fd.lock() {
+                if let Some(ref f) = *guard {
+                    if let Err(e) = f() {
+                        log::error!("Background dirty-block flush failed: {}", e);
+                    }
+                }
+            }
+            log::info!("Background flush: deleting old WAL {}", old_path.display());
+            let _ = fs::remove_file(&old_path);
+            log::info!("Background flush: complete for {}", old_path.display());
+        });
+    };
 
     // Check time-based rotation.
     if let Some(max_age) = log_rotation_age_secs {
@@ -744,7 +786,7 @@ fn try_flush_entries(
             let new_writer = create_new_file(dir, *checkpoint_seq)?;
             *checkpoint_seq += 1;
             writer.file.sync_all()?;
-            let _ = fs::remove_file(&old_path);
+            flush_and_remove(old_path, flush_dirty.clone());
             *writer = new_writer;
         }
     }
@@ -756,7 +798,7 @@ fn try_flush_entries(
         let new_writer = create_new_file(dir, *checkpoint_seq)?;
         *checkpoint_seq += 1;
         writer.file.sync_all()?;
-        let _ = fs::remove_file(&old_path);
+        flush_and_remove(old_path, flush_dirty.clone());
         *writer = new_writer;
     }
 
