@@ -558,8 +558,9 @@ pub async fn handle_gremlin(
         }
     }
 
-    // On the master (standalone or cluster), call process_touch directly
-    // to persist metadata to the redo log and optionally broadcast.
+    // On the master (standalone or cluster), update rank/atime in-place
+    // via DataHeader for read vertices/edges. In cluster mode, the master
+    // also broadcasts the touch to all workers (direct HTTP, no WAL).
     if response.success && !response.data.is_empty() {
         let settings = state.settings.lock().unwrap();
         if !settings.cluster.enabled || settings.cluster.role == crate::config::NodeRole::Master {

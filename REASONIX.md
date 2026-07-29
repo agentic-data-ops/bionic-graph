@@ -328,13 +328,24 @@ Settings under `"rank"` key in settings.json:
 ```
 ┌─────────┐     ┌─────────┐     ┌─────────┐
 │ Worker 1│     │ Master  │     │ Worker 2│
-│ (read)  │◄────│(R+W)    │────►│ (read)  │
+│ (R)     │◄────│(R+W)    │────►│ (R)     │
 └────┬────┘     └─────────┘     └────┬────┘
-     │               │               │
-     └─── writes ────┘               │
-          forwarded                  │
-                                     │
-        Redo log replication ────────┘
+     │ ① writes forwarded           │
+     └─────────── to master ─────────┘
+                 │
+     ┌───────────┴───────────┐
+     │ ② master broadcasts   │
+     │    entries via HTTP    │
+     │    to ALL workers      │
+     └───────────────────────┘
+
+Touch（rank/atime 读取更新）：
+┌─────────┐                     ┌─────────┐     ┌─────────┐
+│ Worker 1│ ──── POST ──────►   │ Master  │────►│ Worker 2│
+│ (读 V)  │   /cluster/touch    │ relay   │     │ apply   │
+└─────────┘                     └─────────┘     └─────────┘
+   ↑                                  ↑
+   本地 DataHeader 更新    本地 DataHeader 更新
 ```
 
 **Cluster endpoints** (on cluster bind_addr):
@@ -343,7 +354,11 @@ Settings under `"rank"` key in settings.json:
 | POST | `/cluster/heartbeat` | Worker → Master | Worker registration + heartbeat |
 | POST | `/cluster/forward` | Worker → Master | Forwarded write request |
 | POST | `/cluster/replicate` | Master → Worker | Redo log entry push |
-| POST | `/cluster/touch` | Worker → Master | Read report for rank/atime update |
+| POST | `/cluster/touch` | 双向 | Read报告（Worker→Master）+ 中继广播（Master→所有Worker），直接HTTP无WAL |
+| POST | `/cluster/execute` | Master→Worker | 用 REPLAYING 模式在worker上执行转发请求（写广播） |
+| POST | `/cluster/tokenizer-sync` | Master→Worker | 同步 tokenizer 自定义词到所有 worker |
+
+**Node ID 唯一性要求**: worker 的 heartbeat `node_id` 必须唯一（源码中用 `format!("worker@{}", cluster.bind_addr)` 生成）。两个 worker 使用相同 `node_id` 会导致 master 的 `HashMap` 中后注册者覆盖前者，广播只能到达一个 worker。
 
 ## Rank Lifecycle
 
@@ -352,16 +367,16 @@ Update → update_vertex/edge: rank += 1, atime = now
          DataHeader updated in-place (block cache, mark dirty) ──┐
                                                                  │
 Read → execute_gremlin → process_touch ───► get_vertex_locked    │
-       (async, via settings.auto_inc_rank_when_read)              │
-              │                                                   │
-              ▼                                                   │
-         update_rank_and_atime → in-place DataHeader chunk update │
-              │                      (no WAL entry needed)        │
-              ▼                                                   │
-         broadcast touch to workers (cluster mode)               │
-                                                                  ▼
-Decay ←─ spawn_rank_decay (background, every period secs)   checkpoint flushes
-       └── atime_index.range_up_to(threshold)               dirty blocks to disk
+       (async, via settings.auto_inc_rank_when_read)             │
+              │                                                  │
+              ├── in-place DataHeader chunk update               │
+              │       (no WAL entry needed)                      │
+              │                                                  │
+              └── (cluster mode) broadcast TouchRequest ─────────┤
+                   (direct HTTP, no WAL)                         │
+                                                                 ▼
+Decay ←─ spawn_rank_decay (background, every period secs)  checkpoint flushes
+       └── atime_index.range_up_to(threshold)              dirty blocks to disk
            └── rank = rank.saturating_sub(1)
                └── update_header_in_place (no WAL)
 ```
@@ -389,22 +404,24 @@ Decay ←─ spawn_rank_decay (background, every period secs)   checkpoint flush
 - **WAL batch writer**: `append()` sends via `mpsc::channel` to background thread. Caller blocks on Condvar until durability confirmed.
 - **SIGINT/SIGTERM**: server calls `GraphManager::close_all()` → flushes dirty blocks + checkpoints all WALs.
 - **`Graph::close()`**: calls `flush()` + `sync()` + `renew()`.
-- **Cluster mode**: requires `"role": "master"` or `"role": "worker"` in settings. Heartbeat every 5s by default.
+- **Cluster mode**: requires `"role": "master"` or `"role": "worker"` in settings. Heartbeat every 5s by default. **Worker `node_id` 必须唯一**：多个 worker 必须使用不同的 node_id（源码生成 `worker@{bind_addr}`），否则 master 的 HashMap 中后注册者覆盖前者。
+- **Touch broadcast**: 读取触发 rank/atime 更新时，Worker→Master 报告 + Master 中继广播到所有 Worker。直接 HTTP POST `TouchRequest{vertex_ids, edge_ids}` 到各节点的 `/cluster/touch`，**不走 WAL**。
 - **Document lifecycle**: created without graph association. Graph assigned during extraction via `X-Graph-Name` header.
 - **Batch API**: `/batch/load` upserts vertices by `name`, edges by `(source_name, target_name, name)`. `update_existing` (default true) controls upsert vs append. `/batch/delete` cascades to connected edges.
 - **ID isolation**: each graph has independent ID space. Counters computed from index max at startup (no longer in config.json).
 - **Graph name resolution**: via `X-Graph-Name` header on all CRUD/Gremlin/search/batch/document endpoints. No `?graph=` query parameter.
 
 ## TODO
-- [ ] 顶点和边被读取到时更新atime和rank元数据，由读请求节点向其他所有节点广播touch操作
+- [x] 顶点和边被读取到时更新atime和rank元数据：Worker→Master报告，Master中继广播到所有Worker（直接HTTP，无WAL）
+- [x] 修复 worker node_id 冲突 bug：两个 worker 硬编码 "worker" 导致 HashMap 覆盖，改为 `worker@{bind_addr}`
 - [ ] 检查是否仍然有写操作未进行广播
 - [x] 将tokenizer自定义词典配置文件迁移到数据目录：tokenizer/words.json，不放到~/.config/bionic-graph下，不提供命令行入口
-- [ ] 使用~/.config/bionic/graph下的master.json, workder1.json, workder2.json 启动集群 （先清理各自的数据目录）
-- [ ] 测试workder1写入，workder2读取，覆盖所有涉及转发和广播的场景
-- [ ] 验证master, workder1的前端是否正常
-- [ ] 刷新代码注释，涉及广播的场景，不再使用WAL日志了
+- [ ] 使用~/.config/bionic-graph下的master.json, worker1.json, worker2.json 启动集群（先清理各自的数据目录）
+- [x] 测试worker1写入，worker2读取，覆盖所有涉及转发和广播的场景
+- [ ] 验证master, worker1的前端是否正常
+- [x] 刷新代码注释，涉及广播的场景（touch/read），不再使用WAL日志了
 - [x] 刷新REASONIX.md 和 README.md
 - [ ] master将连接的节点信息进行持久化: cluster/nodes.json
-- [ ] workder首次连接到master时检查每个图库的配置与master是否一致，如果不一致，报错退出，不允许加入集群
-- [ ] 如果workder离线，master将未被成功处理的节点广播请求持久化到数据目录下的文件：cluster/broadcast.bin，并在节点状态正常时进行重试
+- [ ] worker首次连接到master时检查每个图库的配置与master是否一致，如果不一致，报错退出，不允许加入集群
+- [ ] 如果worker离线，master将未被成功处理的节点广播请求持久化到数据目录下的文件：cluster/broadcast.bin，并在节点状态正常时进行重试
 - [x] 自定义索引的配置进行持久化，保存到图库的config.json中（indecies.properties），如果数据库崩溃，则需要重配置文件中加载自定义索引配置，并扫描数据文件进行重建

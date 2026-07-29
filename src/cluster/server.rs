@@ -21,7 +21,7 @@ use axum::{
     routing::post,
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::cluster::forward::{ForwardedRequest, ForwardedResponse};
 use crate::cluster::node::{ClusterMessage, NodeRegistry, WorkerInfo};
@@ -396,84 +396,60 @@ async fn handle_replicate(
 // ── Touch (read report) ──────────────────────────────────────────────────────
 
 /// Request body for `/cluster/touch`: IDs of vertices/edges that were read.
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct TouchRequest {
     pub vertex_ids: Vec<u32>,
     pub edge_ids: Vec<u32>,
 }
 
-/// Shared touch logic: update local rank/atime, persist via in-place DataHeader
-/// update, and broadcast the touch to worker nodes.
-/// append to local redo_log (durable), and optionally broadcast to workers.
+/// Apply touch (read access) for vertices/edges: update rank/atime in-place
+/// via DataHeader. No WAL entry is needed — rank is soft state persisted
+/// at the next checkpoint. In cluster mode, broadcasts the touch to all
+/// peers via direct HTTP (no WAL involved) so every node keeps rank/atime
+/// in sync.
 ///
 /// Can be called directly from the master's gremlin handler (no HTTP needed)
-/// or from the `/cluster/touch` endpoint (worker → master).
+/// or from the `/cluster/touch` endpoint (worker → master relay).
 pub async fn process_touch(
     graph: &Arc<crate::graph::graph::Graph>,
     vertex_ids: &[u32],
     edge_ids: &[u32],
     registry: Option<&NodeRegistry>,
 ) {
-    let entries = build_touch_entries(graph, vertex_ids, edge_ids);
-    if entries.is_empty() {
-        return;
-    }
+    // 1. Apply local touch (in-place DataHeader update, no WAL).
+    apply_touch(graph, vertex_ids, edge_ids);
 
-    // Append all entries to the local redo_log (blocking — defer to spawn_blocking).
-    let g = graph.clone();
-    let entries_sync = entries.clone();
-    if let Err(e) = tokio::task::spawn_blocking(move || -> Result<(), String> {
-        for entry in &entries_sync {
-            g.redo_log.append(entry.op_type, entry.op_id, &entry.data)
-                .map_err(|e| format!("append to redo_log: {}", e))?;
-        }
-        Ok(())
-    })
-    .await
-    .unwrap_or(Err("spawn_blocking panicked".to_string()))
-    {
-        log::warn!("process_touch: redo_log append failed: {}", e);
-        return;
-    }
-
-    // Broadcast to workers if registry is provided and has alive workers.
+    // 2. Broadcast touch to all cluster peers via direct HTTP.
+    //    Each peer applies the touch locally on receipt.
+    //    No WAL entries are generated — rank/atime are soft state.
     if let Some(reg) = registry {
         let workers = reg.alive_workers();
         if !workers.is_empty() {
-            for entry in entries {
-                let seq = reg.next_seq();
-                let graph_name = graph.name.clone();
-                let replicated = ReplicatedEntry {
-                    cluster_seq: seq,
-                    entry,
-                    graph_name,
-                    master_timestamp: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_micros() as u64,
-                };
-                let w = workers.clone();
-                tokio::spawn(async move {
-                    let results = crate::cluster::replication::broadcast_entry(&w, &replicated).await;
-                    for (wid, res) in &results {
-                        if let Err(e) = res {
-                            log::debug!("broadcast touch to {} failed: {}", wid, e);
-                        }
+            let req = TouchRequest {
+                vertex_ids: vertex_ids.to_vec(),
+                edge_ids: edge_ids.to_vec(),
+            };
+            let workers_for_broadcast = workers.clone();
+            tokio::spawn(async move {
+                for worker in &workers_for_broadcast {
+                    let url = format!("http://{}/cluster/touch", worker.cluster_addr);
+                    let client = reqwest::Client::new();
+                    if let Err(e) = client.post(&url).json(&req).send().await {
+                        log::debug!("broadcast touch to {} failed: {}", worker.node_id, e);
                     }
-                });
-            }
+                }
+            });
         }
     }
 }
 
-/// Touch (access) vertices/edges to update rank/atime.
-/// Rank/atime are updated in-place in the DataHeader by the read
-/// itself — no WAL entries needed.
-fn build_touch_entries(
+/// Update rank/atime in-place via DataHeader for accessed vertices/edges.
+/// The read itself triggers the in-place update — no WAL entries needed.
+fn apply_touch(
     graph: &Arc<crate::graph::graph::Graph>,
     vertex_ids: &[u32],
     edge_ids: &[u32],
-) -> Vec<crate::storage::redo_log::RedoLogEntry> {
+) {
     for vid in vertex_ids {
         if let Err(e) = crate::graph::locked::get_vertex_locked(graph, *vid) {
             log::debug!("touch vertex {}: {}", vid, e);
@@ -484,21 +460,18 @@ fn build_touch_entries(
             log::debug!("touch edge {}: {}", eid, e);
         }
     }
-    vec![] // rank/atime persisted via in-place DataHeader update
 }
 
 /// POST /cluster/touch
 ///
-/// Worker reports which vertices/edges were read. Delegates to `process_touch`
-/// for local rank/atime update, redo_log persistence, and worker broadcast.
+/// Receive touch (read report) from any cluster peer. All nodes apply
+/// the touch locally by updating rank/atime in-place via DataHeader
+/// (no WAL needed). On the master, the touch is also relay-broadcast
+/// to all workers so every node stays in sync.
 async fn handle_touch(
     State(state): State<ClusterAppState>,
     Json(req): Json<TouchRequest>,
 ) -> StatusCode {
-    if !state.is_master {
-        return StatusCode::OK;
-    }
-
     let default_name = state.gm.get_default_name();
     let graph = match state.gm.get(&default_name) {
         Ok(g) => g,
@@ -508,7 +481,14 @@ async fn handle_touch(
         }
     };
 
-    process_touch(&graph, &req.vertex_ids, &req.edge_ids, Some(&state.registry)).await;
+    if state.is_master {
+        // Master: apply locally + relay-broadcast to all workers.
+        process_touch(&graph, &req.vertex_ids, &req.edge_ids, Some(&state.registry)).await;
+    } else {
+        // Worker: apply locally only.
+        process_touch(&graph, &req.vertex_ids, &req.edge_ids, None).await;
+    }
+
     StatusCode::OK
 }
 

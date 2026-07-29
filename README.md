@@ -122,18 +122,27 @@ Once the server is running:
 
 ### Quick start (cluster mode)
 
-Bionic-Graph supports a **master-worker cluster** architecture for horizontal read scaling. The master handles both reads and writes; workers serve reads locally and forward write requests to the master. Redo-log entries are replicated from master to workers after each write.
+Bionic-Graph supports a **master-worker cluster** architecture for horizontal read scaling. The master handles both reads and writes; workers serve reads locally and forward write requests to the master.
 
 ```
 ┌─────────┐     ┌─────────┐     ┌─────────┐
 │ Worker 1│     │ Master  │     │ Worker 2│
-│ (read)  │◄────│(R+W)    │────►│ (read)  │
+│ (R)     │◄────│(R+W)    │────►│ (R)     │
 └────┬────┘     └─────────┘     └────┬────┘
-     │               │               │
-     └─── writes ────┘               │
-          forwarded                  │
-                                     │
-        Redo log replication ────────┘
+     │ ① writes forwarded           │
+     └─────────── to master ─────────┘
+                 │
+     ┌───────────┴───────────┐
+     │ ② master broadcasts   │
+     │    entries via HTTP    │
+     │    to ALL workers      │
+     └───────────────────────┘
+
+Touch（rank/atime 读取同步）：
+┌─────────┐   POST /cluster/touch   ┌─────────┐   relay   ┌─────────┐
+│ Worker  │ ─────────────────────►  │ Master  │ ────────► │ Worker 2│
+│ (读 V)  │     worker→master       │ apply+  │           │ apply   │
+└─────────┘                         └─────────┘           └─────────┘
 ```
 
 **Step 1 — Configure the master** (`~/.config/bionic-graph/settings.json`):
@@ -196,10 +205,10 @@ Bionic-Graph supports a **master-worker cluster** architecture for horizontal re
 |--------|----------|
 | **Reads** | Any node (master or worker) can serve read requests (Gremlin, search, vertex/edge queries) |
 | **Writes** | Workers forward write requests to the master automatically via HTTP |
-| **Replication** | After each write, the master pushes the redo-log entry to all connected workers |
-| **Heartbeat** | Workers send periodic heartbeats to the master (every 5s by default) |
-| **Data isolation** | Each node has its own `data/` directory — workers sync via replication, not shared storage |
-| **Rank/Atime sync** | Read access on workers is reported back to the master via `touch` for rank/atime tracking |
+| **Write broadcast** | After each write, the master broadcasts the entry to ALL workers via `/cluster/execute` (HTTP, sets `REPLAYING=true` to prevent recursion). Workers replay the entry into their local graph. |
+| **Heartbeat** | Workers send periodic heartbeats to the master (every 5s by default). Worker `node_id` must be unique — two workers with the same ID will overwrite each other in master's registry. |
+| **Data isolation** | Each node has its own `data/` directory — workers sync via write broadcast, not shared storage |
+| **Rank/Atime sync** | Read access triggers touch: worker→master reports the read via HTTP POST `/cluster/touch`, then master applies locally + **relay-broadcasts** to all workers. Each node updates its own DataHeader in-place (no WAL). |
 
 > **Note:** The cluster module is functional but not yet optimized for production. Leader election, automatic worker discovery, and cluster-aware routing are planned enhancements. For development and evaluation, start with a single-node setup (`"enabled": false`).
 
