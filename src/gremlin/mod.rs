@@ -3,6 +3,7 @@
 //! These handlers replace the old `src/gremlin/` routes and operate on
 //! `Arc<Graph>` through `GraphManager`.
 
+use std::sync::atomic::Ordering;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -127,6 +128,54 @@ pub struct AppState {
     pub master_api_addr: Option<String>,
 }
 
+/// Broadcast a ForwardedRequest from the master to all workers' REST API.
+/// Used for operations that don't use the graph engine's WAL (documents,
+/// graph metadata, indices, etc.). Workers process the request via their
+/// own REST handlers with REPLAYING=true to prevent recursion.
+pub(crate) fn broadcast_request_to_workers(
+    cluster_registry: &Option<Arc<NodeRegistry>>,
+    method: &str,
+    path: &str,
+    graph_name: Option<&str>,
+    body: Option<&str>,
+) {
+    // During replay, skip broadcasting to prevent recursion.
+    if crate::graph::graph::REPLAYING.load(Ordering::Relaxed) {
+        return;
+    }
+    let Some(registry) = cluster_registry.as_ref() else { return };
+    let workers = registry.alive_workers();
+    if workers.is_empty() { return; }
+
+    let payload = crate::cluster::forward::ForwardedRequest {
+        method: method.to_string(),
+        path: path.to_string(),
+        query: None,
+        body: body.map(|s| s.to_string()),
+        graph: graph_name.map(|s| s.to_string()),
+    };
+
+    for worker in workers {
+        let url = format!("http://{}{}", worker.api_addr, path);
+        let client = reqwest::Client::new();
+        let mut req = client.request(
+            method.parse().unwrap_or(reqwest::Method::POST),
+            &url,
+        );
+        if let Some(ref body_str) = payload.body {
+            req = req.header("Content-Type", "application/json").body(body_str.clone());
+        }
+        if let Some(ref gn) = payload.graph {
+            req = req.header("X-Graph-Name", gn.clone());
+        }
+        let _ = tokio::spawn(async move {
+            if let Err(e) = req.send().await {
+                log::warn!("Broadcast to worker {} failed: {}", worker.node_id, e);
+            }
+        });
+    }
+}
+
 /// Broadcast a write result from the master to all workers.
 /// Called by write handlers after a successful mutation on the master.
 pub(crate) fn broadcast_write_result(
@@ -137,6 +186,10 @@ pub(crate) fn broadcast_write_result(
     graph_name: &str,
     response_body: &str,
 ) {
+    // During replay, skip broadcasting to prevent recursion.
+    if crate::graph::graph::REPLAYING.load(Ordering::Relaxed) {
+        return;
+    }
     let Some(registry) = cluster_registry.as_ref() else { return };
     let workers = registry.alive_workers();
     if workers.is_empty() { return; }
@@ -1158,7 +1211,7 @@ pub async fn set_default_graph(
 
 // ── PUT /graphs/:name — update graph metadata ────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct UpdateGraphMetaBody {
     #[serde(default)]
     pub description: String,
@@ -1171,8 +1224,22 @@ pub async fn update_graph_meta(
     Path(name): Path<String>,
     Json(body): Json<UpdateGraphMetaBody>,
 ) -> Json<serde_json::Value> {
+    // Worker → Master forwarding
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
+    if let Some(resp) = try_forward_json(&state, "PUT", &format!("/graphs/{}", name), None, None, Some(&body_str)).await {
+        return match resp {
+            Ok(json) => json,
+            Err(_) => Json(serde_json::json!({"status": "error"})),
+        };
+    }
+
+    // Master processes locally
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
     match state.gm.update_meta(&name, &body.description, body.time_travel) {
-        Ok(true) => Json(serde_json::json!({"status": "ok"})),
+        Ok(true) => {
+            broadcast_request_to_workers(&state.cluster_registry, "PUT", &format!("/graphs/{}", name), None, Some(&body_str));
+            Json(serde_json::json!({"status": "ok"}))
+        }
         Ok(false) => Json(serde_json::json!({"status": "error", "message": "not found"})),
         Err(e) => Json(serde_json::json!({"status": "error", "message": e.to_string()})),
     }
@@ -1195,6 +1262,11 @@ pub async fn put_graph_config_handler(
     Path(name): Path<String>,
     Json(body): Json<crate::graph::graph::GraphConfig>,
 ) -> StatusCode {
+    // Worker → Master forwarding
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
+    if let Some(status) = try_forward_status(&state, "PUT", &format!("/graphs/{}/config", name), None, None).await {
+        return status;
+    }
     match state.gm.set_graph_config(&name, &body) {
         Ok(_) => StatusCode::OK,
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -1339,6 +1411,15 @@ pub async fn update_document(
     Path(id): Path<String>,
     Json(body): Json<UpdateDocumentBody>,
 ) -> Json<serde_json::Value> {
+    // Worker → Master forwarding
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
+    if let Some(resp) = try_forward_json(&state, "PUT", &format!("/documents/{}", id), None, None, Some(&body_str)).await {
+        return match resp {
+            Ok(json) => json,
+            Err(_) => Json(serde_json::json!({"status": "error"})),
+        };
+    }
+
     let title = body.title.as_deref().unwrap_or("");
     let tags = body.tags.as_deref().unwrap_or(&[]);
     // Document graph association is set only during extraction, not via update.
@@ -1353,6 +1434,14 @@ pub async fn delete_document(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Json<serde_json::Value> {
+    // Worker → Master forwarding
+    if let Some(resp) = try_forward_json(&state, "DELETE", &format!("/documents/{}", id), None, None, None).await {
+        return match resp {
+            Ok(json) => json,
+            Err(_) => Json(serde_json::json!({"status": "error"})),
+        };
+    }
+
     // Get the document before deleting, so we know which graph to clean.
     let doc = state.doc_mgr.get(&id);
     let graph_name = doc.as_ref().map(|d| d.graph_name.clone());
