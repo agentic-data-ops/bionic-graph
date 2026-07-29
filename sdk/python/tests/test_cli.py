@@ -193,6 +193,13 @@ def test_vertex_update_meta(runner, mock):
     assert "ok" in result.output
 
 
+def test_vertex_update_meta_atime(runner, mock):
+    mock.put("/vertices/1/meta").respond(json={})
+    result = runner.invoke(main, ["--base-url", BASE_URL, "vertex", "update-meta", "1", "--rank", "5", "--atime", "999999"])
+    assert result.exit_code == 0
+    assert "ok" in result.output
+
+
 # ── Edge ───────────────────────────────────────────────────────────
 
 
@@ -225,6 +232,13 @@ def test_edge_get_meta(runner, mock):
 def test_edge_update_meta(runner, mock):
     mock.put("/edges/1/meta").respond(json={})
     result = runner.invoke(main, ["--base-url", BASE_URL, "edge", "update-meta", "1", "--rank", "8"])
+    assert result.exit_code == 0
+    assert "ok" in result.output
+
+
+def test_edge_update_meta_atime(runner, mock):
+    mock.put("/edges/1/meta").respond(json={})
+    result = runner.invoke(main, ["--base-url", BASE_URL, "edge", "update-meta", "1", "--atime", "888888"])
     assert result.exit_code == 0
     assert "ok" in result.output
 

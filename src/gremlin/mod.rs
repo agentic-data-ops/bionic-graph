@@ -172,16 +172,10 @@ pub(crate) fn broadcast_request_to_workers(
     for worker in workers {
         let url = format!("http://{}/cluster/execute", worker.cluster_addr);
         let client = reqwest::Client::new();
-        let mut req = client.request(
-            method.parse().unwrap_or(reqwest::Method::POST),
-            &url,
-        );
-        if let Some(ref body_str) = payload.body {
-            req = req.header("Content-Type", "application/json").body(body_str.clone());
-        }
-        if let Some(ref gn) = payload.graph {
-            req = req.header("X-Graph-Name", gn.clone());
-        }
+        let payload_json = serde_json::to_string(&payload).unwrap_or_default();
+        let req = client.post(&url)
+            .header("Content-Type", "application/json")
+            .body(payload_json);
         let _ = tokio::spawn(async move {
             if let Err(e) = req.send().await {
                 log::warn!("Broadcast to worker {} failed: {}", worker.node_id, e);
@@ -835,6 +829,7 @@ pub async fn handle_get_vertex_meta(
 
 /// Update a vertex's rank and/or atime. Body: `{"rank": u32, "atime": u64}`.
 /// Either field is optional — only provided fields are updated.
+/// Note: name changes must use PUT /vertices/:id instead.
 pub async fn handle_update_vertex_meta(
     State(state): State<AppState>,
     Path(id): Path<u32>,
@@ -843,10 +838,23 @@ pub async fn handle_update_vertex_meta(
 ) -> StatusCode {
     let new_rank = body.get("rank").and_then(|v| v.as_u64()).map(|v| v as u32);
     let new_atime = body.get("atime").and_then(|v| v.as_u64());
-    let new_name = body.get("name").and_then(|v| v.as_str());
-    if new_rank.is_none() && new_atime.is_none() && new_name.is_none() {
+    if new_rank.is_none() && new_atime.is_none() {
         return StatusCode::BAD_REQUEST;
     }
+
+    // Worker → Master forwarding
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    let path = format!("/vertices/{}/meta", id);
+    if let Some(resp) = try_forward_json(
+        &state, "PUT", &path, None, graph_name, Some(&body_str),
+    ).await {
+        return match resp {
+            Ok(_) => StatusCode::OK,
+            Err(s) => s,
+        };
+    }
+
     let graph = match resolve_graph_from_request(&state, &headers) {
         Ok(g) => g,
         Err(_) => return StatusCode::NOT_FOUND,
@@ -854,26 +862,21 @@ pub async fn handle_update_vertex_meta(
     let _meta = graph.locks.read_metadata();
     let _vlock = graph.locks.write_vertex(id);
 
-    // If name is being changed, it requires a full payload update.
-    // For rank/atime only, use the lightweight meta update.
-    let result = if new_name.is_some() {
-        // Delegate to update_vertex for full payload rewrite.
-        crate::graph::crud::update_vertex(&graph, id, new_name, None, None, None, false)
-            .and_then(|_| {
-                if new_rank.is_some() || new_atime.is_some() {
-                    crate::graph::crud::update_vertex_meta(&graph, id, new_rank, new_atime)
-                } else {
-                    Ok(())
-                }
-            })
-    } else {
-        crate::graph::crud::update_vertex_meta(&graph, id, new_rank, new_atime)
-    };
+    // Only rank/atime are supported for meta updates.
+    let result = crate::graph::crud::update_vertex_meta(&graph, id, new_rank, new_atime);
 
     drop(_vlock);
     drop(_meta);
     match result {
-        Ok(()) => StatusCode::OK,
+        Ok(()) => {
+            // Broadcast to workers in cluster mode.
+            let gn = graph.name.clone();
+            broadcast_request_to_workers(
+                &state.cluster_registry, "PUT", &format!("/vertices/{}/meta", id),
+                Some(&gn), Some(&body_str),
+            );
+            StatusCode::OK
+        }
         Err(_) => StatusCode::NOT_FOUND,
     }
 }
@@ -1068,6 +1071,8 @@ pub async fn handle_get_edge_meta(
 // ── PUT /edges/:id/meta ───────────────────────────────────────────────────
 
 /// Update an edge's rank and/or atime. Body: `{"rank": u32, "atime": u64}`.
+/// Either field is optional — only provided fields are updated.
+/// Note: name changes must use PUT /edges/:id instead.
 pub async fn handle_update_edge_meta(
     State(state): State<AppState>,
     Path(id): Path<u32>,
@@ -1076,10 +1081,23 @@ pub async fn handle_update_edge_meta(
 ) -> StatusCode {
     let new_rank = body.get("rank").and_then(|v| v.as_u64()).map(|v| v as u32);
     let new_atime = body.get("atime").and_then(|v| v.as_u64());
-    let new_name = body.get("name").and_then(|v| v.as_str());
-    if new_rank.is_none() && new_atime.is_none() && new_name.is_none() {
+    if new_rank.is_none() && new_atime.is_none() {
         return StatusCode::BAD_REQUEST;
     }
+
+    // Worker → Master forwarding
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    let path = format!("/edges/{}/meta", id);
+    if let Some(resp) = try_forward_json(
+        &state, "PUT", &path, None, graph_name, Some(&body_str),
+    ).await {
+        return match resp {
+            Ok(_) => StatusCode::OK,
+            Err(s) => s,
+        };
+    }
+
     let graph = match resolve_graph_from_request(&state, &headers) {
         Ok(g) => g,
         Err(_) => return StatusCode::NOT_FOUND,
@@ -1087,23 +1105,21 @@ pub async fn handle_update_edge_meta(
     let _meta = graph.locks.read_metadata();
     let _elock = graph.locks.write_edge(id);
 
-    let result = if new_name.is_some() {
-        crate::graph::crud::update_edge(&graph, id, new_name, None, None, None, None, false)
-            .and_then(|_| {
-                if new_rank.is_some() || new_atime.is_some() {
-                    crate::graph::crud::update_edge_meta(&graph, id, new_rank, new_atime)
-                } else {
-                    Ok(())
-                }
-            })
-    } else {
-        crate::graph::crud::update_edge_meta(&graph, id, new_rank, new_atime)
-    };
+    // Only rank/atime are supported for meta updates.
+    let result = crate::graph::crud::update_edge_meta(&graph, id, new_rank, new_atime);
 
     drop(_elock);
     drop(_meta);
     match result {
-        Ok(()) => StatusCode::OK,
+        Ok(()) => {
+            // Broadcast to workers in cluster mode.
+            let gn = graph.name.clone();
+            broadcast_request_to_workers(
+                &state.cluster_registry, "PUT", &format!("/edges/{}/meta", id),
+                Some(&gn), Some(&body_str),
+            );
+            StatusCode::OK
+        }
         Err(_) => StatusCode::NOT_FOUND,
     }
 }
@@ -1213,14 +1229,17 @@ pub async fn delete_graph(
         };
     }
     match state.gm.delete(&name) {
-        Ok(_) => Json(serde_json::json!({"status": "ok"})),
+        Ok(_) => {
+            broadcast_request_to_workers(&state.cluster_registry, "DELETE", &format!("/graphs/{}", name), None, None);
+            Json(serde_json::json!({"status": "ok"}))
+        }
         Err(_) => Json(serde_json::json!({"status": "error", "message": "not found"})),
     }
 }
 
 // ── PUT /graphs — set default graph ──────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct SetDefaultGraphBody {
     #[serde(default)]
     pub default: String,
@@ -1230,8 +1249,20 @@ pub async fn set_default_graph(
     State(state): State<AppState>,
     Json(body): Json<SetDefaultGraphBody>,
 ) -> Json<serde_json::Value> {
+    // Worker → Master forwarding
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
+    if let Some(resp) = try_forward_json(&state, "PUT", "/graphs", None, None, Some(&body_str)).await {
+        return match resp {
+            Ok(json) => json,
+            Err(_) => Json(serde_json::json!({"status": "error", "message": "forward failed"})),
+        };
+    }
     match state.gm.set_default(&body.default) {
-        Ok(_) => Json(serde_json::json!({"status": "ok"})),
+        Ok(_) => {
+            // Broadcast to workers in cluster mode.
+            broadcast_request_to_workers(&state.cluster_registry, "PUT", "/graphs", None, Some(&body_str));
+            Json(serde_json::json!({"status": "ok"}))
+        }
         Err(_) => Json(serde_json::json!({"status": "error", "message": "graph not found"})),
     }
 }
@@ -1359,9 +1390,25 @@ pub async fn handle_batch_delete(
     headers: axum::http::HeaderMap,
     Json(body): Json<BatchDeleteBody>,
 ) -> Result<Json<crate::graph::batch::BatchDeleteResult>, StatusCode> {
-    let graph = crate::gremlin::resolve_graph_from_request(&state, &headers)
+    // Worker → Master forwarding
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    let body_str = serde_json::to_string(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
+    if let Some(resp) = try_forward_json(
+        &state, "POST", "/batch/delete", None, graph_name, Some(&body_str),
+    ).await {
+        let json_val = resp.map_err(|e| e)?;
+        let result: crate::graph::batch::BatchDeleteResult = serde_json::from_value(json_val.0).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        return Ok(Json(result));
+    }
+
+    let graph = resolve_graph_from_request(&state, &headers)
         .map_err(|_| StatusCode::NOT_FOUND)?;
     let result = crate::graph::batch::batch_delete(&graph, &body.vertices, &body.edges);
+
+    // Broadcast to workers in cluster mode.
+    let gn = graph.name.clone();
+    broadcast_request_to_workers(&state.cluster_registry, "POST", "/batch/delete", Some(&gn), Some(&body_str));
+
     Ok(Json(result))
 }
 

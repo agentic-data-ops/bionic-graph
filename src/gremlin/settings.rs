@@ -5,10 +5,11 @@
 
 use axum::{extract::State, http::StatusCode, Json};
 use axum::response::{IntoResponse, Response};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::settings::SearchSettings;
 use crate::gremlin::AppState;
+use crate::gremlin::{broadcast_request_to_workers, try_forward_json};
 
 // ── Handlers ────────────────────────────────────────────────────────────────
 
@@ -25,6 +26,12 @@ pub async fn update_search_settings(
     State(state): State<AppState>,
     Json(new_settings): Json<SearchSettings>,
 ) -> Json<serde_json::Value> {
+    // Worker → Master forwarding
+    let body_str = serde_json::to_string(&new_settings).unwrap_or_default();
+    if let Some(resp) = try_forward_json(&state, "PUT", "/settings/graph/search", None, None, Some(&body_str)).await {
+        return match resp { Ok(json) => json, Err(_) => Json(serde_json::json!({"status": "error"})) };
+    }
+
     let save_result = {
         let mut guard = state.settings.lock().unwrap();
         guard.graph.search = new_settings;
@@ -34,6 +41,10 @@ pub async fn update_search_settings(
         log::warn!("Failed to save search settings: {}", e);
         return Json(serde_json::json!({ "status": "error", "message": e.to_string() }));
     }
+
+    // Broadcast to workers in cluster mode.
+    broadcast_request_to_workers(&state.cluster_registry, "PUT", "/settings/graph/search", None, Some(&body_str));
+
     Json(serde_json::json!({ "status": "ok" }))
 }
 
@@ -48,7 +59,7 @@ pub async fn get_llm_settings(
 }
 
 /// PUT /settings/llm — update LLM providers and default model, persist to disk.
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct UpdateLlmBody {
     pub providers: Option<Vec<crate::config::settings::LlmProvider>>,
     pub default_model: Option<String>,
@@ -58,6 +69,12 @@ pub async fn update_llm_settings(
     State(state): State<AppState>,
     Json(body): Json<UpdateLlmBody>,
 ) -> Json<serde_json::Value> {
+    // Worker → Master forwarding
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
+    if let Some(resp) = try_forward_json(&state, "PUT", "/settings/llm", None, None, Some(&body_str)).await {
+        return match resp { Ok(json) => json, Err(_) => Json(serde_json::json!({"status": "error"})) };
+    }
+
     let save_result = {
         let mut guard = state.settings.lock().unwrap();
         if let Some(providers) = body.providers {
@@ -72,6 +89,10 @@ pub async fn update_llm_settings(
         log::warn!("Failed to save LLM settings: {}", e);
         return Json(serde_json::json!({ "status": "error", "message": e.to_string() }));
     }
+
+    // Broadcast to workers in cluster mode.
+    broadcast_request_to_workers(&state.cluster_registry, "PUT", "/settings/llm", None, Some(&body_str));
+
     Json(serde_json::json!({ "status": "ok" }))
 }
 
@@ -92,6 +113,12 @@ pub async fn update_web_search_settings(
     State(state): State<AppState>,
     Json(new_config): Json<WebSearchConfig>,
 ) -> Json<serde_json::Value> {
+    // Worker → Master forwarding
+    let body_str = serde_json::to_string(&new_config).unwrap_or_default();
+    if let Some(resp) = try_forward_json(&state, "PUT", "/settings/web-search", None, None, Some(&body_str)).await {
+        return match resp { Ok(json) => json, Err(_) => Json(serde_json::json!({"status": "error"})) };
+    }
+
     let save_result = {
         let mut guard = state.settings.lock().unwrap();
         guard.web_search = new_config;
@@ -101,6 +128,10 @@ pub async fn update_web_search_settings(
         log::warn!("Failed to save web search settings: {}", e);
         return Json(serde_json::json!({ "status": "error", "message": e.to_string() }));
     }
+
+    // Broadcast to workers in cluster mode.
+    broadcast_request_to_workers(&state.cluster_registry, "PUT", "/settings/web-search", None, Some(&body_str));
+
     Json(serde_json::json!({ "status": "ok" }))
 }
 
@@ -207,6 +238,12 @@ pub async fn update_rank_settings(
     State(state): State<AppState>,
     Json(new_config): Json<RankConfig>,
 ) -> Json<serde_json::Value> {
+    // Worker → Master forwarding
+    let body_str = serde_json::to_string(&new_config).unwrap_or_default();
+    if let Some(resp) = try_forward_json(&state, "PUT", "/settings/graph/rank", None, None, Some(&body_str)).await {
+        return match resp { Ok(json) => json, Err(_) => Json(serde_json::json!({"status": "error"})) };
+    }
+
     let save_result = {
         let mut guard = state.settings.lock().unwrap();
         guard.graph.rank = new_config;
@@ -216,5 +253,9 @@ pub async fn update_rank_settings(
         log::warn!("Failed to save rank settings: {}", e);
         return Json(serde_json::json!({ "status": "error", "message": e.to_string() }));
     }
+
+    // Broadcast to workers in cluster mode.
+    broadcast_request_to_workers(&state.cluster_registry, "PUT", "/settings/graph/rank", None, Some(&body_str));
+
     Json(serde_json::json!({ "status": "ok" }))
 }

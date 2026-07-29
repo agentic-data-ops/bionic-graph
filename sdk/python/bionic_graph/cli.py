@@ -296,12 +296,19 @@ def vertex_get_meta(ctx, vid, graph):
 @vertex.command("update-meta")
 @click.argument("vid", type=int)
 @click.option("--rank", type=int, help="New rank value")
+@click.option("--atime", type=int, help="New atime value (microsecond timestamp)")
 @click.option("--graph", help="Target graph (default: graph0)")
 @click.pass_context
-def vertex_update_meta(ctx, vid, rank, graph):
-    """Update vertex metadata (rank)."""
+def vertex_update_meta(ctx, vid, rank, atime, graph):
+    """Update vertex metadata (rank, atime)."""
     c = _client(ctx)
-    c.update_vertex_meta(vid, {"rank": rank} if rank else {})
+    meta = {}
+    if rank is not None:
+        meta["rank"] = rank
+    if atime is not None:
+        meta["atime"] = atime
+    if meta:
+        c.update_vertex_meta(vid, meta, graph)
     _output({"status": "ok"}, _fmt(ctx))
 
 
@@ -375,12 +382,19 @@ def edge_get_meta(ctx, eid, graph):
 @edge.command("update-meta")
 @click.argument("eid", type=int)
 @click.option("--rank", type=int, help="New rank value")
+@click.option("--atime", type=int, help="New atime value (microsecond timestamp)")
 @click.option("--graph", help="Target graph (default: graph0)")
 @click.pass_context
-def edge_update_meta(ctx, eid, rank, graph):
-    """Update edge metadata (rank)."""
+def edge_update_meta(ctx, eid, rank, atime, graph):
+    """Update edge metadata (rank, atime)."""
     c = _client(ctx)
-    c.update_edge_meta(eid, {"rank": rank} if rank else {})
+    meta = {}
+    if rank is not None:
+        meta["rank"] = rank
+    if atime is not None:
+        meta["atime"] = atime
+    if meta:
+        c.update_edge_meta(eid, meta, graph)
     _output({"status": "ok"}, _fmt(ctx))
 
 
