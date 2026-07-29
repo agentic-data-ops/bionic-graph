@@ -151,9 +151,15 @@ pub(crate) fn broadcast_request_to_workers(
     if crate::graph::graph::REPLAYING.load(Ordering::Relaxed) {
         return;
     }
-    let Some(registry) = cluster_registry.as_ref() else { return };
+    let Some(registry) = cluster_registry.as_ref() else {
+        log::warn!("broadcast_to_workers: no registry");
+        return;
+    };
     let workers = registry.alive_workers();
-    if workers.is_empty() { return; }
+    if workers.is_empty() {
+        log::warn!("broadcast_to_workers: alive_workers empty");
+        return;
+    }
 
     let payload = crate::cluster::forward::ForwardedRequest {
         method: method.to_string(),
@@ -198,9 +204,15 @@ pub(crate) fn broadcast_write_result(
     if crate::graph::graph::REPLAYING.load(Ordering::Relaxed) {
         return;
     }
-    let Some(registry) = cluster_registry.as_ref() else { return };
+    let Some(registry) = cluster_registry.as_ref() else {
+        log::warn!("broadcast_to_workers: no registry");
+        return;
+    };
     let workers = registry.alive_workers();
-    if workers.is_empty() { return; }
+    if workers.is_empty() {
+        log::warn!("broadcast_to_workers: alive_workers empty");
+        return;
+    }
 
     // Determine op_type and op_id.
     let (op_type, op_id) = match method {
@@ -1324,13 +1336,10 @@ pub async fn handle_batch_import(
     let result = crate::graph::batch::batch_import(
         &graph, &body.entities, &body.relations, "", body.update_existing,
     );
-    // Broadcast result to workers (individual entity broadcasts handled by CRUD)
+    // Broadcast to workers via /cluster/execute
     let graph_name = graph.name.clone();
-    let res_body = serde_json::to_string(&result).unwrap_or_default();
-    broadcast_write_result(&state.cluster_registry, &graph, "POST", "/batch/load", &graph_name, &res_body);
-    let result = crate::graph::batch::batch_import(
-        &graph, &body.entities, &body.relations, "", body.update_existing,
-    );
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
+    broadcast_request_to_workers(&state.cluster_registry, "POST", "/batch/load", Some(&graph_name), Some(&body_str));
     Ok(Json(result))
 }
 

@@ -87,6 +87,7 @@ impl NodeRegistry {
 
     /// Register or heartbeat a worker.
     pub fn register(&self, info: WorkerInfo) {
+        log::info!("register worker: {} (cluster={})", info.node_id, info.cluster_addr);
         let mut workers = self.workers.write().unwrap_or_else(|e| e.into_inner());
         workers.insert(info.node_id.clone(), info);
     }
