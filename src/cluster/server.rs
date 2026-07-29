@@ -10,6 +10,7 @@
 //! | POST | `/cluster/replicate` | Master → Worker | Redo log entry push |
 //! | POST | `/cluster/touch` | Worker → Master | Report read vertex/edge IDs for rank/atime update |
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use axum::{
@@ -45,6 +46,7 @@ pub fn build_cluster_router(state: ClusterAppState) -> Router {
         .route("/cluster/heartbeat", post(handle_heartbeat))
         .route("/cluster/forward", post(handle_forward))
         .route("/cluster/replicate", post(handle_replicate))
+        .route("/cluster/execute", post(handle_execute))
         .route("/cluster/touch", post(handle_touch))
         .route("/cluster/tokenizer-sync", post(handle_tokenizer_sync))
         .with_state(state)
@@ -137,6 +139,21 @@ async fn handle_forward(
         }
     }
 
+    Json(result)
+}
+
+// ── Cluster execute ──────────────────────────────────────────────────────────
+
+/// POST /cluster/execute — execute a forwarded request on this node's
+/// REST API with REPLAYING=true (used by master→worker broadcast).
+pub async fn handle_execute(
+    State(state): State<ClusterAppState>,
+    Json(req): Json<crate::cluster::forward::ForwardedRequest>,
+) -> Json<crate::cluster::forward::ForwardedResponse> {
+    log::warn!("handle_execute: {} {} (graph={:?})", req.method, req.path, req.graph);
+    crate::graph::graph::REPLAYING.store(true, Ordering::Relaxed);
+    let result = proxy_to_api(&state.api_addr, &req).await;
+    crate::graph::graph::REPLAYING.store(false, Ordering::Relaxed);
     Json(result)
 }
 

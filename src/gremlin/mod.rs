@@ -164,7 +164,7 @@ pub(crate) fn broadcast_request_to_workers(
     };
 
     for worker in workers {
-        let url = format!("http://{}{}", worker.api_addr, path);
+        let url = format!("http://{}/cluster/execute", worker.cluster_addr);
         let client = reqwest::Client::new();
         let mut req = client.request(
             method.parse().unwrap_or(reqwest::Method::POST),
