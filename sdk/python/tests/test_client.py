@@ -268,7 +268,7 @@ def test_web_search_proxy(client, mock):
 
 
 def test_get_tokenizer_words(client, mock):
-    mock.get("/settings/tokenizer").respond(json={"custom_words": ["word1"]})
+    mock.get("/settings/tokenizer/words").respond(json={"custom_words": ["word1"]})
     cfg = client.get_tokenizer_words()
     assert cfg.custom_words == ["word1"]
 

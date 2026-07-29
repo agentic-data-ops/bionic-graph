@@ -1,14 +1,14 @@
 //! Tokenizer custom-word configuration endpoint.
 //!
 //! Allows users to add/remove custom dictionary words at runtime.
-//! Persisted to the tokenizer config file (default ~/.config/bionic-graph/tokenizer.json).
+//! Persisted to `<data_dir>/tokenizer/words.json`.
 
 use axum::{extract::State, Json};
 
 use crate::gremlin::AppState;
 
-/// GET /settings/tokenizer — list all custom words
-pub async fn get_tokenizer_settings(
+/// GET /settings/tokenizer/words — list all custom words
+pub async fn get_tokenizer_words(
     State(_state): State<AppState>,
 ) -> Json<serde_json::Value> {
     let words = crate::graph::tokenizer::list_custom_words();

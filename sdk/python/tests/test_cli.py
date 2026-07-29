@@ -266,13 +266,6 @@ def test_proxy_web_search(runner, mock):
     assert "results" in result.output
 
 
-def test_settings_get_tokenizer(runner, mock):
-    mock.get("/settings/tokenizer").respond(json={"custom_words": ["word1"]})
-    result = runner.invoke(main, ["--base-url", BASE_URL, "settings", "get-tokenizer"])
-    assert result.exit_code == 0
-    assert "word1" in result.output
-
-
 def test_settings_set_search(runner, mock):
     mock.put("/settings/graph/search").respond(json={"status": "ok"})
     result = runner.invoke(main, ["--base-url", BASE_URL, "settings", "set-search", "--config", '{"greedy": {}, "exact": {}}'])
@@ -318,20 +311,6 @@ def test_settings_get_web_search(runner, mock):
 def test_settings_set_web_search(runner, mock):
     mock.put("/settings/web-search").respond(json={"status": "ok"})
     result = runner.invoke(main, ["--base-url", BASE_URL, "settings", "set-web-search", "--config", '{"default_provider": "bing"}'])
-    assert result.exit_code == 0
-    assert "ok" in result.output
-
-
-def test_settings_add_tokenizer_words(runner, mock):
-    mock.post("/settings/tokenizer/words").respond(json={"status": "ok"})
-    result = runner.invoke(main, ["--base-url", BASE_URL, "settings", "add-tokenizer-words", "--words", '["word1","word2"]'])
-    assert result.exit_code == 0
-    assert "ok" in result.output
-
-
-def test_settings_remove_tokenizer_words(runner, mock):
-    mock.delete("/settings/tokenizer/words").respond(json={"status": "ok"})
-    result = runner.invoke(main, ["--base-url", BASE_URL, "settings", "remove-tokenizer-words", "--words", '["word1"]'])
     assert result.exit_code == 0
     assert "ok" in result.output
 

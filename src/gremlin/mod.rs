@@ -377,7 +377,7 @@ pub fn build_router(
         .route("/settings/web-search", get(settings::get_web_search_settings))
         .route("/settings/web-search", put(settings::update_web_search_settings))
         .route("/proxy/web-search", post(settings::web_search_proxy))
-        .route("/settings/tokenizer", get(tokenizer_settings::get_tokenizer_settings))
+        .route("/settings/tokenizer/words", get(tokenizer_settings::get_tokenizer_words))
         .route("/settings/tokenizer/words", post(tokenizer_settings::add_tokenizer_words))
         .route("/settings/tokenizer/words", delete(tokenizer_settings::remove_tokenizer_words))
         // Data import

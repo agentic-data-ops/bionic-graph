@@ -107,9 +107,6 @@ struct Args {
     #[arg(long = "config")]
     config: Option<String>,
 
-    /// Path to tokenizer custom dictionary config (default: ~/.config/bionic-graph/tokenizer.json)
-    #[arg(long = "tokenizer-config")]
-    tokenizer_config: Option<String>,
 }
 
 #[tokio::main]
@@ -140,12 +137,8 @@ async fn main() {
         std::process::exit(1);
     }
 
-    // Initialize tokenizer with custom dictionary config.
-    let tokenizer_config = args.tokenizer_config.unwrap_or_else(|| {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        format!("{}/.config/bionic-graph/tokenizer.json", home)
-    });
-    bionic_graph::graph::tokenizer::set_config_path(std::path::PathBuf::from(&tokenizer_config));
+    // Initialize tokenizer with custom dictionary config from data directory.
+    bionic_graph::graph::tokenizer::set_data_dir(&data_dir_path);
 
     // Shared shutdown signal for all servers.
     let shutdown = Arc::new(tokio::sync::Notify::new());

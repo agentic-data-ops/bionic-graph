@@ -67,7 +67,7 @@ bgcli [global options] <topic> <action> [arguments]
 | `gremlin` | `execute`, `search` | Gremlin queries & search |
 | `document` | `list`, `create`, `get`, `update`, `delete`, `get-content` | Document management |
 | `extract` | `submit`, `get-task`, `list-tasks`, `wait` | Knowledge extraction |
-| `settings` | `get-search`, `set-search`, `get-llm`, `set-llm`, `get-rank`, `set-rank`, `get-web-search`, `set-web-search`, `proxy`, `get-tokenizer`, `add-tokenizer-words`, `remove-tokenizer-words` | All settings |
+| `settings` | `get-search`, `set-search`, `get-llm`, `set-llm`, `get-rank`, `set-rank`, `get-web-search`, `set-web-search`, `proxy` | All settings |
 | `maas` | `list-models`, `chat` | MaaS proxy |
 | **`chat`** | — | **Interactive chat session** |
 

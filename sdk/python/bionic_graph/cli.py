@@ -624,34 +624,6 @@ def settings_set_web_search(ctx, config):
     _output(c.set_web_search_settings(config).model_dump(), _fmt(ctx))
 
 
-@settings.command("get-tokenizer")
-@click.pass_context
-def settings_get_tokenizer(ctx):
-    """Get custom tokenizer dictionary words."""
-    c = _client(ctx)
-    _output(c.get_tokenizer_words().model_dump(), _fmt(ctx))
-
-
-@settings.command("add-tokenizer-words")
-@click.option("--words", required=True, callback=_parse_json_arg,
-              help='JSON array of custom words to add. Example: \'["deep learning", "knowledge graph"]\'')
-@click.pass_context
-def settings_add_tokenizer_words(ctx, words):
-    """Add custom words to the tokenizer dictionary."""
-    c = _client(ctx)
-    _output(c.add_tokenizer_words(words).model_dump(), _fmt(ctx))
-
-
-@settings.command("remove-tokenizer-words")
-@click.option("--words", required=True, callback=_parse_json_arg,
-              help='JSON array of custom words to remove. Example: \'["deep learning"]\'')
-@click.pass_context
-def settings_remove_tokenizer_words(ctx, words):
-    """Remove custom words from the tokenizer dictionary."""
-    c = _client(ctx)
-    _output(c.remove_tokenizer_words(words).model_dump(), _fmt(ctx))
-
-
 # ── index ──────────────────────────────────────────────────────────
 @main.group()
 def index():

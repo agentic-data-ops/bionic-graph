@@ -55,8 +55,8 @@ src/
 │   └── tests.rs             # #[cfg(test)] integration tests (90+)
 ├── gremlin/                 # REST API routes + handlers (axum)
 │   ├── mod.rs               # AppState, build_router (50+ routes), handlers
-│   ├── settings.rs          # GET/PUT /settings/search, /settings/llm, /settings/rank, /settings/tokenizer
-│   └── tokenizer_settings.rs # Custom tokenizer dictionary words CRUD
+│   ├── settings.rs          # GET/PUT /settings/graph/search, /settings/llm, /settings/graph/rank, /settings/web-search
+│   └── tokenizer_settings.rs # Custom tokenizer dictionary words CRUD (GET/POST/DELETE /settings/tokenizer/words)
 ├── graph_manager.rs         # Multi-graph manager (HashMap<String, Arc<Graph>>), close_all()
 ├── documents.rs             # Document CRUD (file storage + JSON index)
 ├── extract/                 # LLM-based document extraction pipeline
@@ -106,7 +106,7 @@ sdk/python/
 │   └── exceptions.py       # Error classes
 └── tests/
     ├── test_client.py      # SDK unit tests
-    ├── test_cli.py         # 57 CLI mock tests (all topics, all actions)
+    ├── test_cli.py         # 54 CLI mock tests (all topics, all actions)
     └── test_cli_real.sh    # Real backend CLI integration tests
 
 ### Frontend (React)
@@ -154,6 +154,8 @@ src/ui/
 │       ├── bitmap              — Bitmap (block-level free space tracking)
 │       ├── config.json         — Per-graph config (lru_cache_size_mb, log_rotation_size_mb, etc.)
 │       └── redo_<yyyymmddHHMMss>_<######>  — WAL files (size + time-based rotation)
+├── tokenizer/
+│   └── words.json             — Custom dictionary words for jieba-rs tokenizer
 └── documents/
     ├── index.json              — Document metadata index
     └── YYMMDD/
@@ -214,7 +216,7 @@ App.jsx
 | GET/PUT | `/settings/search` | Search settings (greedy/exact) |
 | GET/PUT | `/settings/rank` | Rank decay config |
 | GET/PUT | `/settings/llm` | LLM provider config |
-| GET | `/settings/tokenizer` | Tokenizer custom dictionary config |
+| GET | `/settings/tokenizer/words` | Tokenizer custom dictionary words (list) |
 | POST/DELETE | `/settings/tokenizer/words` | Add / remove custom tokenizer words |
 | GET/POST | `/documents` | List / create documents |
 | GET/PUT/DELETE | `/documents/:id` | Get / update / delete document metadata |
@@ -359,6 +361,7 @@ Decay ←─ spawn_rank_decay (background, every period secs)   checkpoint flush
 ## Watch out for
 - **Route params**: axum 0.7.9 requires `:param` syntax.
 - **Data dir**: `<data_dir>/graphs/<name>/` with files: `data`, `bitmap`, `config.json`, `redo_*`. No separate index file — metadata embedded in DataHeader.
+- **Tokenizer custom words**: stored at `<data_dir>/tokenizer/words.json`. Loaded at startup via `tokenizer::set_data_dir()`. Can be modified at runtime via `GET/POST/DELETE /settings/tokenizer/words`.
 - **Default graph**: `"graph0"` when `?graph=` omitted.
 - **POST /vertices**: top-level `name` (String), optional `keywords`, `labels`, `properties`. Properties must be flat (no nested dicts, arrays of strings/numbers/booleans only).
 - **POST /edges**: requires `source`, `target`, `name` (String). Optional `labels`, `keywords`, `strength` (f32, default 1.0), `properties`.
@@ -385,13 +388,13 @@ Decay ←─ spawn_rank_decay (background, every period secs)   checkpoint flush
 ## TODO
 - [ ] 顶点和边被读取到时更新atime和rank元数据，由读请求节点向其他所有节点广播touch操作
 - [ ] 检查是否仍然有写操作未进行广播
-- [ ] 将tokenizer配置文件持久化到数据目录：tokenizer/dict.json，不放到~/.config/bionic-graph下，不提供命令行入口
+- [x] 将tokenizer自定义词典配置文件迁移到数据目录：tokenizer/words.json，不放到~/.config/bionic-graph下，不提供命令行入口
 - [ ] 使用~/.config/bionic/graph下的master.json, workder1.json, workder2.json 启动集群 （先清理各自的数据目录）
 - [ ] 测试workder1写入，workder2读取，覆盖所有涉及转发和广播的场景
 - [ ] 验证master, workder1的前端是否正常
 - [ ] 刷新代码注释，涉及广播的场景，不再使用WAL日志了
-- [ ] 刷新REASONIX.md 和 README.md
+- [x] 刷新REASONIX.md 和 README.md
 - [ ] master将连接的节点信息进行持久化: cluster/nodes.json
 - [ ] workder首次连接到master时检查每个图库的配置与master是否一致，如果不一致，报错退出，不允许加入集群
 - [ ] 如果workder离线，master将未被成功处理的节点广播请求持久化到数据目录下的文件：cluster/broadcast.bin，并在节点状态正常时进行重试
-- [ ] 自定义索引的配置进行持久化，保存到图库的config.json中（indecies.properties）
+- [ ] 自定义索引的配置进行持久化，保存到图库的config.json中（indecies.properties），如果数据库崩溃，则需要重配置文件中加载自定义索引配置，并扫描数据文件进行重建

@@ -465,7 +465,7 @@ class Client:
         raise ApiError(502, data.get("error", "proxy search failed"))
 
     def get_tokenizer_words(self) -> TokenizerConfig:
-        return TokenizerConfig.model_validate(self._request("GET", "/settings/tokenizer"))
+        return TokenizerConfig.model_validate(self._request("GET", "/settings/tokenizer/words"))
 
     def add_tokenizer_words(self, words: list[str]) -> StatusResponse:
         return StatusResponse.model_validate(

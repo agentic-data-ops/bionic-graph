@@ -176,9 +176,6 @@ run "settings set-llm (default-model)" 0 settings set-llm --default-model "DeepS
 run "settings get-rank" 0 settings get-rank
 run "settings set-rank" 0 settings set-rank --config '{"auto_inc_rank_when_update": true}'
 run "settings get-web-search" 0 settings get-web-search
-run "settings get-tokenizer" 0 settings get-tokenizer
-run "settings add-tokenizer-words" 0 settings add-tokenizer-words --words '["test_cli_word"]'
-run "settings remove-tokenizer-words" 0 settings remove-tokenizer-words --words '["test_cli_word"]'
 
 # ====================================================================
 # 9. MAAS

@@ -241,7 +241,7 @@ After frontend changes, `touch src/ui_serve.rs` is required to force Rust recomp
 | `-H, --host` | from settings | HTTP bind address |
 | `-P, --port` | from settings | HTTP port |
 | `--config` | `~/.config/bionic-graph/settings.json` | Config file path |
-| `--tokenizer-config` | `~/.config/bionic-graph/tokenizer.json` | Tokenizer custom dictionary config path |
+
 
 ### Settings
 
@@ -502,8 +502,8 @@ curl localhost:8080/settings/llm
 # Web search providers
 curl localhost:8080/settings/web-search
 
-# Tokenizer custom dictionary
-curl localhost:8080/settings/tokenizer
+# Tokenizer custom dictionary (list words)
+curl localhost:8080/settings/tokenizer/words
 
 # Add custom tokenizer word
 curl -X POST localhost:8080/settings/tokenizer/words \
@@ -604,8 +604,7 @@ curl localhost:8080/tasks/<task_id>
 | `GET/PUT` | `/settings/llm` | LLM provider config |
 | `GET/PUT` | `/settings/web-search` | Web search provider config |
 | `POST` | `/proxy/web-search` | Web search proxy |
-| `GET` | `/settings/tokenizer` | Tokenizer custom dictionary config |
-| `POST/DELETE` | `/settings/tokenizer/words` | Add / remove custom tokenizer words |
+| `GET/POST/DELETE` | `/settings/tokenizer/words` | List / add / remove custom tokenizer words |
 | `GET` | `/documents` | List documents |
 | `POST` | `/documents` | Create a document |
 | `GET/PUT/DELETE` | `/documents/:id` | Get/update/delete document metadata |
@@ -686,7 +685,7 @@ src/
 ├── gremlin/                   # REST API (axum)
 │   ├── mod.rs                 # 45+ route handlers
 │   ├── settings.rs            # /settings/graph/search, /settings/llm, /settings/graph/rank, /settings/web-search, /web-search/proxy
-│   └── tokenizer_settings.rs  # /settings/tokenizer + /settings/tokenizer/words
+│   └── tokenizer_settings.rs  # /settings/tokenizer/words (GET/POST/DELETE)
 ├── extract/                   # Document extraction pipeline
 │   ├── config.rs, document.rs, extraction.rs
 │   ├── llm_client.rs, task_manager.rs
@@ -794,9 +793,6 @@ bgcli settings get-rank
 bgcli settings set-rank --config '{"auto_inc_rank_when_read":false}'
 bgcli settings get-web-search
 bgcli settings set-web-search --config '{"default_provider":"Baidu","providers":[{"name":"Baidu","search_url":"..."}]}'
-bgcli settings get-tokenizer
-bgcli settings add-tokenizer-words --words '["knowledge-graph"]'
-bgcli settings remove-tokenizer-words --words '["knowledge-graph"]'
 
 # Proxy services
 bgcli proxy web-search --query "Game of Thrones" --provider Baidu
