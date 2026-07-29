@@ -186,6 +186,12 @@ pub async fn create_edge_property_index(
     State(state): State<AppState>,
     Json(body): Json<RegisterKeyBody>,
 ) -> Json<serde_json::Value> {
+    // Worker → Master forwarding
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
+    if let Some(resp) = try_forward_json(&state, "POST", "/indices/edge/properties", None, None, Some(&body_str)).await {
+        return match resp { Ok(json) => json, Err(_) => Json(serde_json::json!({"status": "error"})) };
+    }
+
     let graph = get_graph(&state);
     let already = {
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
@@ -197,6 +203,7 @@ pub async fn create_edge_property_index(
         drop(mi);
         scan_edge_property(&graph, &body.key);
     }
+    broadcast_request_to_workers(&state.cluster_registry, "POST", "/indices/edge/properties", None, Some(&body_str));
     Json(serde_json::json!({
         "status": "ok", "key": body.key, "type": "edge", "created": !already,
     }))
@@ -244,9 +251,14 @@ pub async fn delete_edge_property_index(
     State(state): State<AppState>,
     Path(key): Path<String>,
 ) -> Json<serde_json::Value> {
+    // Worker → Master forwarding
+    if let Some(resp) = try_forward_json(&state, "DELETE", &format!("/indices/edge/properties/{}", key), None, None, None).await {
+        return match resp { Ok(json) => json, Err(_) => Json(serde_json::json!({"status": "error"})) };
+    }
     let graph = get_graph(&state);
     let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
     let deleted = mi.unregister_edge_property(&key);
+    broadcast_request_to_workers(&state.cluster_registry, "DELETE", &format!("/indices/edge/properties/{}", key), None, None);
     Json(serde_json::json!({"status": "ok", "key": key, "deleted": deleted}))
 }
 
@@ -254,6 +266,11 @@ pub async fn delete_edge_property_indices(
     State(state): State<AppState>,
     Json(body): Json<UnregisterKeysBody>,
 ) -> Json<serde_json::Value> {
+    // Worker → Master forwarding
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
+    if let Some(resp) = try_forward_json(&state, "DELETE", "/indices/edge/properties", None, None, Some(&body_str)).await {
+        return match resp { Ok(json) => json, Err(_) => Json(serde_json::json!({"status": "error"})) };
+    }
     let graph = get_graph(&state);
     let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
     let mut deleted = Vec::new();
@@ -262,5 +279,6 @@ pub async fn delete_edge_property_indices(
             deleted.push(k.clone());
         }
     }
+    broadcast_request_to_workers(&state.cluster_registry, "DELETE", "/indices/edge/properties", None, Some(&body_str));
     Json(serde_json::json!({"status": "ok", "deleted": deleted}))
 }
