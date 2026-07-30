@@ -107,8 +107,6 @@ pub const WRITE_PATHS: &[&str] = &[
     "/graphs",
     "/documents",
     "/settings",
-    "/compact",
-    "/reindex",
     "/extract",
 ];
 
