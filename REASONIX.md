@@ -467,6 +467,7 @@ Master handler (create_vertex, create_document 等)
 - **Document broadcast with same UUID**: `CreateDocumentBody` 支持可选 `id` 字段，广播时携带 master UUID，workers 在 REPLAYING 模式下使用指定 ID 创建。`UpdateDocumentBody` 支持可选 `graph_name` 字段。
 - **Document delete ?clean**: 后端解析 `?clean=true` 查询参数，控制是否清理关联图谱数据，集群转发和广播时携带该参数。
 - **broadcast_request_to_workers**: 新增 `query: Option<&str>` 参数，支持广播时传递查询参数。
+- **Query parameter faithful pass-through**: 所有转发和广播的查询参数（`?force`, `?clean`）均**忠实于原始请求**传递，不做默认值推断。`params.force == Some(true)` 时广播 `?force=true`，`Some(false)` 时广播 `?force=false`，`None` 时不加。`delete_document` 的 `clean_query` 使用 `params.clean.map(|c| format!("clean={}", c))` 而非 `unwrap_or(false)` 隐含默认值。
 - **Touch broadcast**: 读取触发 rank/atime 更新时，Worker→Master 报告 + Master 中继广播到所有 Worker。直接 HTTP POST `TouchRequest{vertex_ids, edge_ids}` 到各节点的 `/cluster/touch`，**不走 WAL**。
 - **Document lifecycle**: created without graph association. Graph assigned during extraction via `X-Graph-Name` header.
 - **Batch API**: `/batch/load` upserts vertices by `name`, edges by `(source_name, target_name, name)`. `update_existing` (default true) controls upsert vs append. `/batch/delete` cascades to connected edges.
@@ -494,3 +495,10 @@ Master handler (create_vertex, create_document 等)
 - [x] axum middleware 检测 replay header 并设置 task-local IS_BROADCAST_REPLAY
 - [x] try_forward_read_json 绕过 replay 检查用于读转发
 - [x] 文档生命周期集群同步（创建/更新/提取/删除含 clean 参数）
+- [x] 软/硬删除广播路径参数传递 — delete_vertex/delete_edge/delete_document 的 query 参数（force/clean）忠实地按原始请求传递，不做默认值推断
+- [x] submit_extraction/extract_document_handler 转发补充 graph_name 参数
+- [x] InfoPanel saveEdit 的 setUpdateSuccess 作用域修复（顶层函数无法访问父组件 useState）
+- [x] onDataChange 改为 (items, msgId) 按消息ID直接定位，不再遍历匹配/去重合并
+- [x] formatGraphContext 增强：顶点含 id/name/labels/keywords/properties；边含 id/name/sourceName/targetName/sourceId/targetId/strength/labels/keywords/properties
+- [x] GraphViewer 容器 div 始终渲染（不再条件判断），vis-network 生命周期修复
+- [x] 前端添加顶点/边的持久化和 UI 刷新修复

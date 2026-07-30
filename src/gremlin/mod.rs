@@ -863,10 +863,16 @@ pub async fn delete_vertex(
     match result {
         Ok(_) => {
             let graph_name = graph.name.clone();
-            let path = format!("/vertices/{}?force=true", id);
+            // Broadcast the original query parameter faithfully (e.g. ?force=true,
+            // ?force=false, or none) — same as forwarding's query_str.
+            let broadcast_path = if let Some(ref qs) = query_str {
+                format!("/vertices/{}?{}", id, qs)
+            } else {
+                format!("/vertices/{}", id)
+            };
             broadcast_write_result(
                 &state.cluster_registry, &graph,
-                "DELETE", &path, &graph_name, "{}",
+                "DELETE", &broadcast_path, &graph_name, "{}",
             );
             StatusCode::OK
         }
@@ -1110,7 +1116,12 @@ pub async fn delete_edge(
     match result {
         Ok(_) => {
             let graph_name = graph.name.clone();
-            broadcast_write_result(&state.cluster_registry, &graph, "DELETE", &format!("/edges/{}", id), &graph_name, "{}");
+            let broadcast_path = if let Some(ref qs) = query_str {
+                format!("/edges/{}?{}", id, qs)
+            } else {
+                format!("/edges/{}", id)
+            };
+            broadcast_write_result(&state.cluster_registry, &graph, "DELETE", &broadcast_path, &graph_name, "{}");
             StatusCode::OK
         }
         Err(_) => StatusCode::NOT_FOUND,
@@ -1639,11 +1650,12 @@ pub async fn delete_document(
     Path(id): Path<String>,
     Query(params): Query<DeleteDocumentParams>,
 ) -> Json<serde_json::Value> {
-    let clean = params.clean.unwrap_or(false);
-    let clean_query = if clean { Some("clean=true") } else { None };
+    // Pass through the original query parameter faithfully — no default value.
+    let clean_query = params.clean.map(|c| format!("clean={}", c));
+    let clean = params.clean.unwrap_or(false); // local execution decision
 
     // Worker → Master forwarding
-    if let Some(resp) = try_forward_json(&state, "DELETE", &format!("/documents/{}", id), clean_query, None, None).await {
+    if let Some(resp) = try_forward_json(&state, "DELETE", &format!("/documents/{}", id), clean_query.as_deref(), None, None).await {
         return match resp {
             Ok(json) => json,
             Err(_) => Json(serde_json::json!({"status": "error"})),
@@ -1711,7 +1723,7 @@ pub async fn delete_document(
     // handles vertex/edge deletion locally during replay.
 
     if deleted {
-        broadcast_request_to_workers(&state.cluster_registry, "DELETE", &format!("/documents/{}", id), clean_query, None, None);
+        broadcast_request_to_workers(&state.cluster_registry, "DELETE", &format!("/documents/{}", id), clean_query.as_deref(), None, None);
         Json(serde_json::json!({"status": "ok"}))
     } else {
         Json(serde_json::json!({"status": "error", "message": "not found"}))
@@ -1746,9 +1758,10 @@ pub async fn submit_extraction(
     headers: axum::http::HeaderMap,
     Json(body): Json<SubmitExtractionBody>,
 ) -> Result<Json<SubmitExtractionResponse>, StatusCode> {
-    // Worker → Master forwarding
+    // Worker → Master forwarding (include graph name)
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
     let body_str = serde_json::to_string(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
-    if let Some(resp) = try_forward_json(&state, "POST", "/extract", None, None, Some(&body_str)).await {
+    if let Some(resp) = try_forward_json(&state, "POST", "/extract", None, graph_name, Some(&body_str)).await {
         return resp.map(|json| {
             Json(SubmitExtractionResponse {
                 task_id: json.get("task_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
@@ -2091,11 +2104,12 @@ pub async fn extract_document_handler(
     Path(document_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<SubmitExtractionResponse>, StatusCode> {
-    // Worker → Master forwarding
+    // Worker → Master forwarding (include graph name)
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
     let body_str = serde_json::to_string(&SubmitExtractionBody {
         document_id: document_id.clone(),
     }).map_err(|_| StatusCode::BAD_REQUEST)?;
-    if let Some(resp) = try_forward_json(&state, "POST", &format!("/documents/{}/extract", document_id), None, None, Some(&body_str)).await {
+    if let Some(resp) = try_forward_json(&state, "POST", &format!("/documents/{}/extract", document_id), None, graph_name, Some(&body_str)).await {
         return resp.map(|json| {
             Json(SubmitExtractionResponse {
                 task_id: json.get("task_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
