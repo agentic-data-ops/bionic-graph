@@ -58,6 +58,7 @@ pub async fn forward_write(
     let body = serde_json::to_string(request)?;
 
     let client = reqwest::Client::new();
+    log::warn!("forward_write POST {} body={}", url, body);
     let resp = client
         .post(&url)
         .header("Content-Type", "application/json")
@@ -67,6 +68,7 @@ pub async fn forward_write(
 
     let status = resp.status().as_u16();
     let response_body = resp.text().await?;
+    log::warn!("forward_write response: status={} body={}", status, response_body);
 
     if status >= 200 && status < 300 {
         let forwarded: ForwardedResponse = serde_json::from_str(&response_body)?;

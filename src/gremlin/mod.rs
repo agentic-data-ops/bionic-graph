@@ -63,15 +63,22 @@ pub(crate) async fn try_forward_json(
     };
     match crate::cluster::forward::forward_write(master_addr, &req).await {
         Ok(resp) => {
-            if resp.success {
+            if resp.success && resp.status_code < 300 {
                 if let Some(body_str) = resp.body {
-                    match serde_json::from_str(&body_str) {
-                        Ok(val) => Some(Ok(Json(val))),
-                        Err(_) => Some(Err(StatusCode::INTERNAL_SERVER_ERROR)),
+                    if body_str.is_empty() {
+                        Some(Ok(Json(serde_json::json!({"status": "ok"}))))
+                    } else {
+                        match serde_json::from_str(&body_str) {
+                            Ok(val) => Some(Ok(Json(val))),
+                            Err(_) => Some(Err(StatusCode::INTERNAL_SERVER_ERROR)),
+                        }
                     }
                 } else {
                     Some(Ok(Json(serde_json::json!({"status": "ok"}))))
                 }
+            } else if resp.success {
+                // Master returned non-2xx status (e.g. 404) - propagate it
+                Some(Err(StatusCode::from_u16(resp.status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)))
             } else {
                 Some(Err(StatusCode::from_u16(resp.status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)))
             }
@@ -111,15 +118,22 @@ pub(crate) async fn try_forward_read_json(
     };
     match crate::cluster::forward::forward_write(master_addr, &req).await {
         Ok(resp) => {
-            if resp.success {
+            if resp.success && resp.status_code < 300 {
                 if let Some(body_str) = resp.body {
-                    match serde_json::from_str(&body_str) {
-                        Ok(val) => Some(Ok(Json(val))),
-                        Err(_) => Some(Err(StatusCode::INTERNAL_SERVER_ERROR)),
+                    if body_str.is_empty() {
+                        Some(Ok(Json(serde_json::json!({"status": "ok"}))))
+                    } else {
+                        match serde_json::from_str(&body_str) {
+                            Ok(val) => Some(Ok(Json(val))),
+                            Err(_) => Some(Err(StatusCode::INTERNAL_SERVER_ERROR)),
+                        }
                     }
                 } else {
                     Some(Ok(Json(serde_json::json!({"status": "ok"}))))
                 }
+            } else if resp.success {
+                // Master returned non-2xx status (e.g. 404) - propagate it
+                Some(Err(StatusCode::from_u16(resp.status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)))
             } else {
                 Some(Err(StatusCode::from_u16(resp.status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)))
             }
@@ -160,8 +174,11 @@ pub(crate) async fn try_forward_status(
     };
     match crate::cluster::forward::forward_write(master_addr, &req).await {
         Ok(resp) => {
-            if resp.success {
+            if resp.success && resp.status_code < 300 {
                 Some(StatusCode::OK)
+            } else if resp.success {
+                // Master returned non-2xx status — propagate it
+                Some(StatusCode::from_u16(resp.status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR))
             } else {
                 Some(StatusCode::from_u16(resp.status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR))
             }
