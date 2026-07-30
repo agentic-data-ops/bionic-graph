@@ -44,7 +44,7 @@ function isValidKeywords(text) {
   return true;
 }
 
-/** Extract and format graph search context from `search_progress` messages.
+/** Extract and format graph search context from `graph_search` messages.
  *  Output uses [Entity] / [Relation] labels in English. */
 function formatGraphContext(items) {
   if (!items?.length) return '';
@@ -76,10 +76,10 @@ function formatGraphContext(items) {
 /** Collect graph search data from conversation history + current search result. */
 function collectGraphContext(convMessages, currentSearchData) {
   const ctx = [];
-  // Historical: extract from search_progress messages
+  // Extract graph data from graph_search messages
   if (convMessages) {
     for (const msg of convMessages) {
-      if (msg.type === 'search_progress' && msg.graphData?.data?.length) {
+      if (msg.type === 'graph_search' && msg.graphData?.data?.length) {
         ctx.push(...msg.graphData.data);
       }
     }
@@ -172,7 +172,7 @@ export default function ChatArea({
           if (provider) {
             const wsSteps = [];
             const wsProgressId = uid();
-            const wsProgressMsg = { id: wsProgressId, type: 'web_search_progress', title: text, steps: wsSteps, graphName: defaultGraph };
+            const wsProgressMsg = { id: wsProgressId, type: 'web_search', title: text, steps: wsSteps, graphName: defaultGraph };
             setSearchStream(wsProgressMsg);
             setIsGenerating(true);
 
@@ -223,7 +223,7 @@ export default function ChatArea({
         } catch (e) {
           console.error('Web search error:', e);
           setSearchStream(null);
-          allSearchMsgs.push({ id: uid(), type: 'web_search_progress', title: text, steps: [{ icon: '❌', name: `Web search failed: ${e.message}`, status: 'failed' }], graphName: defaultGraph });
+          allSearchMsgs.push({ id: uid(), type: 'web_search', title: text, steps: [{ icon: '❌', name: `Web search failed: ${e.message}`, status: 'failed' }], graphName: defaultGraph });
         }
       }
 
@@ -234,7 +234,7 @@ export default function ChatArea({
         const ttMicros = timeTravel && timeTravelPoint ? localDatetimeToUTC(timeTravelPoint) : null;
         const progressMsgId = uid();
         const ttEnabled = (Array.isArray(graphMetas) ? graphMetas.find(g => g.name === defaultGraph)?.time_travel : false) || false;
-        const progressMsg = { id: progressMsgId, type: 'search_progress', title: text, steps, timeTravelEnabled: ttEnabled, timeTravelAt: ttMicros };
+        const progressMsg = { id: progressMsgId, type: 'graph_search', title: text, steps, timeTravelEnabled: ttEnabled, timeTravelAt: ttMicros };
         if (allSearchMsgs.length === 0) {
           setSearchStream(progressMsg);
         }
@@ -420,19 +420,38 @@ ${graphCtx}`,
           onSaveToKB={onSaveToKB}
           onDataChange={(items) => {
             const conv = activeConv;
-            if (!conv) return;
+            if (!conv || !items.length) return;
             const itemIds = new Set(items.map(i => i.id));
-            const updatedMsgs = conv.messages.map((m) => {
+            // Find the LAST message whose graph data matches at least one item,
+            // or the last message with graph data (for empty-state additions).
+            let targetIdx = -1;
+            for (let i = conv.messages.length - 1; i >= 0; i--) {
+              const m = conv.messages[i];
               const graphSrc = m.graphData || m.data;
-              if (graphSrc?.data?.length) {
-                const match = graphSrc.data.some(d => itemIds.has(d.id));
-                if (match) {
-                  if (m.graphData) return { ...m, graphData: { ...m.graphData, data: items } };
-                  return { ...m, data: { ...m.data, data: items } };
+              if (graphSrc?.data) {
+                if (graphSrc.data.some(d => itemIds.has(d.id)) || targetIdx === -1) {
+                  targetIdx = i;
+                  if (graphSrc.data.some(d => itemIds.has(d.id))) break; // exact match found
                 }
               }
-              return m;
-            });
+            }
+            if (targetIdx === -1) return;
+            const msg = conv.messages[targetIdx];
+            const graphSrc = msg.graphData || msg.data;
+            const existing = graphSrc.data || [];
+            const merged = [...existing];
+            for (const item of items) {
+              if (!existing.some(d => d.id === item.id && d.type === item.type)) {
+                merged.push(item);
+              }
+            }
+            if (merged.length === existing.length) return;
+            const updatedMsgs = [...conv.messages];
+            if (msg.graphData) {
+              updatedMsgs[targetIdx] = { ...msg, graphData: { ...msg.graphData, data: merged } };
+            } else {
+              updatedMsgs[targetIdx] = { ...msg, data: { ...msg.data, data: merged } };
+            }
             onUpdateConv({ ...conv, messages: updatedMsgs });
           }}
         />

@@ -916,31 +916,26 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
     onDataChange?.(collectUpdatedData());
   }, [confirmDeleteEdge, graph, t, onDataChange, collectUpdatedData]);
 
-  if (!data?.data?.length) {
-    return <div className="flex items-center justify-center text-[var(--text-tertiary)] text-sm min-h-[200px]">{t('graphViewer.noData')}</div>;
-  }
-
   return (
     <div className={`flex-1 flex min-h-0 ${className || ''}`} style={{ height: '100%', width: '100%' }}>
       <div className="relative flex-1 min-h-0">
         {/* Toolbar: label filter + search + add buttons */}
         <div className="absolute top-3 left-3 z-10 flex items-start gap-2">
-          {/* Label filter dropdown */}
-          {allLabels.length > 0 && (
-            <div className="relative">
-              <button
-                className="px-2.5 py-1.5 rounded-lg bg-[var(--bg-secondary)] text-[var(--text-primary)] text-xs font-medium hover:bg-[var(--bg-hover)] transition-all shadow-lg whitespace-nowrap flex items-center gap-1.5"
-                onClick={() => setLabelFilterOpen(!labelFilterOpen)}
-              >
-                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
-                </svg>
-                {labelFilter.length > 0 ? (
-                  <span className="text-[var(--accent)]">{labelFilter.length}</span>
-                ) : (
-                  <span>{t('search.filterVertexLabel')}</span>
-                )}
-              </button>
+          {/* Label filter dropdown — always visible */}
+          <div className="relative">
+            <button
+              className="px-2.5 py-1.5 rounded-lg bg-[var(--bg-secondary)] text-[var(--text-primary)] text-xs font-medium hover:bg-[var(--bg-hover)] transition-all shadow-lg whitespace-nowrap flex items-center gap-1.5"
+              onClick={() => setLabelFilterOpen(!labelFilterOpen)}
+            >
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
+              </svg>
+              {labelFilter.length > 0 ? (
+                <span className="text-[var(--accent)]">{labelFilter.length}</span>
+              ) : (
+                <span>{t('search.filterVertexLabel')}</span>
+              )}
+            </button>
               {labelFilterOpen && (
                 <>
                   <div className="fixed inset-0 z-30" onClick={() => setLabelFilterOpen(false)} />
@@ -970,7 +965,6 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
                 </>
               )}
             </div>
-          )}
           <div className="w-48">
             <div className="relative">
               <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-[var(--text-tertiary)] pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
@@ -1085,10 +1079,17 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
                       const res = await addVertex(labels, props, graph, newVertexName.trim(), keywords);
                       if (res.id) {
                         const ns = nodesRef.current;
-                        if (ns) ns.add({ id: res.id, label: newVertexName.trim(), _original: { type: 'vertex', id: res.id, name: newVertexName.trim(), keywords, labels } });
-                        netRef.current?.fit({ animation: { duration: 300 } });
-                        setAddSuccess(t('graph.addSuccess'));
-                        onDataChange?.(collectUpdatedData());
+                        if (ns) {
+                          ns.add({ id: res.id, label: newVertexName.trim(), _original: { type: 'vertex', id: res.id, name: newVertexName.trim(), keywords, labels } });
+                          netRef.current?.fit({ animation: { duration: 300 } });
+                          setAddSuccess(t('graph.addSuccess'));
+                          onDataChange?.(collectUpdatedData());
+                        } else {
+                          // Network not yet initialized (empty state). Trigger a refresh
+                          // so the parent re-renders with the new vertex visible.
+                          onDataChange?.([{ type: 'vertex', id: res.id, name: newVertexName.trim(), keywords, labels }]);
+                          setAddSuccess(t('graph.addSuccess'));
+                        }
                       }
                     } catch (e) { console.error('Add vertex failed:', e); }
                     setShowAddVertex(false);
@@ -1195,10 +1196,14 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
                         if (es) {
                           const exists = es.get({ filter: (e) => e.from === src && e.to === tgt });
                           if (exists.length === 0) es.add({ id: res.id, from: src, to: tgt, label: newEdgeLabel.trim(), _original: { type: 'edge', id: res.id, name: newEdgeLabel.trim(), source: src, target: tgt, labels, keywords, strength, properties: props } });
+                          netRef.current?.fit({ animation: { duration: 300 } });
                         }
-                        netRef.current?.fit({ animation: { duration: 300 } });
+                        // Pass just the new edge item, same pattern as addVertex empty-state.
+                        // ChatArea's onDataChange merge logic will find the target message
+                        // by matching the edge's source/target vertex IDs already in the data.
+                        onDataChange?.([{ type: 'edge', id: res.id, name: newEdgeLabel.trim(), source: src, target: tgt, labels, keywords, strength, properties: props }]);
+                        console.log('[addEdge] onDataChange called with edge:', res.id);
                         setAddSuccess(t('graph.addSuccess'));
-                        onDataChange?.(collectUpdatedData());
                       }
                     } catch (e) { console.error('Add edge failed:', e); }
                     setShowAddEdge(false);
@@ -1210,7 +1215,11 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
           </div>
         )}
 
-        <div ref={containerRef} className="w-full h-full" />
+        {data?.data?.length ? (
+          <div ref={containerRef} className="w-full h-full" />
+        ) : (
+          <div className="flex items-center justify-center text-[var(--text-tertiary)] text-sm min-h-[200px] h-full">{t('graphViewer.noData')}</div>
+        )}
       </div>
       {selected && (
         <InfoPanel
