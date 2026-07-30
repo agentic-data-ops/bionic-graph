@@ -291,12 +291,11 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onS
       // Update vis-network DataSet so the visual label refreshes immediately,
       // and collectUpdatedData() includes the updated values.
       if (type === 'edge') {
-        if (edgesRef?.current) edgesRef.current.update({ id: item.id, label: name || `#${item.id}` });
+        if (edgesRef?.current) edgesRef.current.update({ id: item.id, label: name || `#${item.id}`, _original: item });
       } else if (type === 'vertex') {
-        if (nodesRef?.current) nodesRef.current.update({ id: item.id, label: name || `#${item.id}` });
+        if (nodesRef?.current) nodesRef.current.update({ id: item.id, label: name || `#${item.id}`, _original: item });
       }
       setEditing(false);
-      setUpdateSuccess(t('graph.updateSuccess'));
       onDataChange?.();
     } catch (e) {
       setError(e.message || 'Save failed');
@@ -887,7 +886,6 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
     try {
       await deleteVertex(vid, graph, force);
     } catch (e) {
-      console.error('Delete failed:', e);
       setConfirmDelete(null);
       return;
     }
@@ -911,7 +909,6 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
     try {
       await deleteEdge(eid, graph, force);
     } catch (e) {
-      console.error('Delete edge failed:', e);
       setConfirmDeleteEdge(null);
       return;
     }
