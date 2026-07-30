@@ -227,6 +227,8 @@ if crate::graph::graph::is_broadcast_replay() {
 
 创建 `create_vertex_with_id` / `create_edge_with_id` 函数时，需处理：
 
+#### 顶点指定 ID 创建
+
 ```rust
 pub fn create_vertex_with_id(
     graph: &Graph,
@@ -242,7 +244,6 @@ pub fn create_vertex_with_id(
         mi.vertex_id.get(vid).copied()
     };
     if let Some(ptr) = existing {
-        // 理论上 worker 不应有本地写入（replay 模式独占），所以不应重复
         log::error!(
             "ID collision: vertex {} already exists at block={} chunk={}. \
              This should not happen during cluster replay.",
@@ -252,36 +253,75 @@ pub fn create_vertex_with_id(
     }
 
     // 2. 更新自增器，使其不会回头重复分配该 ID
-    //    alloc_vertex_id 返回 max(current_max, vid) 并递增
     graph.ensure_vertex_id(vid);
 
-    // 3. 创建 vertex 数据（与 create_vertex 相同）
+    // 3. 创建 vertex 数据（与 create_vertex 相同，使用指定 vid）
     let payload = VertexPayload { ... };
     ...
 }
 ```
 
-`ensure_vertex_id(vid)` 方法（在 `graph.graph.rs` 中新增）：
+#### 边指定 ID 创建
 
 ```rust
-/// 确保自增器的值至少为 `vid`，防止后续 alloc_vertex_id() 返回重复 ID。
-/// 只在 replay 模式中调用（worker 通过广播创建时）。
+pub fn create_edge_with_id(
+    graph: &Graph,
+    eid: u32,
+    source: u32,
+    target: u32,
+    name: &str,
+    labels: &[String],
+    keywords: &[String],
+    strength: f32,
+    properties: &HashMap<String, PropertyValue>,
+) -> StorageResult<u32> {
+    // 1. 检查边 ID 是否重复
+    let existing = {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        mi.edge_id.get(eid).copied()
+    };
+    if let Some(ptr) = existing {
+        log::error!(
+            "ID collision: edge {} already exists at block={} chunk={}. \
+             This should not happen during cluster replay.",
+            eid, ptr.block_idx, ptr.chunk_offset
+        );
+        return Err(StorageError::Other(format!("edge ID {} already exists", eid)));
+    }
+
+    // 2. 更新自增器
+    graph.ensure_edge_id(eid);
+
+    // 3. 创建 edge 数据（与 create_edge 相同，使用指定 eid）
+    let payload = EdgePayload { ... };
+    ...
+}
+```
+
+#### 自增器同步方法
+
+```rust
+// graph.graph.rs 中新增
 pub fn ensure_vertex_id(&self, vid: u32) {
     let max = self.next_vertex_id.fetch_max(vid + 1, Ordering::Relaxed);
     if max > vid {
         log::warn!(
             "vertex ID {} is behind allocator (max={}). \
-             This may indicate out-of-order replay.",
-            vid, max - 1
+             This may indicate out-of-order replay.", vid, max - 1
+        );
+    }
+}
+
+pub fn ensure_edge_id(&self, eid: u32) {
+    let max = self.next_edge_id.fetch_max(eid + 1, Ordering::Relaxed);
+    if max > eid {
+        log::warn!(
+            "edge ID {} is behind allocator (max={}). \
+             This may indicate out-of-order replay.", eid, max - 1
         );
     }
 }
 ```
-
-**为什么理论上不会重复**：
-- Worker 在 `REPLAYING` 模式下**不会接受本地写入请求**（`try_forward_json` 在 replay 时返回 None，但 worker 不会主动创建数据）
-- 所有写入都来自 master 的广播，按顺序依次 replay
-- 如果 ID 确实重复了，说明 master 和 worker 的初始状态不一致，这是一个严重的数据一致性问题，应该记录错误并中止
 
 ## 4. 实施步骤
 
