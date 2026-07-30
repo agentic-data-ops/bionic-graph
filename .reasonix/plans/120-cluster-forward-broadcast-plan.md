@@ -170,6 +170,58 @@ ClusterRequest
 - `Ok(None)` → 本地执行（master 节点或 replay 中）
 - `Err(status)` → 转发失败
 
+### 3.7 tokenizer-sync 统一到 broadcast 接口
+
+当前 `tokenizer_settings.rs` 中 `add_tokenizer_words` 和 `remove_tokenizer_words` 的广播使用独立的 HTTP 调用（直接 `reqwest::Client::new().post(...)` 到 `/cluster/tokenizer-sync`），不走统一的 `broadcast_request_to_workers` 通路。
+
+改造后，`ClusterGateway::broadcast()` 内部自动识别 `/settings/tokenizer/words` 请求，发送到 `/cluster/tokenizer-sync` 而非 `/cluster/execute`：
+
+```rust
+// src/cluster/gateway.rs
+impl ClusterGateway {
+    pub fn broadcast(&self, req: &ClusterRequest) {
+        if crate::graph::graph::is_broadcast_replay() { return; }
+        let Some(ref registry) = self.registry else { return; };
+        let workers = registry.alive_workers();
+        if workers.is_empty() { return; }
+
+        let is_tokenizer = req.path == "/settings/tokenizer/words";
+        let endpoint = if is_tokenizer {
+            "/cluster/tokenizer-sync"
+        } else {
+            "/cluster/execute"
+        };
+
+        let payload = ForwardedRequest {
+            method: req.method.clone(),
+            path: req.path.clone(),
+            query: None,
+            body: req.body.clone(),
+            graph: req.graph.clone(),
+        };
+
+        for worker in &workers {
+            let url = format!("http://{}{}", worker.cluster_addr, endpoint);
+            let p = payload.clone();
+            tokio::spawn(async move {
+                if let Err(e) = reqwest::Client::new()
+                    .post(&url).json(&p).send().await
+                {
+                    log::warn!("Broadcast to worker {} failed: {}", worker.node_id, e);
+                }
+            });
+        }
+
+        // tokenizer 还需额外发送 operation 字段（add/remove）
+        if is_tokenizer {
+            // ClusterRequest.body 已包含 {"words": [...]}，
+            // handle_tokenizer_sync 从 ForwardedRequest.body 解析 words
+            // 无需额外处理
+        }
+    }
+}
+```
+
 ### 3.7 非转发场景处理
 
 - **任务查询**：`get_task_handler` / `list_tasks_handler` 使用 `try_forward_read_json`（不检查 REPLAYING）
