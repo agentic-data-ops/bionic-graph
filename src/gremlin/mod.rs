@@ -723,6 +723,9 @@ pub struct CreateVertexBody {
     pub keywords: Option<Vec<String>>,
     #[serde(default)]
     pub properties: std::collections::HashMap<String, crate::storage::types::PropertyValue>,
+    /// Optional ID for replication (used during cluster replay to keep IDs in sync).
+    #[serde(default)]
+    pub id: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -747,24 +750,34 @@ pub async fn create_vertex(
         });
     }
 
+    // During cluster replay, the worker's auto-increment counter naturally
+    // produces the same ID as the master (sequential operations, no gap).
     let graph = resolve_graph_from_request(&state, &headers)
         .map_err(|_| StatusCode::NOT_FOUND)?;
+    let labels = body.labels.clone().unwrap_or_default();
+    let keywords = body.keywords.clone().unwrap_or_default();
     let vid = crate::graph::locked::create_vertex_locked(
         &graph,
         &body.name,
-        &body.labels.unwrap_or_default(),
-        &body.keywords.unwrap_or_default(),
+        &labels,
+        &keywords,
         &body.properties,
     )
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    // Broadcast to workers in cluster mode.
+    // Broadcast to workers via HTTP (full handler processing, including tokenizer).
     let graph_name = graph.name.clone();
-    let response_body = serde_json::json!({"id": vid}).to_string();
-    broadcast_write_result(
-        &state.cluster_registry, &graph,
+    let broadcast_body = serde_json::json!({
+        "name": &body.name,
+        "labels": &body.labels,
+        "keywords": &body.keywords,
+        "properties": &body.properties,
+        "id": vid,
+    }).to_string();
+    broadcast_request_to_workers(
+        &state.cluster_registry,
         "POST", "/vertices",
-        &graph_name, &response_body,
+        None, Some(&graph_name), Some(&broadcast_body),
     );
 
     Ok(Json(CreateVertexResponse { id: vid }))
@@ -788,10 +801,11 @@ pub async fn update_vertex(
 ) -> StatusCode {
     // Worker → Master forwarding
     let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
     let path = format!("/vertices/{}", id);
     if let Some(resp) = try_forward_json(
         &state, "PUT", &path, None, graph_name,
-        Some(&serde_json::to_string(&body).unwrap_or_default()),
+        Some(&body_str),
     ).await {
         return if resp.is_ok() { StatusCode::OK } else { StatusCode::BAD_GATEWAY };
     }
@@ -812,8 +826,7 @@ pub async fn update_vertex(
     ) {
         Ok(_) => {
             let graph_name = graph.name.clone();
-            let response_body = serde_json::json!({"id": id}).to_string();
-            broadcast_write_result(&state.cluster_registry, &graph, "PUT", &format!("/vertices/{}", id), &graph_name, &response_body);
+            broadcast_request_to_workers(&state.cluster_registry, "PUT", &format!("/vertices/{}", id), None, Some(&graph_name), Some(&body_str));
             StatusCode::OK
         }
         Err(_) => StatusCode::NOT_FOUND,
@@ -870,9 +883,10 @@ pub async fn delete_vertex(
             } else {
                 format!("/vertices/{}", id)
             };
-            broadcast_write_result(
-                &state.cluster_registry, &graph,
-                "DELETE", &broadcast_path, &graph_name, "{}",
+            let delete_body = serde_json::json!({"id": id}).to_string();
+            broadcast_request_to_workers(
+                &state.cluster_registry, "DELETE", &broadcast_path,
+                None, Some(&graph_name), Some(&delete_body),
             );
             StatusCode::OK
         }
@@ -1005,19 +1019,33 @@ pub async fn create_edge(
 
     let graph = resolve_graph_from_request(&state, &headers)
         .map_err(|_| StatusCode::NOT_FOUND)?;
+    let labels = body.labels.clone().unwrap_or_default();
+    let keywords = body.keywords.clone().unwrap_or_default();
     let eid = crate::graph::locked::create_edge_locked(
         &graph, body.source, body.target,
         &body.name,
-        &body.labels.unwrap_or_default(),
-        &body.keywords.unwrap_or_default(),
+        &labels,
+        &keywords,
         body.strength.unwrap_or(1.0),
         &body.properties,
     )
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let graph_name = graph.name.clone();
-    let response_body = serde_json::json!({"id": eid}).to_string();
-    broadcast_write_result(&state.cluster_registry, &graph, "POST", "/edges", &graph_name, &response_body);
+    let broadcast_body = serde_json::json!({
+        "source": body.source,
+        "target": body.target,
+        "name": &body.name,
+        "labels": &body.labels,
+        "keywords": &body.keywords,
+        "strength": body.strength,
+        "properties": &body.properties,
+        "id": eid,
+    }).to_string();
+    broadcast_request_to_workers(
+        &state.cluster_registry, "POST", "/edges",
+        None, Some(&graph_name), Some(&broadcast_body),
+    );
 
     Ok(Json(CreateEdgeResponse { id: eid }))
 }
@@ -1041,10 +1069,11 @@ pub async fn update_edge(
 ) -> StatusCode {
     // Worker → Master forwarding
     let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
     let path = format!("/edges/{}", id);
     if let Some(resp) = try_forward_json(
         &state, "PUT", &path, None, graph_name,
-        Some(&serde_json::to_string(&body).unwrap_or_default()),
+        Some(&body_str),
     ).await {
         return if resp.is_ok() { StatusCode::OK } else { StatusCode::BAD_GATEWAY };
     }
@@ -1066,7 +1095,7 @@ pub async fn update_edge(
     ) {
         Ok(_) => {
             let graph_name = graph.name.clone();
-            broadcast_write_result(&state.cluster_registry, &graph, "PUT", &format!("/edges/{}", id), &graph_name, &serde_json::json!({"id": id}).to_string());
+            broadcast_request_to_workers(&state.cluster_registry, "PUT", &format!("/edges/{}", id), None, Some(&graph_name), Some(&body_str));
             StatusCode::OK
         }
         Err(_) => StatusCode::NOT_FOUND,
@@ -1121,7 +1150,8 @@ pub async fn delete_edge(
             } else {
                 format!("/edges/{}", id)
             };
-            broadcast_write_result(&state.cluster_registry, &graph, "DELETE", &broadcast_path, &graph_name, "{}");
+            let del_body = serde_json::json!({"id": id}).to_string();
+            broadcast_request_to_workers(&state.cluster_registry, "DELETE", &broadcast_path, None, Some(&graph_name), Some(&del_body));
             StatusCode::OK
         }
         Err(_) => StatusCode::NOT_FOUND,

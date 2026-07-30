@@ -4,8 +4,9 @@
 //! Persisted to `<data_dir>/tokenizer/words.json`.
 
 use axum::{extract::State, Json};
+use std::sync::atomic::Ordering;
 
-use crate::gremlin::AppState;
+use crate::gremlin::{try_forward_json, AppState};
 
 /// GET /settings/tokenizer/words — list all custom words
 pub async fn get_tokenizer_words(
@@ -25,23 +26,13 @@ pub async fn add_tokenizer_words(
         return Json(serde_json::json!({ "status": "ok", "message": "no words provided" }));
     }
 
-    // If this is a worker node, forward to master.
-    if let Some(ref master_api) = state.master_api_addr {
-        let url = format!("http://{}/settings/tokenizer/words", master_api);
-        match reqwest::Client::new()
-            .post(&url)
-            .json(&serde_json::json!({"words": body.words}))
-            .send().await
-        {
-            Ok(resp) => {
-                if let Ok(body) = resp.text().await {
-                    return Json(serde_json::from_str(&body).unwrap_or(serde_json::json!({"status": "forwarded"})));
-                }
-            }
-            Err(e) => {
-                return Json(serde_json::json!({"status": "error", "message": format!("forward failed: {}", e)}));
-            }
-        }
+    // Worker → Master forwarding (via try_forward_json for consistent routing)
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
+    if let Some(resp) = try_forward_json(&state, "POST", "/settings/tokenizer/words", None, None, Some(&body_str)).await {
+        return match resp {
+            Ok(json) => json,
+            Err(_) => Json(serde_json::json!({"status": "error"})),
+        };
     }
 
     crate::graph::tokenizer::add_custom_words(&body.words);
@@ -81,23 +72,13 @@ pub async fn remove_tokenizer_words(
         return Json(serde_json::json!({ "status": "ok", "message": "no words provided" }));
     }
 
-    // If this is a worker node, forward to master.
-    if let Some(ref master_api) = state.master_api_addr {
-        let url = format!("http://{}/settings/tokenizer/words", master_api);
-        match reqwest::Client::new()
-            .delete(&url)
-            .json(&serde_json::json!({"words": body.words}))
-            .send().await
-        {
-            Ok(resp) => {
-                if let Ok(body) = resp.text().await {
-                    return Json(serde_json::from_str(&body).unwrap_or(serde_json::json!({"status": "forwarded"})));
-                }
-            }
-            Err(e) => {
-                return Json(serde_json::json!({"status": "error", "message": format!("forward failed: {}", e)}));
-            }
-        }
+    // Worker → Master forwarding (via try_forward_json for consistent routing)
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
+    if let Some(resp) = try_forward_json(&state, "DELETE", "/settings/tokenizer/words", None, None, Some(&body_str)).await {
+        return match resp {
+            Ok(json) => json,
+            Err(_) => Json(serde_json::json!({"status": "error"})),
+        };
     }
 
     crate::graph::tokenizer::remove_custom_words(&body.words);
@@ -127,7 +108,7 @@ pub async fn remove_tokenizer_words(
     Json(serde_json::json!({ "status": "ok", "removed": body.words.len() }))
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 pub struct TokenizerWordsBody {
     pub words: Vec<String>,
 }

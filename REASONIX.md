@@ -468,6 +468,67 @@ Master handler (create_vertex, create_document 等)
 - **Document delete ?clean**: 后端解析 `?clean=true` 查询参数，控制是否清理关联图谱数据，集群转发和广播时携带该参数。
 - **broadcast_request_to_workers**: 新增 `query: Option<&str>` 参数，支持广播时传递查询参数。
 - **Query parameter faithful pass-through**: 所有转发和广播的查询参数（`?force`, `?clean`）均**忠实于原始请求**传递，不做默认值推断。`params.force == Some(true)` 时广播 `?force=true`，`Some(false)` 时广播 `?force=false`，`None` 时不加。`delete_document` 的 `clean_query` 使用 `params.clean.map(|c| format!("clean={}", c))` 而非 `unwrap_or(false)` 隐含默认值。
+
+## 集群广播待测试项
+
+以下测试均在 **Worker1 上操作**，在 **Worker2 上验证**，确保所有节点数据一致。
+
+### 顶点 CRUD
+- [ ] `POST /vertices` — 创建顶点（含 labels, keywords, properties）→ Worker2 验证
+- [ ] `PUT /vertices/:id` — 更新顶点 name/labels/keywords → Worker2 验证
+- [ ] `DELETE /vertices/:id` — 软删除（不加参数）→ Worker2 V 步隐藏已删除
+- [ ] `DELETE /vertices/:id?force=true` — 硬删除 → Worker2 查询无此顶点
+- [ ] `DELETE /vertices/:id?force=false` — 显式软删除 → 与不加参数效果一致
+- [ ] `PUT /vertices/:id/meta` — 更新 rank/atime → Worker2 验证
+
+### 边 CRUD
+- [ ] `POST /edges` — 创建边（含 labels, strength, keywords）→ Worker2 验证
+- [ ] `PUT /edges/:id` — 更新边 name/labels/strength → Worker2 验证
+- [ ] `DELETE /edges/:id` — 软删除（不加参数）
+- [ ] `DELETE /edges/:id?force=true` — 硬删除
+- [ ] `DELETE /edges/:id?force=false` — 显式软删除
+- [ ] `PUT /edges/:id/meta` — 更新 meta
+
+### 图库管理
+- [ ] `GET /graphs` — 列出图库
+- [ ] `POST /graphs` — 创建新图库 → 所有节点一致
+- [ ] `PUT /graphs` — 设置默认图库
+- [ ] `PUT /graphs/:name` — 修改图库描述/time_travel
+- [ ] `DELETE /graphs/:name` — 删除图库
+- [ ] `PUT /graphs/:name/config` — 修改图库配置
+
+### 批量操作
+- [ ] `POST /batch/load` — 批量导入顶点/边 → Worker2 验证
+- [ ] `POST /batch/delete` — 批量删除顶点 by name → Worker2 验证
+
+### 文档管理
+- [ ] `POST /documents` — 创建文档 → Worker2 有相同 UUID 的文档
+- [ ] `PUT /documents/:id` — 更新文档标签/标题
+- [ ] `DELETE /documents/:id` — 删除文档（不清理图数据）
+- [ ] `DELETE /documents/:id?clean=true` — 删除文档并清理关联图数据
+
+### 提取
+- [ ] `POST /documents/:id/extract` — 提交提取任务 → Worker2 任务可查询
+- [ ] `POST /extract` — 直接提交提取 → 任务完成，数据写入图库
+
+### 设置
+- [ ] `PUT /settings/graph/search` — 修改搜索配置 → 所有节点一致
+- [ ] `PUT /settings/llm` — 修改 LLM 供应商 → 所有节点一致
+- [ ] `PUT /settings/web-search` — 修改联网搜索配置 → 所有节点一致
+- [ ] `PUT /settings/graph/rank` — 修改排序配置 → 所有节点一致
+
+### 索引
+- [ ] `POST /indices/vertex/properties` — 注册顶点属性索引
+- [ ] `DELETE /indices/vertex/properties/:key` — 注销顶点属性索引
+- [ ] `POST /indices/edge/properties` — 注册边属性索引
+
+### 分词器
+- [ ] `POST /settings/tokenizer/words` — 新增自定义词语 → Worker2 查询一致
+- [ ] `DELETE /settings/tokenizer/words` — 删除自定义词语 → Worker2 查询一致
+
+### 任务查询（读转发）
+- [ ] `GET /tasks/:task_id` — 通过 Worker1 查询任务状态
+- [ ] `GET /tasks` — 通过 Worker1 列出任务
 - **Touch broadcast**: 读取触发 rank/atime 更新时，Worker→Master 报告 + Master 中继广播到所有 Worker。直接 HTTP POST `TouchRequest{vertex_ids, edge_ids}` 到各节点的 `/cluster/touch`，**不走 WAL**。
 - **Document lifecycle**: created without graph association. Graph assigned during extraction via `X-Graph-Name` header.
 - **Batch API**: `/batch/load` upserts vertices by `name`, edges by `(source_name, target_name, name)`. `update_existing` (default true) controls upsert vs append. `/batch/delete` cascades to connected edges.
