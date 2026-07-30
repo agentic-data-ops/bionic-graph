@@ -574,16 +574,50 @@ pub fn ensure_edge_id(&self, eid: u32) {
 - 更新 REASONIX.md
 ```
 
-## 5. 风险和缓解
+## 5. 审计发现 — 计划遗漏和风险点
 
-| 风险 | 缓解 |
-|------|------|
-| 改造范围大，回归风险高 | 分组逐个 handler 迁移，每组合并一次 |
-| tokenizer-sync 广播机制特殊 | gateway.broadcast 内部判断 path，特殊处理 |
-| `try_forward_read_json` 跳过 REPLAYING 检查 | gateway.forward_read() 作为一个独立方法 |
-| 请求 body 在 handler 中可能已被 consume/修改 | ClusterRequest 的 body 在 handler 本地执行前构造 |
+### 5.1 遗漏的 handler
 
-## 6. 总工作量估算
+| Handler | 转发 | 广播 | 说明 |
+|---------|------|------|------|
+| `update_graph_meta` (`PUT /graphs/:name`) | ✅ `try_forward_json` | ✅ `broadcast_request_to_workers` | 修改图库描述/time_travel，列入 Group 2 |
+
+### 5.2 计划未覆盖的风险点
+
+#### 风险 1：并发广播的 REPLAYING 标志干扰
+
+当前 `IS_BROADCAST_REPLAY` 通过 `tokio::task_local!` 实现（`mod.rs:486`），每个任务独立。但多个写入操作同时广播时，worker 的 `handle_execute` 会并发处理多个 replay 请求。Gateway 的 `broadcast()` 方法内部仍使用 `is_broadcast_replay()` 检查，**不会互相干扰**（task-local 隔离）。但需确保 `forward()` 方法在 REPLAYING 检查上也是基于 task-local。
+
+#### 风险 2：广播失败无重试（at-most-once）
+
+当前广播是 fire-and-forget：`tokio::spawn` 后日志即丢弃。改造后的 `ClusterGateway::broadcast()` 继续保持此语义（与现有行为一致）。如需 at-least-once 保证，需在计划范围外引入持久化队列+重试机制。
+
+#### 风险 3：tokenizer 双重广播
+
+`handle_forward`（`server.rs:108-140`）在收到 tokenizer 的转发请求时，会再次广播 `/cluster/tokenizer-sync`。而 `add_tokenizer_words`/`remove_tokenizer_words`（Master 本地执行后）也会广播。改造后由 `ClusterGateway::broadcast()` 统一处理，**仅广播一次**（Master 本地执行后 → broadcast）。`handle_forward` 中的 tokenizer 分支应移除。
+
+#### 风险 4：`X-Bionic-Request-Id` 的传递
+
+当前通过 `proxy_to_api`（`server.rs:314-318`）设置此 header，用于 middleware 识别重放。改造后的 `ClusterGateway::forward()` 必须在 `ForwardedRequest` 中携带此 header，或由 `proxy_to_api` 内部自动注入（推荐：`proxy_to_api` 始终注入 `X-Bionic-Request-Id`，gateway 不关心此细节）。
+
+#### 风险 5：`proxy_to_api` 需遍历所有 headers
+
+当前 `proxy_to_api`（`server.rs:306-318`）仅设置 `X-Graph-Name` 和 `X-Bionic-Request-Id`。改造后 `ForwardedRequest.headers` 包含了所有原始请求 headers，`proxy_to_api` 必须改为**遍历 `headers` 逐项设置**：
+
+```rust
+for (k, v) in &req.headers {
+    if k.eq_ignore_ascii_case("host") || k.eq_ignore_ascii_case("content-length") { continue; }
+    request = request.header(k.as_str(), v.as_str());
+}
+```
+
+#### 风险 6：`submit_extraction` 后台任务中的广播
+
+`submit_extraction` 的后台任务（`mod.rs:2039-2042`, `2056-2059`）在 `tokio::spawn` 的闭包中调用 `broadcast_request_to_workers`。改造后需确保 `ClusterGateway` 可以跨线程安全调用（`Send + Sync`）。
+
+### 5.3 死代码
+
+`broadcast_write_result`（`mod.rs:254`）已无任何调用点，可安全删除。
 
 | 阶段 | 工作日 | 代码变更 |
 |------|--------|---------|
