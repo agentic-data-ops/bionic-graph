@@ -137,7 +137,7 @@ function ChatMessage({ message, graphRef, onMaximizeRef, theme, onEdit, onSaveTo
                   </svg>
                 </button>
               </div>
-               <div className="h-[420px] relative"><GraphViewer ref={graphRef} data={message.graphData} graph={message.graphName} theme={theme} timeTravelEnabled={message.timeTravelEnabled || false} timeTravelAt={message.timeTravelAt} onDataChange={onDataChange} /></div>
+               <div className="h-[420px] relative"><GraphViewer ref={graphRef} data={message.graphData} graph={message.graphName} theme={theme} timeTravelEnabled={message.timeTravelEnabled || false} timeTravelAt={message.timeTravelAt} onDataChange={(items) => onDataChange(items, message.id)} /></div>
             </div>
           )}
         </div>
@@ -157,7 +157,7 @@ function ChatMessage({ message, graphRef, onMaximizeRef, theme, onEdit, onSaveTo
               </svg>
             </button>
           </div>
-          <div className="h-[420px] relative"><GraphViewer ref={graphRef} data={message.data} graph={message.graphName} theme={theme} timeTravelEnabled={message.timeTravelEnabled || false} timeTravelAt={message.timeTravelAt} onDataChange={onDataChange} /></div>
+          <div className="h-[420px] relative"><GraphViewer ref={graphRef} data={message.data} graph={message.graphName} theme={theme} timeTravelEnabled={message.timeTravelEnabled || false} timeTravelAt={message.timeTravelAt} onDataChange={(items) => onDataChange(items, message.id)} /></div>
         </div>
       </div>
     );

@@ -48,22 +48,39 @@ function isValidKeywords(text) {
  *  Output uses [Entity] / [Relation] labels in English. */
 function formatGraphContext(items) {
   if (!items?.length) return '';
+  // Build a name lookup for vertices so edges can reference names instead of IDs.
+  const nameMap = {};
+  for (const item of items) {
+    if (item.type === 'vertex' && item.id != null) {
+      nameMap[item.id] = item.name;
+    }
+  }
   return items
     .slice(0, 80)
     .map((item) => {
       if (item.type === 'vertex') {
-        let s = `[Entity] ${item.name}${item.labels?.length ? ' (' + item.labels.join(', ') + ')' : ''}`;
-        if (item.keywords?.length) {
-          s += ` — keywords: ${item.keywords.join(', ')}`;
+        let s = `[Entity#${item.id}] ${item.name}`;
+        if (item.labels?.length) s += ` | labels: ${item.labels.join(', ')}`;
+        if (item.keywords?.length) s += ` | keywords: ${item.keywords.join(', ')}`;
+        if (item.properties && Object.keys(item.properties).length) {
+          const props = Object.entries(item.properties)
+            .map(([k, v]) => `${k}=${v}`)
+            .join(', ');
+          s += ` | properties: {${props}}`;
         }
         return s;
       } else if (item.type === 'edge') {
-        let s = `[Relation] ${item.name}: ${item.source} → ${item.target}`;
-        if (item.strength !== undefined && item.strength !== 1.0) {
-          s += ` (strength: ${item.strength})`;
-        }
-        if (item.keywords?.length) {
-          s += ` — ${item.keywords.join(', ')}`;
+        const srcName = nameMap[item.source] || item.source;
+        const tgtName = nameMap[item.target] || item.target;
+        let s = `[Relation#${item.id}] ${item.name}: ${srcName}[${item.source}] → ${tgtName}[${item.target}]`;
+        s += ` | strength: ${item.strength ?? 1.0}`;
+        if (item.labels?.length) s += ` | labels: ${item.labels.join(', ')}`;
+        if (item.keywords?.length) s += ` | keywords: ${item.keywords.join(', ')}`;
+        if (item.properties && Object.keys(item.properties).length) {
+          const props = Object.entries(item.properties)
+            .map(([k, v]) => `${k}=${v}`)
+            .join(', ');
+          s += ` | properties: {${props}}`;
         }
         return s;
       }
@@ -418,39 +435,18 @@ ${graphCtx}`,
         <MessageList messages={messages} searchStream={searchStream} theme={theme}
           onEdit={(text) => { chatInputRef.current?.setText(text); requestAnimationFrame(() => chatInputRef.current?.focus()); }}
           onSaveToKB={onSaveToKB}
-          onDataChange={(items) => {
+          onDataChange={(items, msgId) => {
             const conv = activeConv;
-            if (!conv || !items.length) return;
-            const itemIds = new Set(items.map(i => i.id));
-            // Find the LAST message whose graph data matches at least one item,
-            // or the last message with graph data (for empty-state additions).
-            let targetIdx = -1;
-            for (let i = conv.messages.length - 1; i >= 0; i--) {
-              const m = conv.messages[i];
-              const graphSrc = m.graphData || m.data;
-              if (graphSrc?.data) {
-                if (graphSrc.data.some(d => itemIds.has(d.id)) || targetIdx === -1) {
-                  targetIdx = i;
-                  if (graphSrc.data.some(d => itemIds.has(d.id))) break; // exact match found
-                }
-              }
-            }
-            if (targetIdx === -1) return;
-            const msg = conv.messages[targetIdx];
-            const graphSrc = msg.graphData || msg.data;
-            const existing = graphSrc.data || [];
-            const merged = [...existing];
-            for (const item of items) {
-              if (!existing.some(d => d.id === item.id && d.type === item.type)) {
-                merged.push(item);
-              }
-            }
-            if (merged.length === existing.length) return;
+            if (!conv || !items.length || !msgId) return;
+            // Direct message lookup by ID — no traversal, no merge logic.
+            const msgIdx = conv.messages.findIndex(m => m.id === msgId);
+            if (msgIdx === -1) return;
+            const msg = conv.messages[msgIdx];
             const updatedMsgs = [...conv.messages];
             if (msg.graphData) {
-              updatedMsgs[targetIdx] = { ...msg, graphData: { ...msg.graphData, data: merged } };
+              updatedMsgs[msgIdx] = { ...msg, graphData: { ...msg.graphData, data: items } };
             } else {
-              updatedMsgs[targetIdx] = { ...msg, data: { ...msg.data, data: merged } };
+              updatedMsgs[msgIdx] = { ...msg, data: { ...msg.data, data: items } };
             }
             onUpdateConv({ ...conv, messages: updatedMsgs });
           }}

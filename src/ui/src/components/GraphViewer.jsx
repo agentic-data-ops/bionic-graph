@@ -208,7 +208,7 @@ function DocViewer({ docId, onClose }) {
   );
 }
 
-function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onShowDocument, onSelectVertex, graphData, nodesRef, readOnly, onDataChange }) {
+function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onShowDocument, onSelectVertex, graphData, nodesRef, edgesRef, readOnly, onDataChange }) {
   const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const [editLabel, setEditLabel] = useState('');
@@ -281,15 +281,20 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onS
       if (type === 'vertex') {
         await updateVertexProperties(item.id, newLabels, editProps, graphName, name, keywords);
       } else {
-        const newLabel = editLabel.trim() || item.name || '';
-        const newLabels = editLabel.split(',').map((s) => s.trim()).filter(Boolean);
-        await updateEdgeProperties(item.id, newLabel, editProps, graphName, newLabels, keywords, strength);
+        await updateEdgeProperties(item.id, name, editProps, graphName, newLabels, keywords, strength);
       }
       item.labels = newLabels;
       item.properties = editProps;
       item.name = name;
       item.keywords = keywords;
       item.strength = strength;
+      // Update vis-network DataSet so the visual label refreshes immediately,
+      // and collectUpdatedData() includes the updated values.
+      if (type === 'edge') {
+        if (edgesRef?.current) edgesRef.current.update({ id: item.id, label: name || `#${item.id}` });
+      } else if (type === 'vertex') {
+        if (nodesRef?.current) nodesRef.current.update({ id: item.id, label: name || `#${item.id}` });
+      }
       setEditing(false);
       setUpdateSuccess(t('graph.updateSuccess'));
       onDataChange?.();
@@ -803,11 +808,15 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
     if (!data?.data?.length) {
       netRef.current?.destroy();
       netRef.current = null;
+      nodesRef.current = null;
+      edgesRef.current = null;
       return;
     }
 
     const container = containerRef.current;
-    if (!container) return;
+    if (!container) {
+      return;
+    }
 
     // Sync timeTravel refs for getSnapshot
     timeTravelAtRef.current = timeTravelAt;
@@ -1085,8 +1094,10 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
                           setAddSuccess(t('graph.addSuccess'));
                           onDataChange?.(collectUpdatedData());
                         } else {
-                          // Network not yet initialized (empty state). Trigger a refresh
-                          // so the parent re-renders with the new vertex visible.
+                          // Network not yet initialized (empty state).
+                          // Pass the new vertex through onDataChange so the parent
+                          // re-renders with updated data, triggering the useEffect
+                          // to create the network.
                           onDataChange?.([{ type: 'vertex', id: res.id, name: newVertexName.trim(), keywords, labels }]);
                           setAddSuccess(t('graph.addSuccess'));
                         }
@@ -1198,11 +1209,9 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
                           if (exists.length === 0) es.add({ id: res.id, from: src, to: tgt, label: newEdgeLabel.trim(), _original: { type: 'edge', id: res.id, name: newEdgeLabel.trim(), source: src, target: tgt, labels, keywords, strength, properties: props } });
                           netRef.current?.fit({ animation: { duration: 300 } });
                         }
-                        // Pass just the new edge item, same pattern as addVertex empty-state.
-                        // ChatArea's onDataChange merge logic will find the target message
-                        // by matching the edge's source/target vertex IDs already in the data.
-                        onDataChange?.([{ type: 'edge', id: res.id, name: newEdgeLabel.trim(), source: src, target: tgt, labels, keywords, strength, properties: props }]);
-                        console.log('[addEdge] onDataChange called with edge:', res.id);
+                        // Pass ALL items from DataSets (vertices + new edge) so the
+                        // onDataChange handler has the complete picture, not just the edge.
+                        onDataChange?.(collectUpdatedData());
                         setAddSuccess(t('graph.addSuccess'));
                       }
                     } catch (e) { console.error('Add edge failed:', e); }
@@ -1215,11 +1224,11 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
           </div>
         )}
 
-        {data?.data?.length ? (
-          <div ref={containerRef} className="w-full h-full" />
-        ) : (
-          <div className="flex items-center justify-center text-[var(--text-tertiary)] text-sm min-h-[200px] h-full">{t('graphViewer.noData')}</div>
-        )}
+        <div ref={containerRef} className="w-full h-full relative">
+          {!data?.data?.length && (
+            <div className="absolute inset-0 flex items-center justify-center text-[var(--text-tertiary)] text-sm">{t('graphViewer.noData')}</div>
+          )}
+        </div>
       </div>
       {selected && (
         <InfoPanel
@@ -1228,6 +1237,7 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
           graphName={graph}
           graphData={data}
           nodesRef={nodesRef}
+          edgesRef={edgesRef}
           onClose={() => setSelected(null)}
           onShowDocument={(docId) => setShowDoc(docId)}
           onSelectVertex={selectVertex}
