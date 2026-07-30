@@ -50,29 +50,104 @@
 
 ### 3.1 ClusterRequest — 统一请求模型
 
-一个请求只构造一次，同时用于转发和广播。
+一个请求只构造一次，同时用于转发和广播，包含完整的 HTTP 请求信息：method、path、headers、query、body。
 
 ```rust
 // src/cluster/mod.rs 或 src/cluster/request.rs
 
+/// 统一的集群请求模型，包含原始 HTTP 请求的完整信息。
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ClusterRequest {
     /// HTTP method (GET, POST, PUT, DELETE)
     pub method: String,
-    /// Request path (e.g. "/vertices", "/vertices/1?force=true")
+    /// Request path + query string (e.g. "/vertices/1?force=true")
     pub path: String,
+    /// 原始请求 headers（如 X-Graph-Name、X-Time-Travel 等）
+    pub headers: HashMap<String, String>,
     /// Request body (JSON string)
     pub body: Option<String>,
-    /// Graph name (None = default graph)
+    /// Graph name（从 X-Graph-Name header 提取的快捷字段）
     pub graph: Option<String>,
 }
+```
 
-impl ClusterRequest {
-    pub fn new(method: &str, path: &str) -> Self { ... }
-    pub fn with_body(mut self, body: &str) -> Self { ... }
-    pub fn with_graph(mut self, graph: &str) -> Self { ... }
-    pub fn with_query(mut self, key: &str, val: &str) -> Self { ... }
+`ForwardedRequest` 结构体相应扩展，增加 `headers` 字段：
+
+```rust
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ForwardedRequest {
+    pub method: String,
+    pub path: String,
+    pub query: Option<String>,           // ← 已废弃，由 path 携带
+    pub body: Option<String>,
+    pub graph: Option<String>,
+    pub headers: HashMap<String, String>, // ← 新增
 }
+```
+
+Builder 方法：
+
+```rust
+impl ClusterRequest {
+    pub fn new(method: &str, path: &str) -> Self {
+        Self {
+            method: method.to_string(),
+            path: path.to_string(),
+            headers: HashMap::new(),
+            body: None,
+            graph: None,
+        }
+    }
+
+    /// 设置请求体
+    pub fn with_body(mut self, body: &str) -> Self { ... }
+
+    /// 设置 X-Graph-Name header
+    pub fn with_graph(mut self, graph: &str) -> Self {
+        self.graph = Some(graph.to_string());
+        self.headers.insert("X-Graph-Name".to_string(), graph.to_string());
+        self
+    }
+
+    /// 设置 X-Time-Travel header
+    pub fn with_time_travel(mut self, tt: u64) -> Self {
+        self.headers.insert("X-Time-Travel".to_string(), tt.to_string());
+        self
+    }
+
+    /// 添加任意 header
+    pub fn with_header(mut self, key: &str, val: &str) -> Self { ... }
+
+    /// 设置查询字符串，追加到 path 末尾
+    pub fn with_query_str(mut self, qs: Option<&str>) -> Self {
+        if let Some(q) = qs {
+            self.path.push('?');
+            self.path.push_str(q);
+        }
+        self
+    }
+}
+```
+
+**handler 中构造请求示例**：
+
+```rust
+// create_vertex: 只转发 body + graph name
+let req = ClusterRequest::new("POST", "/vertices")
+    .with_graph(graph_name)              // → X-Graph-Name header
+    .with_body(&serde_json::to_string(&body)?);
+
+// delete_vertex: 转发 query param + graph name
+let query_str = params.force.map(|f| format!("force={}", f));
+let req = ClusterRequest::new("DELETE", &format!("/vertices/{}", id))
+    .with_graph(graph_name)
+    .with_query_str(query_str.as_deref());
+
+// search with time travel: 转发 time travel header
+let req = ClusterRequest::new("POST", "/gremlin")
+    .with_graph(graph_name)
+    .with_time_travel(tt_micros)
+    .with_body(&serde_json::to_string(&query)?);
 ```
 
 ### 3.2 ClusterGateway — 统一网关
