@@ -356,7 +356,7 @@ Touch（rank/atime 读取更新）：
 | POST | `/cluster/forward` | Worker → Master | Forwarded write request |
 | POST | `/cluster/replicate` | Master → Worker | Redo log entry push |
 | POST | `/cluster/touch` | 双向 | Read报告（Worker→Master）+ 中继广播（Master→所有Worker），直接HTTP无WAL |
-| POST | `/cluster/execute` | Master→Worker | 通过 proxy_to_api 在 worker 上执行转发请求（写广播），X-Bionic-Request-Id Header 防止递归 |
+| POST | `/cluster/execute` | Master→Worker | 通过 proxy_to_api 在 worker 上执行转发请求（写广播），X-Request-Id Header 防止递归 |
 | POST | `/cluster/tokenizer-sync` | Master→Worker | 同步 tokenizer 自定义词到所有 worker |
 
 **Node ID 唯一性要求**: worker 的 heartbeat `node_id` 必须唯一（源码中用 `format!("worker@{}", cluster.bind_addr)` 生成）。两个 worker 使用相同 `node_id` 会导致 master 的 `HashMap` 中后注册者覆盖前者，广播只能到达一个 worker。
@@ -402,7 +402,7 @@ handle_execute (cluster server)
   ├─ 生成唯一 req_id = Uuid::new_v4()
   ├─ 注册到 INFLIGHT_REQUESTS (LazyLock<Mutex<HashSet<String>>>)
   └─ proxy_to_api(api_addr, req, Some(&req_id))
-       └─ HTTP 请求添加 Header: X-Bionic-Request-Id: <uuid>
+       └─ HTTP 请求添加 Header: X-Request-Id: <uuid>
             └─ REST API 处理
                  ├─ axum middleware 检查 Header
                  │    └─ 在 INFLIGHT_REQUESTS 中？→ IS_BROADCAST_REPLAY = true (task-local)
@@ -414,7 +414,7 @@ handle_execute (cluster server)
 - 每个广播请求唯一 req_id → 不同请求 ID 不同 → 互不干扰
 - `INFLIGHT_REQUESTS` (全局 `HashSet`) 只跟踪正在处理中的广播请求
 - 中间件通过 `tokio::task_local!` 设置 `IS_BROADCAST_REPLAY` → 只影响当前请求
-- 普通请求没有 `X-Bionic-Request-Id` Header → middleware 不设标志 → 正常转发
+- 普通请求没有 `X-Request-Id` Header → middleware 不设标志 → 正常转发
 - WAL replay 用独立的 `WAL_REPLAYING` (全局 AtomicBool)，HTTP 启动前已结束
 
 **写广播流程**：
@@ -423,7 +423,7 @@ Master handler (create_vertex, create_document 等)
   └─ broadcast_request_to_workers()
        └─ POST /cluster/execute → 每个 worker
             └─ handle_execute
-                 ├─ 注册 req_id → proxy_to_api → X-Bionic-Request-Id Header
+                 ├─ 注册 req_id → proxy_to_api → X-Request-Id Header
                  ├─ worker REST API 处理 (通过 middleware IS_BROADCAST_REPLAY=true)
                  │    ├─ try_forward_json → 跳过 (不转发回 master)
                  │    ├─ broadcast_* → 跳过 (不再次广播)
@@ -462,7 +462,7 @@ Master handler (create_vertex, create_document 等)
 - **SIGINT/SIGTERM**: server calls `GraphManager::close_all()` → flushes dirty blocks + syncs + renews WAL.
 - **`Graph::close()`**: calls `flush()` + `sync()` + `renew()`.
 - **Cluster mode**: requires `"role": "master"` or `"role": "worker"` in settings. Heartbeat every 5s by default. **Worker `node_id` 必须唯一**：多个 worker 必须使用不同的 node_id（源码生成 `worker@{bind_addr}`），否则 master 的 HashMap 中后注册者覆盖前者。
-- **Replay prevention**: 使用 `X-Bionic-Request-Id` header + `INFLIGHT_REQUESTS` set + axum middleware + `tokio::task_local!` `IS_BROADCAST_REPLAY`。无需全局 `REPLAYING` 标志，并发安全。
+- **Replay prevention**: 使用 `X-Request-Id` header + `INFLIGHT_REQUESTS` set + axum middleware + `tokio::task_local!` `IS_BROADCAST_REPLAY`。无需全局 `REPLAYING` 标志，并发安全。
 - **Read forwarding bypass**: `try_forward_read_json()` 不检查 `is_broadcast_replay()`，用于任务轮询等读操作，不受广播 replay 影响。
 - **Document broadcast with same UUID**: `CreateDocumentBody` 支持可选 `id` 字段，广播时携带 master UUID，workers 在 REPLAYING 模式下使用指定 ID 创建。`UpdateDocumentBody` 支持可选 `graph_name` 字段。
 - **Document delete ?clean**: 后端解析 `?clean=true` 查询参数，控制是否清理关联图谱数据，集群转发和广播时携带该参数。
@@ -552,7 +552,7 @@ Master handler (create_vertex, create_document 等)
 - [x] 检查下顶点和边的元数据更新有没有记录日志，能否保证崩溃一致性 — 已全部添加 WAL（VertexMetaUpdate / EdgeMetaUpdate），SIGKILL 测试通过
 - [x] 修复log checkpoint刷盘机制 — log rotation 时后台线程异步刷脏块，不阻塞 writer
 - [x] GET 方法支持在 proxy_to_api 中转发（任务轮询）
-- [x] proxy_to_api 添加 X-Bionic-Request-Id header 传递广播上下文
+- [x] proxy_to_api 添加 X-Request-Id header 传递广播上下文
 - [x] axum middleware 检测 replay header 并设置 task-local IS_BROADCAST_REPLAY
 - [x] try_forward_read_json 绕过 replay 检查用于读转发
 - [x] 文档生命周期集群同步（创建/更新/提取/删除含 clean 参数）

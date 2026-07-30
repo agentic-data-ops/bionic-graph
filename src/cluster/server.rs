@@ -312,7 +312,7 @@ async fn proxy_to_api(api_addr: &str, req: &ForwardedRequest, request_id: Option
     // Pass the broadcast request ID so downstream handlers can identify
     // this request as a cluster replay without a global flag.
     let request = if let Some(id) = request_id {
-        request.header("X-Bionic-Request-Id", id)
+        request.header("X-Request-Id", id)
     } else {
         request
     };

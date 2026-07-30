@@ -19,14 +19,14 @@ use std::sync::LazyLock;
 
 /// Set of request IDs currently being processed as cluster broadcast replays.
 /// When `handle_execute` broadcasts a request to a worker, it generates a
-/// unique ID, registers it here, and passes it via `X-Bionic-Request-Id`
+/// unique ID, registers it here, and passes it via `X-Request-Id`
 /// header through proxy_to_api. The axum middleware checks this header and
 /// sets per-task IS_BROADCAST_REPLAY so try_forward_json can skip forwarding
 /// for this specific request — without blocking any concurrent requests.
 pub(crate) static INFLIGHT_REQUESTS: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 
 /// Per-task flag set by the replay-check middleware when the incoming request
-/// carries an X-Bionic-Request-Id that is registered in INFLIGHT_REQUESTS.
+/// carries an X-Request-Id that is registered in INFLIGHT_REQUESTS.
 /// Used by try_forward_json to decide whether to skip forwarding.
 tokio::task_local! {
     pub(crate) static IS_BROADCAST_REPLAY: bool;

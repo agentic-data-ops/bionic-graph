@@ -596,13 +596,13 @@ pub fn ensure_edge_id(&self, eid: u32) {
 
 `handle_forward`（`server.rs:108-140`）在收到 tokenizer 的转发请求时，会再次广播 `/cluster/tokenizer-sync`。而 `add_tokenizer_words`/`remove_tokenizer_words`（Master 本地执行后）也会广播。改造后由 `ClusterGateway::broadcast()` 统一处理，**仅广播一次**（Master 本地执行后 → broadcast）。`handle_forward` 中的 tokenizer 分支应移除。
 
-#### 风险 4：`X-Bionic-Request-Id` 的传递
+#### 风险 4：`X-Request-Id` 的传递
 
-当前通过 `proxy_to_api`（`server.rs:314-318`）设置此 header，用于 middleware 识别重放。改造后的 `ClusterGateway::forward()` 必须在 `ForwardedRequest` 中携带此 header，或由 `proxy_to_api` 内部自动注入（推荐：`proxy_to_api` 始终注入 `X-Bionic-Request-Id`，gateway 不关心此细节）。
+当前通过 `proxy_to_api`（`server.rs:314-318`）设置此 header，用于 middleware 识别重放。改造后的 `ClusterGateway::forward()` 必须在 `ForwardedRequest` 中携带此 header，或由 `proxy_to_api` 内部自动注入（推荐：`proxy_to_api` 始终注入 `X-Request-Id`，gateway 不关心此细节）。
 
 #### 风险 5：`proxy_to_api` 需遍历所有 headers
 
-当前 `proxy_to_api`（`server.rs:306-318`）仅设置 `X-Graph-Name` 和 `X-Bionic-Request-Id`。改造后 `ForwardedRequest.headers` 包含了所有原始请求 headers，`proxy_to_api` 必须改为**遍历 `headers` 逐项设置**：
+当前 `proxy_to_api`（`server.rs:306-318`）仅设置 `X-Graph-Name` 和 `X-Request-Id`。改造后 `ForwardedRequest.headers` 包含了所有原始请求 headers，`proxy_to_api` 必须改为**遍历 `headers` 逐项设置**：
 
 ```rust
 for (k, v) in &req.headers {

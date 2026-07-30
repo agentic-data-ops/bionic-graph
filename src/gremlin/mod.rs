@@ -474,12 +474,12 @@ pub fn build_router(
         .route("/indices/edge/properties", delete(indices::delete_edge_property_indices))
         // Shared state
         .with_state(state)
-        // Middleware: detect cluster replay requests via X-Bionic-Request-Id header
+        // Middleware: detect cluster replay requests via X-Request-Id header
         // and set per-task IS_BROADCAST_REPLAY so try_forward_json skips
         // forwarding for the replayed request without blocking concurrent requests.
         .layer(axum::middleware::from_fn(
             |request: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| async move {
-                let is_replay = request.headers().get("X-Bionic-Request-Id")
+                let is_replay = request.headers().get("X-Request-Id")
                     .and_then(|v| v.to_str().ok())
                     .map_or(false, |id| crate::graph::graph::INFLIGHT_REQUESTS.lock().unwrap().contains(id));
                 if is_replay {
