@@ -113,7 +113,7 @@ pub async fn create_vertex_property_index(
     }
     // Persist the updated index keys to config.json.
     let _ = graph.persist_indices_config();
-    broadcast_request_to_workers(&state.cluster_registry, "POST", "/indices/vertex/properties", graph_name, Some(&body_str));
+    broadcast_request_to_workers(&state.cluster_registry, "POST", "/indices/vertex/properties", None, graph_name, Some(&body_str));
     Json(serde_json::json!({
         "status": "ok", "key": body.key, "type": "vertex", "created": !already,
     }))
@@ -175,7 +175,7 @@ pub async fn delete_vertex_property_index(
     drop(mi);
     // Persist the updated index keys to config.json.
     let _ = graph.persist_indices_config();
-    broadcast_request_to_workers(&state.cluster_registry, "DELETE", &format!("/indices/vertex/properties/{}", key), graph_name, None);
+    broadcast_request_to_workers(&state.cluster_registry, "DELETE", &format!("/indices/vertex/properties/{}", key), None, graph_name, None);
     Json(serde_json::json!({"status": "ok", "key": key, "deleted": deleted}))
 }
 
@@ -201,7 +201,7 @@ pub async fn delete_vertex_property_indices(
     drop(mi);
     // Persist the updated index keys to config.json.
     let _ = graph.persist_indices_config();
-    broadcast_request_to_workers(&state.cluster_registry, "DELETE", "/indices/vertex/properties", graph_name, Some(&body_str));
+    broadcast_request_to_workers(&state.cluster_registry, "DELETE", "/indices/vertex/properties", None, graph_name, Some(&body_str));
     Json(serde_json::json!({"status": "ok", "deleted": deleted}))
 }
 
@@ -232,7 +232,7 @@ pub async fn create_edge_property_index(
     }
     // Persist the updated index keys to config.json.
     let _ = graph.persist_indices_config();
-    broadcast_request_to_workers(&state.cluster_registry, "POST", "/indices/edge/properties", graph_name, Some(&body_str));
+    broadcast_request_to_workers(&state.cluster_registry, "POST", "/indices/edge/properties", None, graph_name, Some(&body_str));
     Json(serde_json::json!({
         "status": "ok", "key": body.key, "type": "edge", "created": !already,
     }))
@@ -294,7 +294,7 @@ pub async fn delete_edge_property_index(
     drop(mi);
     // Persist the updated index keys to config.json.
     let _ = graph.persist_indices_config();
-    broadcast_request_to_workers(&state.cluster_registry, "DELETE", &format!("/indices/edge/properties/{}", key), graph_name, None);
+    broadcast_request_to_workers(&state.cluster_registry, "DELETE", &format!("/indices/edge/properties/{}", key), None, graph_name, None);
     Json(serde_json::json!({"status": "ok", "key": key, "deleted": deleted}))
 }
 
@@ -320,6 +320,6 @@ pub async fn delete_edge_property_indices(
     drop(mi);
     // Persist the updated index keys to config.json.
     let _ = graph.persist_indices_config();
-    broadcast_request_to_workers(&state.cluster_registry, "DELETE", "/indices/edge/properties", graph_name, Some(&body_str));
+    broadcast_request_to_workers(&state.cluster_registry, "DELETE", "/indices/edge/properties", None, graph_name, Some(&body_str));
     Json(serde_json::json!({"status": "ok", "deleted": deleted}))
 }

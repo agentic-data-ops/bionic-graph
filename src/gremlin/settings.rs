@@ -43,7 +43,7 @@ pub async fn update_search_settings(
     }
 
     // Broadcast to workers in cluster mode.
-    broadcast_request_to_workers(&state.cluster_registry, "PUT", "/settings/graph/search", None, Some(&body_str));
+    broadcast_request_to_workers(&state.cluster_registry, "PUT", "/settings/graph/search", None, None, Some(&body_str));
 
     Json(serde_json::json!({ "status": "ok" }))
 }
@@ -91,7 +91,7 @@ pub async fn update_llm_settings(
     }
 
     // Broadcast to workers in cluster mode.
-    broadcast_request_to_workers(&state.cluster_registry, "PUT", "/settings/llm", None, Some(&body_str));
+    broadcast_request_to_workers(&state.cluster_registry, "PUT", "/settings/llm", None, None, Some(&body_str));
 
     Json(serde_json::json!({ "status": "ok" }))
 }
@@ -130,7 +130,7 @@ pub async fn update_web_search_settings(
     }
 
     // Broadcast to workers in cluster mode.
-    broadcast_request_to_workers(&state.cluster_registry, "PUT", "/settings/web-search", None, Some(&body_str));
+    broadcast_request_to_workers(&state.cluster_registry, "PUT", "/settings/web-search", None, None, Some(&body_str));
 
     Json(serde_json::json!({ "status": "ok" }))
 }
@@ -255,7 +255,7 @@ pub async fn update_rank_settings(
     }
 
     // Broadcast to workers in cluster mode.
-    broadcast_request_to_workers(&state.cluster_registry, "PUT", "/settings/graph/rank", None, Some(&body_str));
+    broadcast_request_to_workers(&state.cluster_registry, "PUT", "/settings/graph/rank", None, None, Some(&body_str));
 
     Json(serde_json::json!({ "status": "ok" }))
 }

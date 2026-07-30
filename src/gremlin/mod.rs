@@ -144,6 +144,7 @@ pub(crate) fn broadcast_request_to_workers(
     cluster_registry: &Option<Arc<NodeRegistry>>,
     method: &str,
     path: &str,
+    query: Option<&str>,
     graph_name: Option<&str>,
     body: Option<&str>,
 ) {
@@ -164,7 +165,7 @@ pub(crate) fn broadcast_request_to_workers(
     let payload = crate::cluster::forward::ForwardedRequest {
         method: method.to_string(),
         path: path.to_string(),
-        query: None,
+        query: query.map(|s| s.to_string()),
         body: body.map(|s| s.to_string()),
         graph: graph_name.map(|s| s.to_string()),
     };
@@ -873,7 +874,7 @@ pub async fn handle_update_vertex_meta(
             let gn = graph.name.clone();
             broadcast_request_to_workers(
                 &state.cluster_registry, "PUT", &format!("/vertices/{}/meta", id),
-                Some(&gn), Some(&body_str),
+                None, Some(&gn), Some(&body_str),
             );
             StatusCode::OK
         }
@@ -1116,7 +1117,7 @@ pub async fn handle_update_edge_meta(
             let gn = graph.name.clone();
             broadcast_request_to_workers(
                 &state.cluster_registry, "PUT", &format!("/edges/{}/meta", id),
-                Some(&gn), Some(&body_str),
+                None, Some(&gn), Some(&body_str),
             );
             StatusCode::OK
         }
@@ -1198,7 +1199,7 @@ pub async fn create_graph(
         Ok(_) => {
             // Persist the provided description / time_travel to the registry.
             let _ = state.gm.update_meta(&params.name, &params.description, params.time_travel);
-            broadcast_request_to_workers(&state.cluster_registry, "POST", "/graphs", None, Some(&body_str));
+            broadcast_request_to_workers(&state.cluster_registry, "POST", "/graphs", None, None, Some(&body_str));
             Ok(Json(CreateGraphResponse {
                 name: params.name,
                 description: params.description,
@@ -1230,7 +1231,7 @@ pub async fn delete_graph(
     }
     match state.gm.delete(&name) {
         Ok(_) => {
-            broadcast_request_to_workers(&state.cluster_registry, "DELETE", &format!("/graphs/{}", name), None, None);
+            broadcast_request_to_workers(&state.cluster_registry, "DELETE", &format!("/graphs/{}", name), None, None, None);
             Json(serde_json::json!({"status": "ok"}))
         }
         Err(_) => Json(serde_json::json!({"status": "error", "message": "not found"})),
@@ -1260,7 +1261,7 @@ pub async fn set_default_graph(
     match state.gm.set_default(&body.default) {
         Ok(_) => {
             // Broadcast to workers in cluster mode.
-            broadcast_request_to_workers(&state.cluster_registry, "PUT", "/graphs", None, Some(&body_str));
+            broadcast_request_to_workers(&state.cluster_registry, "PUT", "/graphs", None, None, Some(&body_str));
             Json(serde_json::json!({"status": "ok"}))
         }
         Err(_) => Json(serde_json::json!({"status": "error", "message": "graph not found"})),
@@ -1295,7 +1296,7 @@ pub async fn update_graph_meta(
     let body_str = serde_json::to_string(&body).unwrap_or_default();
     match state.gm.update_meta(&name, &body.description, body.time_travel) {
         Ok(true) => {
-            broadcast_request_to_workers(&state.cluster_registry, "PUT", &format!("/graphs/{}", name), None, Some(&body_str));
+            broadcast_request_to_workers(&state.cluster_registry, "PUT", &format!("/graphs/{}", name), None, None, Some(&body_str));
             Json(serde_json::json!({"status": "ok"}))
         }
         Ok(false) => Json(serde_json::json!({"status": "error", "message": "not found"})),
@@ -1328,7 +1329,7 @@ pub async fn put_graph_config_handler(
     match state.gm.set_graph_config(&name, &body) {
         Ok(_) => {
             let body_str = serde_json::to_string(&body).unwrap_or_default();
-            broadcast_request_to_workers(&state.cluster_registry, "PUT", &format!("/graphs/{}/config", name), None, Some(&body_str));
+            broadcast_request_to_workers(&state.cluster_registry, "PUT", &format!("/graphs/{}/config", name), None, None, Some(&body_str));
             StatusCode::OK
         }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -1371,7 +1372,7 @@ pub async fn handle_batch_import(
     // Broadcast to workers via /cluster/execute
     let graph_name = graph.name.clone();
     let body_str = serde_json::to_string(&body).unwrap_or_default();
-    broadcast_request_to_workers(&state.cluster_registry, "POST", "/batch/load", Some(&graph_name), Some(&body_str));
+    broadcast_request_to_workers(&state.cluster_registry, "POST", "/batch/load", None, Some(&graph_name), Some(&body_str));
     Ok(Json(result))
 }
 
@@ -1407,7 +1408,7 @@ pub async fn handle_batch_delete(
 
     // Broadcast to workers in cluster mode.
     let gn = graph.name.clone();
-    broadcast_request_to_workers(&state.cluster_registry, "POST", "/batch/delete", Some(&gn), Some(&body_str));
+    broadcast_request_to_workers(&state.cluster_registry, "POST", "/batch/delete", None, Some(&gn), Some(&body_str));
 
     Ok(Json(result))
 }
@@ -1427,6 +1428,9 @@ pub struct CreateDocumentBody {
     pub title: String,
     pub content: String,
     pub tags: Option<Vec<String>>,
+    /// Optional ID for replication (used during cluster replay to keep UUID in sync).
+    #[serde(default)]
+    pub id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1461,13 +1465,38 @@ pub async fn create_document(
         };
     }
 
-    let id = uuid::Uuid::new_v4().to_string();
+    // During cluster replay, use the provided ID to keep UUIDs in sync across nodes.
+    // If the document already exists locally (e.g., created during forwarding), skip it.
+    let id = if crate::graph::graph::REPLAYING.load(Ordering::Relaxed) {
+        if let Some(ref replica_id) = body.id {
+            if state.doc_mgr.get(replica_id).is_some() {
+                // Already created locally during forwarding — nothing more to do.
+                return Json(CreateDocumentResponse {
+                    id: replica_id.clone(),
+                    title: body.title,
+                    created: true,
+                });
+            }
+            replica_id.clone()
+        } else {
+            uuid::Uuid::new_v4().to_string()
+        }
+    } else {
+        uuid::Uuid::new_v4().to_string()
+    };
     // Documents are created without a graph association.
     // The graph is assigned during extraction.
     let graph_name = "";
     let tags = body.tags.unwrap_or_default();
     state.doc_mgr.add(&id, &body.title, &body.content, &tags, graph_name);
-    broadcast_request_to_workers(&state.cluster_registry, "POST", &format!("/documents/{}", id), None, Some(&serde_json::json!({"title": &body.title}).to_string()));
+    // Broadcast to workers so they have a local copy with the same UUID.
+    let broadcast_body = serde_json::json!({
+        "title": &body.title,
+        "content": &body.content,
+        "tags": &tags,
+        "id": &id,
+    }).to_string();
+    broadcast_request_to_workers(&state.cluster_registry, "POST", "/documents", None, None, Some(&broadcast_body));
     Json(CreateDocumentResponse {
         id,
         title: body.title,
@@ -1488,6 +1517,8 @@ pub async fn get_document(
 pub struct UpdateDocumentBody {
     pub title: Option<String>,
     pub tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub graph_name: Option<String>,
 }
 
 pub async fn update_document(
@@ -1506,23 +1537,34 @@ pub async fn update_document(
 
     let title = body.title.as_deref().unwrap_or("");
     let tags = body.tags.as_deref().unwrap_or(&[]);
+    let gname = body.graph_name.as_deref();
     // Document graph association is set only during extraction, not via update.
-    match state.doc_mgr.update(&id, title, tags, None) {
+    match state.doc_mgr.update(&id, title, tags, gname) {
         Some(_) => {
-            broadcast_request_to_workers(&state.cluster_registry, "PUT", &format!("/documents/{}", id), None, Some(&body_str));
+            broadcast_request_to_workers(&state.cluster_registry, "PUT", &format!("/documents/{}", id), None, None, Some(&body_str));
             Json(serde_json::json!({"status": "ok"}))
         }
         None => Json(serde_json::json!({"status": "error", "message": "not found"})),
     }
 }
 
+/// Query parameters for document deletion.
+#[derive(Deserialize, Default)]
+pub struct DeleteDocumentParams {
+    pub clean: Option<bool>,
+}
+
 /// Delete a document and optionally clean up associated graph data.
 pub async fn delete_document(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(params): Query<DeleteDocumentParams>,
 ) -> Json<serde_json::Value> {
+    let clean = params.clean.unwrap_or(false);
+    let clean_query = if clean { Some("clean=true") } else { None };
+
     // Worker → Master forwarding
-    if let Some(resp) = try_forward_json(&state, "DELETE", &format!("/documents/{}", id), None, None, None).await {
+    if let Some(resp) = try_forward_json(&state, "DELETE", &format!("/documents/{}", id), clean_query, None, None).await {
         return match resp {
             Ok(json) => json,
             Err(_) => Json(serde_json::json!({"status": "error"})),
@@ -1536,54 +1578,61 @@ pub async fn delete_document(
     let deleted = state.doc_mgr.delete(&id);
 
     // Clean up graph vertices/edges that carry this doc's _source_doc_id.
-    if let Some(ref gname) = graph_name {
-        if let Ok(graph) = state.gm.get(gname) {
-            // Phase 1: Collect all vertex IDs while holding memory_index lock.
-            let all_vids: Vec<u32> = {
-                let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-                mi.vertex_id.keys().copied().collect()
-            };
-
-            // Phase 2: Check each vertex's _source_doc_id property (lock released).
-            let mut match_vids: Vec<u32> = Vec::new();
-            for vid in &all_vids {
-                if let Ok(Some(vertex)) = crate::graph::locked::get_vertex_locked(&graph, *vid) {
-                    if vertex.properties.get("_source_doc_id")
-                        .map_or(false, |v| matches!(v, PropertyValue::String(s) if s == &id))
-                    {
-                        match_vids.push(*vid);
-                    }
-                }
-            }
-
-            // Phase 3: Collect connected edges and delete everything.
-            if !match_vids.is_empty() {
-                let mut edge_ids: Vec<u32> = Vec::new();
-                {
+    if clean {
+        if let Some(ref gname) = graph_name {
+            if let Ok(graph) = state.gm.get(gname) {
+                // Phase 1: Collect all vertex IDs while holding memory_index lock.
+                let all_vids: Vec<u32> = {
                     let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-                    for vid in &match_vids {
-                        for &(eid, _, _) in mi.vertex_adjacency.out_edges(*vid) {
-                            edge_ids.push(eid);
-                        }
-                        for &(eid, _, _) in mi.vertex_adjacency.in_edges(*vid) {
-                            edge_ids.push(eid);
+                    mi.vertex_id.keys().copied().collect()
+                };
+
+                // Phase 2: Check each vertex's _source_doc_id property (lock released).
+                let mut match_vids: Vec<u32> = Vec::new();
+                for vid in &all_vids {
+                    if let Ok(Some(vertex)) = crate::graph::locked::get_vertex_locked(&graph, *vid) {
+                        if vertex.properties.get("_source_doc_id")
+                            .map_or(false, |v| matches!(v, PropertyValue::String(s) if s == &id))
+                        {
+                            match_vids.push(*vid);
                         }
                     }
                 }
-                for eid in &edge_ids {
-                    let _ = crate::graph::locked::hard_delete_edge_locked(&graph, *eid);
+
+                // Phase 3: Collect connected edges and delete everything.
+                if !match_vids.is_empty() {
+                    let mut edge_ids: Vec<u32> = Vec::new();
+                    {
+                        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+                        for vid in &match_vids {
+                            for &(eid, _, _) in mi.vertex_adjacency.out_edges(*vid) {
+                                edge_ids.push(eid);
+                            }
+                            for &(eid, _, _) in mi.vertex_adjacency.in_edges(*vid) {
+                                edge_ids.push(eid);
+                            }
+                        }
+                    }
+                    for eid in &edge_ids {
+                        let _ = crate::graph::locked::hard_delete_edge_locked(&graph, *eid);
+                    }
+                    for vid in &match_vids {
+                        let _ = crate::graph::locked::hard_delete_vertex_locked(&graph, *vid);
+                    }
+                    log::info!("Cleaned {} vertices and {} edges for doc '{}' in graph '{}'",
+                        match_vids.len(), edge_ids.len(), id, gname);
                 }
-                for vid in &match_vids {
-                    let _ = crate::graph::locked::hard_delete_vertex_locked(&graph, *vid);
-                }
-                log::info!("Cleaned {} vertices and {} edges for doc '{}' in graph '{}'",
-                    match_vids.len(), edge_ids.len(), id, gname);
             }
         }
     }
 
+    // ── Broadcast cleanup to workers (if clean=true) ──────────────────
+    // When clean=true, the cleanup runs on the master and the same request
+    // is broadcast to workers via POST /cluster/execute, so each worker
+    // handles vertex/edge deletion locally during replay.
+
     if deleted {
-        broadcast_request_to_workers(&state.cluster_registry, "DELETE", &format!("/documents/{}", id), None, None);
+        broadcast_request_to_workers(&state.cluster_registry, "DELETE", &format!("/documents/{}", id), clean_query, None, None);
         Json(serde_json::json!({"status": "ok"}))
     } else {
         Json(serde_json::json!({"status": "error", "message": "not found"}))
@@ -1867,7 +1916,7 @@ Return ONLY valid JSON with this structure:
         }).to_string();
         broadcast_request_to_workers(
             &cluster_registry, "POST", "/batch/load",
-            Some(&gname), Some(&batch_body),
+            None, Some(&gname), Some(&batch_body),
         );
 
         task_mgr.complete_step(&tid, "Importing graph data");
@@ -1875,6 +1924,17 @@ Return ONLY valid JSON with this structure:
         // Write extracted tags back to the document metadata and
         // associate the document with the target graph.
         doc_mgr.update(&doc_id, &doc_title, &parsed.tags, Some(&gname));
+
+        // Broadcast document metadata update to workers.
+        let update_body = serde_json::json!({
+            "title": &doc_title,
+            "tags": &parsed.tags,
+            "graph_name": &gname,
+        }).to_string();
+        broadcast_request_to_workers(
+            &cluster_registry, "PUT", &format!("/documents/{}", doc_id),
+            None, None, Some(&update_body),
+        );
 
         // Mark task as completed
         {
