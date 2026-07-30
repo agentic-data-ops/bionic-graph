@@ -90,22 +90,48 @@ pub struct ClusterGateway {
 }
 
 impl ClusterGateway {
-    /// 构造（从 AppState 提取所需字段）
     pub fn from_state(state: &AppState) -> Self;
 
-    /// 转发到 master
-    /// 如果是 master 节点，返回 None（不转发）
-    /// 如果是 worker 节点且 replay 中，返回 None（防止递归）
-    /// 否则转发并等待 master 响应
+    /// 转发到 master。返回 master 的完整响应。
+    /// - master 节点: 返回 Ok(None)（不转发，由 handler 本地执行）
+    /// - worker 节点 + REPLAYING: 返回 Ok(None)（防止递归）
+    /// - worker 节点 + 正常: 转发并等待响应
     pub async fn forward<R: DeserializeOwned>(
         &self, req: &ClusterRequest
     ) -> Result<Option<R>, StatusCode>;
 
     /// 广播到所有 worker（fire-and-forget）
-    /// 如果在 replay 中，不广播（防止递归）
     pub fn broadcast(&self, req: &ClusterRequest);
 }
 ```
+
+**为什么 `forward` 能同时取代 `try_forward_json` 和 `try_forward_status`？**
+
+当前两个函数的区别仅在于返回值：
+
+| 函数 | 返回类型 | 调用方 |
+|------|---------|--------|
+| `try_forward_json` | `Option<Result<Json<Value>, StatusCode>>` | 需要 master 返回 JSON 数据的 handler（create/update 等） |
+| `try_forward_status` | `Option<StatusCode>` | 只需要状态码的 handler（delete 等） |
+
+统一后 `forward` 使用泛型返回，两种场景都能覆盖：
+
+```rust
+// 场景 1：需要 JSON 响应（原 try_forward_json）
+if let Some(resp) = cluster.forward::<CreateVertexResponse>(&req).await? {
+    return Ok(Json(resp));
+}
+
+// 场景 2：只需要状态码（原 try_forward_status）
+if cluster.forward::<serde_json::Value>(&req).await?.is_some() {
+    return StatusCode::OK;
+} else {
+    // 本地执行
+}
+```
+
+对于返回 JSON 的 handler，`forward::<T>()` 自动反序列化 master 的响应。
+对于只返回状态码的 handler，`forward::<Value>()` 忽略 body 内容，仅判断 `is_some()`。
 
 ### 3.3 改造后的 handler 模式
 
