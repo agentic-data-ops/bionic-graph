@@ -619,7 +619,122 @@ for (k, v) in &req.headers {
 
 `broadcast_write_result`（`mod.rs:254`）已无任何调用点，可安全删除。
 
-| 阶段 | 工作日 | 代码变更 |
+## 6. 集群可靠性增强
+
+### 6.1 Master 节点持久化与启动等待
+
+**文件**：`<data_dir>/cluster/nodes.json`
+
+Master 在每次 worker 注册/心跳时，将可用节点信息持久化到 `cluster/nodes.json`：
+
+```json
+{
+  "master": {
+    "node_id": "master@127.0.0.1:9090",
+    "api_addr": "127.0.0.1:8080",
+    "cluster_addr": "127.0.0.1:9090",
+    "last_seen": 1785411000000000
+  },
+  "workers": [
+    {
+      "node_id": "worker@127.0.0.1:9091",
+      "api_addr": "127.0.0.1:8081",
+      "cluster_addr": "127.0.0.1:9091",
+      "last_seen": 1785411000000000,
+      "status": "alive"
+    }
+  ],
+  "version": 1
+}
+```
+
+**启动流程**：
+
+```
+master 启动 → 读取 cluster/nodes.json
+  ├─ 等待所有已知 worker 通过心跳注册（超时 N 秒）
+  │    └─ 超时后，已注册 worker ≥ 1 → 继续启动
+  │    └─ 超时后，尚无任何 worker → 继续启动（允许单节点降级）
+  ├─ 开始接受 API 请求
+  │    └─ 未就绪的 worker 请求 → 503 Service Unavailable
+  └─ 定期持久化当前节点状态
+```
+
+**API 可用性检查**：Master 在所有已知 worker 未全部注册前，对写请求返回 `503 Service Unavailable`，读请求正常处理。
+
+### 6.2 Worker 首次连接时图库配置同步
+
+Worker 连接到 Master 时，在心跳消息中携带本地图库列表。Master 对比后返回差异，Worker 同步缺失/不一致的图库。
+
+**心跳扩展**：
+
+```rust
+pub struct Heartbeat {
+    pub node_id: String,
+    pub api_addr: String,
+    pub cluster_addr: String,
+    pub last_acked_seq: u64,
+    pub graphs: Vec<GraphMeta>,  // Worker 的本地图库列表
+}
+```
+
+**同步流程**：
+
+```
+Worker 首次心跳
+  ├─ Worker: 发送 Heartbeat { graphs: [graph0: {time_travel:true}, ...] }
+  ├─ Master: 对比 master 的图库列表与 worker 的列表
+  │    ├─ 缺失图库 → 返回 CreateGraph 指令
+  │    └─ 配置不一致 → 返回 UpdateGraphConfig 指令
+  └─ Worker: 执行指令，创建/更新本地图库
+       └─ 完成后，发送确认心跳
+```
+
+图库配置同步后，Master 才开始向该 Worker 广播写入请求。
+
+### 6.3 广播失败持久化与重试
+
+**文件**：`<data_dir>/cluster/broadcast.bin`
+
+当 `broadcast()` 向 Worker 发送请求失败（网络错误），将未送达的广播写入持久化文件：
+
+```rust
+#[derive(Serialize, Deserialize)]
+pub struct PendingBroadcast {
+    pub req: ForwardedRequest,
+    pub target_worker: String,
+    pub created_at: u64,
+    pub retry_count: u32,
+}
+```
+
+**重试流程**：
+
+```
+Worker 心跳到达 Master
+  ├─ 更新 worker 状态为 alive
+  ├─ 检查 cluster/broadcast.bin 中是否有该 worker 的未送达广播
+  │    ├─ 有 → 依次发送（按 created_at 排序）
+  │    │    ├─ 成功 → 从 broadcast.bin 删除
+  │    │    └─ 失败 → 保留，retry_count++，下次重试
+  │    └─ 无 → 正常处理
+  └─ 响应心跳
+```
+
+**清理策略**：
+- 成功送达的广播立即从 `broadcast.bin` 删除
+- `retry_count > 10` 的广播标记为 `failed` 并记录错误日志（不再重试）
+- Master 启动时扫描 `broadcast.bin`，对 `status != delivered` 的条目重新加入重试队列
+
+### 6.4 实施优先级
+
+| 功能 | 优先级 | 工作量 | 说明 |
+|------|--------|--------|------|
+| 6.1 节点持久化 | P0 | 1天 | 启动就绪检查，影响集群可用性 |
+| 6.2 图库同步 | P1 | 1天 | 数据一致性保障 |
+| 6.3 广播重试 | P2 | 2天 | 数据可靠性保障，可后续实施 |
+
+## 7. 总工作量估算
 |------|--------|---------|
 | ClusterRequest 设计 | 1 | +80 行 |
 | ClusterGateway 设计 | 1 | +120 行 |
