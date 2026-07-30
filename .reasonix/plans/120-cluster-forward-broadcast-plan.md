@@ -148,7 +148,8 @@ pub struct ClusterGateway {
 impl ClusterGateway {
     pub fn from_state(state: &AppState) -> Self;
 
-    /// 转发到 master。返回 master 的完整响应。
+    /// 转发到 master（写操作）。检查 REPLAYING 标志，replay 中不转发。
+    /// 返回 master 的完整响应。
     /// - master 节点: 返回 Ok(None)（不转发，由 handler 本地执行）
     /// - worker 节点 + REPLAYING: 返回 Ok(None)（防止递归）
     /// - worker 节点 + 正常: 转发并等待响应
@@ -156,9 +157,40 @@ impl ClusterGateway {
         &self, req: &ClusterRequest
     ) -> Result<Option<R>, StatusCode>;
 
+    /// 转发到 master（读操作）。**跳过** REPLAYING 检查。
+    /// 用于任务查询等只读请求，即使正在写 replay 也能正常转发。
+    pub async fn forward_read<R: DeserializeOwned>(
+        &self, req: &ClusterRequest
+    ) -> Result<Option<R>, StatusCode>;
+
     /// 广播到所有 worker（fire-and-forget）
     pub fn broadcast(&self, req: &ClusterRequest);
 }
+```
+
+**`forward` vs `forward_read` 行为对比**：
+
+| 场景 | `forward`（写） | `forward_read`（读） |
+|------|----------------|---------------------|
+| master 节点 | 不转发 → 本地执行 | 不转发 → 本地执行 |
+| worker + REPLAYING | **不转发** → 跳过（防递归） | **转发** → 正常查询 master |
+| worker + 正常 | 转发 | 转发 |
+
+**handler 使用示例**：
+
+```rust
+// 写操作：create_vertex（使用 forward）
+let req = ClusterRequest::new("POST", "/vertices").with_graph(graph_name).with_body(&body_str);
+if let Some(resp) = cluster.forward::<CreateVertexResponse>(&req).await? {
+    return Ok(Json(resp));
+}
+
+// 读操作：get_task（使用 forward_read）
+let req = ClusterRequest::new("GET", &format!("/tasks/{}", task_id));
+if let Some(resp) = cluster.forward_read::<TaskResponse>(&req).await? {
+    return Ok(Json(resp));
+}
+```
 ```
 
 **为什么 `forward` 能同时取代 `try_forward_json` 和 `try_forward_status`？**
