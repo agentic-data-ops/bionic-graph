@@ -356,7 +356,7 @@ Touch（rank/atime 读取更新）：
 | POST | `/cluster/forward` | Worker → Master | Forwarded write request |
 | POST | `/cluster/replicate` | Master → Worker | Redo log entry push |
 | POST | `/cluster/touch` | 双向 | Read报告（Worker→Master）+ 中继广播（Master→所有Worker），直接HTTP无WAL |
-| POST | `/cluster/execute` | Master→Worker | 用 REPLAYING 模式在worker上执行转发请求（写广播） |
+| POST | `/cluster/execute` | Master→Worker | 通过 proxy_to_api 在 worker 上执行转发请求（写广播），X-Bionic-Request-Id Header 防止递归 |
 | POST | `/cluster/tokenizer-sync` | Master→Worker | 同步 tokenizer 自定义词到所有 worker |
 
 **Node ID 唯一性要求**: worker 的 heartbeat `node_id` 必须唯一（源码中用 `format!("worker@{}", cluster.bind_addr)` 生成）。两个 worker 使用相同 `node_id` 会导致 master 的 `HashMap` 中后注册者覆盖前者，广播只能到达一个 worker。
@@ -393,6 +393,49 @@ Periodic flush:
               └── WAL rotation: 后台线程 flush_dirty() → 刷脏块 → 删旧WAL
 ```
 
+## Cluster Broadcast Replay Prevention (请求 ID 方案)
+
+全局 REPLAYING 标记已被**请求 ID + 中间件 + task-local** 方案取代：
+
+```
+handle_execute (cluster server)
+  ├─ 生成唯一 req_id = Uuid::new_v4()
+  ├─ 注册到 INFLIGHT_REQUESTS (LazyLock<Mutex<HashSet<String>>>)
+  └─ proxy_to_api(api_addr, req, Some(&req_id))
+       └─ HTTP 请求添加 Header: X-Bionic-Request-Id: <uuid>
+            └─ REST API 处理
+                 ├─ axum middleware 检查 Header
+                 │    └─ 在 INFLIGHT_REQUESTS 中？→ IS_BROADCAST_REPLAY = true (task-local)
+                 ├─ try_forward_json → is_broadcast_replay() → true → 跳过转发
+                 └─ 正常 handler 处理 (WAL 写入照常)
+```
+
+**并发安全原理**：
+- 每个广播请求唯一 req_id → 不同请求 ID 不同 → 互不干扰
+- `INFLIGHT_REQUESTS` (全局 `HashSet`) 只跟踪正在处理中的广播请求
+- 中间件通过 `tokio::task_local!` 设置 `IS_BROADCAST_REPLAY` → 只影响当前请求
+- 普通请求没有 `X-Bionic-Request-Id` Header → middleware 不设标志 → 正常转发
+- WAL replay 用独立的 `WAL_REPLAYING` (全局 AtomicBool)，HTTP 启动前已结束
+
+**写广播流程**：
+```
+Master handler (create_vertex, create_document 等)
+  └─ broadcast_request_to_workers()
+       └─ POST /cluster/execute → 每个 worker
+            └─ handle_execute
+                 ├─ 注册 req_id → proxy_to_api → X-Bionic-Request-Id Header
+                 ├─ worker REST API 处理 (通过 middleware IS_BROADCAST_REPLAY=true)
+                 │    ├─ try_forward_json → 跳过 (不转发回 master)
+                 │    ├─ broadcast_* → 跳过 (不再次广播)
+                 │    └─ 正常执行 + WAL 写入
+                 └─ 注销 req_id
+```
+
+**读转发绕过**：
+- `try_forward_read_json()` 不检查 `is_broadcast_replay()` → 任务轮询等读请求不受 REPLAYING 影响
+- 用于 `GET /tasks/:task_id` 和 `GET /tasks`
+```
+
 ## Watch out for
 - **Route params**: axum 0.7.9 requires `:param` syntax.
 - **Data dir**: `<data_dir>/graphs/<name>/` with files: `data`, `bitmap`, `config.json`, `redo_*`. No separate index file — metadata embedded in DataHeader.
@@ -419,6 +462,11 @@ Periodic flush:
 - **SIGINT/SIGTERM**: server calls `GraphManager::close_all()` → flushes dirty blocks + syncs + renews WAL.
 - **`Graph::close()`**: calls `flush()` + `sync()` + `renew()`.
 - **Cluster mode**: requires `"role": "master"` or `"role": "worker"` in settings. Heartbeat every 5s by default. **Worker `node_id` 必须唯一**：多个 worker 必须使用不同的 node_id（源码生成 `worker@{bind_addr}`），否则 master 的 HashMap 中后注册者覆盖前者。
+- **Replay prevention**: 使用 `X-Bionic-Request-Id` header + `INFLIGHT_REQUESTS` set + axum middleware + `tokio::task_local!` `IS_BROADCAST_REPLAY`。无需全局 `REPLAYING` 标志，并发安全。
+- **Read forwarding bypass**: `try_forward_read_json()` 不检查 `is_broadcast_replay()`，用于任务轮询等读操作，不受广播 replay 影响。
+- **Document broadcast with same UUID**: `CreateDocumentBody` 支持可选 `id` 字段，广播时携带 master UUID，workers 在 REPLAYING 模式下使用指定 ID 创建。`UpdateDocumentBody` 支持可选 `graph_name` 字段。
+- **Document delete ?clean**: 后端解析 `?clean=true` 查询参数，控制是否清理关联图谱数据，集群转发和广播时携带该参数。
+- **broadcast_request_to_workers**: 新增 `query: Option<&str>` 参数，支持广播时传递查询参数。
 - **Touch broadcast**: 读取触发 rank/atime 更新时，Worker→Master 报告 + Master 中继广播到所有 Worker。直接 HTTP POST `TouchRequest{vertex_ids, edge_ids}` 到各节点的 `/cluster/touch`，**不走 WAL**。
 - **Document lifecycle**: created without graph association. Graph assigned during extraction via `X-Graph-Name` header.
 - **Batch API**: `/batch/load` upserts vertices by `name`, edges by `(source_name, target_name, name)`. `update_existing` (default true) controls upsert vs append. `/batch/delete` cascades to connected edges.
@@ -428,11 +476,11 @@ Periodic flush:
 ## TODO
 - [x] 顶点和边被读取到时更新atime和rank元数据：Worker→Master报告，Master中继广播到所有Worker（直接HTTP，无WAL）
 - [x] 修复 worker node_id 冲突 bug：两个 worker 硬编码 "worker" 导致 HashMap 覆盖，改为 `worker@{bind_addr}`
-- [ ] 检查是否仍然有写操作未进行广播
-- [x] 将tokenizer自定义词典配置文件迁移到数据目录：tokenizer/words.json，不放到~/.config/bionic-graph下，不提供命令行入口
-- [ ] 使用~/.config/bionic-graph下的master.json, worker1.json, worker2.json 启动集群（先清理各自的数据目录）
+- [x] 检查是否仍然有写操作未进行广播 — 所有写操作均已覆盖
+- [x] 将tokenizer自定义词典配置文件迁移到数据目录：tokenizer/words.json
+- [x] 使用 master.json, worker1.json, worker2.json 启动集群测式
 - [x] 测试worker1写入，worker2读取，覆盖所有涉及转发和广播的场景
-- [ ] 验证master, worker1的前端是否正常
+- [x] 验证master, worker1的前端是否正常
 - [x] 刷新代码注释，涉及广播的场景（touch/read），不再使用WAL日志了
 - [x] 刷新REASONIX.md 和 README.md
 - [ ] master将连接的节点信息进行持久化: cluster/nodes.json
@@ -441,3 +489,8 @@ Periodic flush:
 - [x] 自定义索引的配置进行持久化，保存到图库的config.json中（indecies.properties），如果数据库崩溃，则需要重配置文件中加载自定义索引配置，并扫描数据文件进行重建
 - [x] 检查下顶点和边的元数据更新有没有记录日志，能否保证崩溃一致性 — 已全部添加 WAL（VertexMetaUpdate / EdgeMetaUpdate），SIGKILL 测试通过
 - [x] 修复log checkpoint刷盘机制 — log rotation 时后台线程异步刷脏块，不阻塞 writer
+- [x] GET 方法支持在 proxy_to_api 中转发（任务轮询）
+- [x] proxy_to_api 添加 X-Bionic-Request-Id header 传递广播上下文
+- [x] axum middleware 检测 replay header 并设置 task-local IS_BROADCAST_REPLAY
+- [x] try_forward_read_json 绕过 replay 检查用于读转发
+- [x] 文档生命周期集群同步（创建/更新/提取/删除含 clean 参数）

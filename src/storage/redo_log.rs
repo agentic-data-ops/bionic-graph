@@ -216,8 +216,8 @@ impl RedoLog {
     /// entry to disk.
     pub fn append(&self, op_type: OpType, op_id: u64, data: &[u8]) -> StorageResult<()> {
         // During WAL replay, skip appending to avoid recursive WAL writes.
-        use crate::graph::graph::REPLAYING;
-        if REPLAYING.load(Ordering::Relaxed) {
+        use crate::graph::graph::WAL_REPLAYING;
+        if WAL_REPLAYING.load(Ordering::Relaxed) {
             return Ok(());
         }
 

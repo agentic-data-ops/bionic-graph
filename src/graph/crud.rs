@@ -18,7 +18,6 @@ use crate::storage::types::{
 
 /// Flag set during WAL replay — guards against recursive WAL writes
 /// when token operations are triggered by replay_initiated vertex/edge creation.
-pub(crate) static REPLAYING: AtomicBool = AtomicBool::new(false);
 
 const MAX_STORABLE_DATA: usize = (CHUNKS_PER_BLOCK - 1) * CHUNK_SIZE; // 255 * 64 = 16320
 const MAX_TOKEN_PAYLOAD: usize = 14000;
@@ -270,7 +269,7 @@ pub fn update_vertex_meta(graph: &Graph, vid: u32, new_rank: Option<u32>, new_at
     }
 
     // Write WAL entry for crash consistency.
-    if !REPLAYING.load(Ordering::Relaxed) {
+    if !crate::graph::graph::is_replaying() {
         let data = bincode::serialize(&(rank, atime)).unwrap_or_default();
         let _ = graph.redo_log.append(OpType::VertexMetaUpdate, vid as u64, &data);
     }
@@ -319,7 +318,7 @@ pub fn update_edge_meta(graph: &Graph, eid: u32, new_rank: Option<u32>, new_atim
     }
 
     // Write WAL entry for crash consistency.
-    if !REPLAYING.load(Ordering::Relaxed) {
+    if !crate::graph::graph::is_replaying() {
         let data = bincode::serialize(&(rank, atime)).unwrap_or_default();
         let _ = graph.redo_log.append(OpType::EdgeMetaUpdate, eid as u64, &data);
     }
@@ -1344,7 +1343,7 @@ pub(crate) fn add_token_immediate(graph: &Graph, token_str: &str, ref_type: u8, 
                     let seg_data = crate::graph::serialize::serialize_token(&seg_payload)?;
                     let seg_header = DataHeader::new_token(seg_payload.id, seg_data.len() as u16);
                     let seg_ptr = profile::time("token_write", || write_data_record(graph, &seg_header, &seg_data))?;
-                    if !REPLAYING.load(Ordering::Relaxed) {
+                    if !crate::graph::graph::is_replaying() {
                         graph.redo_log.append(OpType::TokenCreate, seg_payload.id as u64, &seg_data)?;
                     }
                     let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
@@ -1368,7 +1367,7 @@ pub(crate) fn add_token_immediate(graph: &Graph, token_str: &str, ref_type: u8, 
                 let new_ptr = profile::time("token_write", || write_data_record(graph, &new_header, &new_data))?;
 
                 // WAL
-                if !REPLAYING.load(Ordering::Relaxed) {
+                if !crate::graph::graph::is_replaying() {
                     graph.redo_log.append(OpType::TokenUpdate, token_payload.id as u64, &new_data)?;
                 }
 
@@ -1401,7 +1400,7 @@ pub(crate) fn add_token_immediate(graph: &Graph, token_str: &str, ref_type: u8, 
         let ptr = write_data_record(graph, &header, &data)?;
 
         // WAL
-        if !REPLAYING.load(Ordering::Relaxed) {
+        if !crate::graph::graph::is_replaying() {
             graph.redo_log.append(OpType::TokenCreate, token_payload.id as u64, &data)?;
         }
 
@@ -1437,7 +1436,7 @@ fn update_rank_and_atime(graph: &Graph, id: u32, ptr: &MetaPointer) -> StorageRe
     update_header_in_place(graph, ptr, &header)?;
 
     // Write WAL entry for crash consistency.
-    if !REPLAYING.load(Ordering::Relaxed) {
+    if !crate::graph::graph::is_replaying() {
         let data = bincode::serialize(&(new_rank, now)).unwrap_or_default();
         let op_type = match header.chunk_type {
             crate::storage::types::ChunkType::Vertex => OpType::VertexMetaUpdate,

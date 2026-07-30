@@ -100,7 +100,7 @@ async fn handle_forward(
     }
 
     // Proxy the request to the master's main API server.
-    let result = proxy_to_api(&state.api_addr, &req).await;
+    let result = proxy_to_api(&state.api_addr, &req, None).await;
 
     // Tokenizer operations: broadcast directly to workers' tokenizer-sync endpoint.
     // Regular vertex/edge operations are already broadcast by the REST API
@@ -151,9 +151,10 @@ pub async fn handle_execute(
     Json(req): Json<crate::cluster::forward::ForwardedRequest>,
 ) -> Json<crate::cluster::forward::ForwardedResponse> {
     log::warn!("handle_execute: {} {} (graph={:?})", req.method, req.path, req.graph);
-    crate::graph::graph::REPLAYING.store(true, Ordering::Relaxed);
-    let result = proxy_to_api(&state.api_addr, &req).await;
-    crate::graph::graph::REPLAYING.store(false, Ordering::Relaxed);
+    let req_id = uuid::Uuid::new_v4().to_string();
+    crate::graph::graph::INFLIGHT_REQUESTS.lock().unwrap().insert(req_id.clone());
+    let result = proxy_to_api(&state.api_addr, &req, Some(&req_id)).await;
+    crate::graph::graph::INFLIGHT_REQUESTS.lock().unwrap().remove(&req_id);
     Json(result)
 }
 
@@ -269,7 +270,7 @@ fn build_broadcast_entries(
 }
 
 /// Proxy a ForwardedRequest to the master's main API server via HTTP.
-async fn proxy_to_api(api_addr: &str, req: &ForwardedRequest) -> ForwardedResponse {
+async fn proxy_to_api(api_addr: &str, req: &ForwardedRequest, request_id: Option<&str>) -> ForwardedResponse {
     let url = format!(
         "http://{}{}{}",
         api_addr,
@@ -281,6 +282,7 @@ async fn proxy_to_api(api_addr: &str, req: &ForwardedRequest) -> ForwardedRespon
     let method = req.method.to_uppercase();
 
     let request = match method.as_str() {
+        "GET" => client.get(&url),
         "POST" => client.post(&url),
         "PUT" => client.put(&url),
         "DELETE" => client.delete(&url),
@@ -303,6 +305,14 @@ async fn proxy_to_api(api_addr: &str, req: &ForwardedRequest) -> ForwardedRespon
     // Forward the graph name header so the master's handler uses the correct graph.
     let request = if let Some(ref graph) = req.graph {
         request.header("X-Graph-Name", graph.as_str())
+    } else {
+        request
+    };
+
+    // Pass the broadcast request ID so downstream handlers can identify
+    // this request as a cluster replay without a global flag.
+    let request = if let Some(id) = request_id {
+        request.header("X-Bionic-Request-Id", id)
     } else {
         request
     };

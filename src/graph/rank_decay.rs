@@ -93,7 +93,7 @@ fn try_decay(
             let _ = crate::graph::crud::update_header_in_place(graph, ptr, &hdr);
 
             // Write WAL entry for crash consistency.
-            if !crate::graph::crud::REPLAYING.load(std::sync::atomic::Ordering::Relaxed) {
+            if !crate::graph::graph::WAL_REPLAYING.load(std::sync::atomic::Ordering::Relaxed) {
                 let data = bincode::serialize(&(new_rank, now)).unwrap_or_default();
                 let _ = graph.redo_log.append(crate::storage::types::OpType::VertexMetaUpdate, hdr.entity_id as u64, &data);
             }
@@ -114,7 +114,7 @@ fn try_decay(
             let _ = crate::graph::crud::update_header_in_place(graph, ptr, &hdr);
 
             // Write WAL entry for crash consistency.
-            if !crate::graph::crud::REPLAYING.load(std::sync::atomic::Ordering::Relaxed) {
+            if !crate::graph::graph::WAL_REPLAYING.load(std::sync::atomic::Ordering::Relaxed) {
                 let data = bincode::serialize(&(new_rank, now)).unwrap_or_default();
                 let _ = graph.redo_log.append(crate::storage::types::OpType::EdgeMetaUpdate, hdr.entity_id as u64, &data);
             }

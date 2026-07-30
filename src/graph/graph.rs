@@ -6,6 +6,8 @@
 //! 2. CRUD operations — through `crate::graph::crud` methods
 //! 3. `Graph::close()` — flushes dirty blocks, syncs all state to disk
 
+use std::collections::HashSet;
+use std::sync::Mutex;
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -13,10 +15,36 @@ use std::{
         Arc, RwLock,
     },
 };
+use std::sync::LazyLock;
 
-/// Flag set during WAL replay — prevents recursive WAL writes and
-/// recursive broadcasting.
-pub(crate) static REPLAYING: AtomicBool = AtomicBool::new(false);
+/// Set of request IDs currently being processed as cluster broadcast replays.
+/// When `handle_execute` broadcasts a request to a worker, it generates a
+/// unique ID, registers it here, and passes it via `X-Bionic-Request-Id`
+/// header through proxy_to_api. The axum middleware checks this header and
+/// sets per-task IS_BROADCAST_REPLAY so try_forward_json can skip forwarding
+/// for this specific request — without blocking any concurrent requests.
+pub(crate) static INFLIGHT_REQUESTS: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
+
+/// Per-task flag set by the replay-check middleware when the incoming request
+/// carries an X-Bionic-Request-Id that is registered in INFLIGHT_REQUESTS.
+/// Used by try_forward_json to decide whether to skip forwarding.
+tokio::task_local! {
+    pub(crate) static IS_BROADCAST_REPLAY: bool;
+}
+
+pub(crate) fn is_broadcast_replay() -> bool {
+    IS_BROADCAST_REPLAY.try_with(|v| *v).unwrap_or(false)
+}
+
+/// Flag set only during startup WAL replay to suppress WAL appends.
+/// The HTTP server is not running during this window, so a global flag is safe.
+pub(crate) static WAL_REPLAYING: AtomicBool = AtomicBool::new(false);
+
+/// Returns true if we're in any kind of replay (cluster broadcast or WAL).
+/// During replay, WAL writes should be suppressed to avoid duplication.
+pub(crate) fn is_replaying() -> bool {
+    is_broadcast_replay() || WAL_REPLAYING.load(Ordering::Relaxed)
+}
 
 use serde::{Deserialize, Serialize};
 use crate::lock::lock_manager::LockManager;
@@ -277,13 +305,13 @@ impl Graph {
         // ── Replay redo log ──────────────────────────────────────────────
         // The WAL replay applies any un-checkpointed operations to the
         // in-memory index and data blocks.
-        crate::graph::graph::REPLAYING.store(true, Ordering::Relaxed);
+        crate::graph::graph::WAL_REPLAYING.store(true, Ordering::Relaxed);
         let g = Arc::downgrade(&graph);
         let replay_result = RedoLog::replay(&graph_dir, |entry| {
             let graph = g.upgrade().ok_or_else(|| StorageError::Other("graph dropped during replay".into()))?;
             crate::graph::crud::replay_entry(&graph, &entry)
         });
-        crate::graph::graph::REPLAYING.store(false, Ordering::Relaxed);
+        crate::graph::graph::WAL_REPLAYING.store(false, Ordering::Relaxed);
         replay_result?;
 
         // After replay, switch to a fresh WAL file so crash recovery

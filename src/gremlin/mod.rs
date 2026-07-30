@@ -3,7 +3,6 @@
 //! These handlers replace the old `src/gremlin/` routes and operate on
 //! `Arc<Graph>` through `GraphManager`.
 
-use std::sync::atomic::Ordering;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -49,8 +48,8 @@ pub(crate) async fn try_forward_json(
         let addr = state.master_api_addr.clone();
         (is_worker, addr)
     };
-    // During replay, skip forwarding to prevent recursion.
-    if crate::graph::graph::REPLAYING.load(Ordering::Relaxed) {
+    // During cluster broadcast replay, skip forwarding to prevent recursion.
+    if crate::graph::graph::is_broadcast_replay() {
         return None;
     }
     if !is_worker { return None; }
@@ -84,6 +83,54 @@ pub(crate) async fn try_forward_json(
     }
 }
 
+/// Same as try_forward_json but skips the REPLAYING check.
+/// Used for read-only forwarding (e.g., task status polling) that must
+/// not be blocked by concurrent write replays.
+pub(crate) async fn try_forward_read_json(
+    state: &AppState,
+    method: &str,
+    path: &str,
+    query: Option<&str>,
+    graph_name: Option<&str>,
+    body: Option<&str>,
+) -> Option<Result<Json<serde_json::Value>, StatusCode>> {
+    let (is_worker, master_addr) = {
+        let settings = state.settings.lock().unwrap();
+        let is_worker = settings.cluster.enabled && settings.cluster.role == NodeRole::Worker;
+        let addr = state.master_api_addr.clone();
+        (is_worker, addr)
+    };
+    if !is_worker { return None; }
+    let master_addr = master_addr.as_ref()?;
+    let req = crate::cluster::forward::ForwardedRequest {
+        method: method.to_string(),
+        path: path.to_string(),
+        query: query.map(|s| s.to_string()),
+        body: body.map(|s| s.to_string()),
+        graph: graph_name.map(|s| s.to_string()),
+    };
+    match crate::cluster::forward::forward_write(master_addr, &req).await {
+        Ok(resp) => {
+            if resp.success {
+                if let Some(body_str) = resp.body {
+                    match serde_json::from_str(&body_str) {
+                        Ok(val) => Some(Ok(Json(val))),
+                        Err(_) => Some(Err(StatusCode::INTERNAL_SERVER_ERROR)),
+                    }
+                } else {
+                    Some(Ok(Json(serde_json::json!({"status": "ok"}))))
+                }
+            } else {
+                Some(Err(StatusCode::from_u16(resp.status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)))
+            }
+        }
+        Err(e) => {
+            log::warn!("Forward read to master failed: {}", e);
+            Some(Err(StatusCode::BAD_GATEWAY))
+        }
+    }
+}
+
 /// Same as try_forward_json but for handlers that return StatusCode.
 pub(crate) async fn try_forward_status(
     state: &AppState,
@@ -98,8 +145,8 @@ pub(crate) async fn try_forward_status(
         let addr = state.master_api_addr.clone();
         (is_worker, addr)
     };
-    // During replay, skip forwarding to prevent recursion.
-    if crate::graph::graph::REPLAYING.load(Ordering::Relaxed) {
+    // During cluster broadcast replay, skip forwarding to prevent recursion.
+    if crate::graph::graph::is_broadcast_replay() {
         return None;
     }
     if !is_worker { return None; }
@@ -148,8 +195,8 @@ pub(crate) fn broadcast_request_to_workers(
     graph_name: Option<&str>,
     body: Option<&str>,
 ) {
-    // During replay, skip broadcasting to prevent recursion.
-    if crate::graph::graph::REPLAYING.load(Ordering::Relaxed) {
+    // During cluster broadcast replay, skip broadcasting to prevent recursion.
+    if crate::graph::graph::is_broadcast_replay() {
         return;
     }
     let Some(registry) = cluster_registry.as_ref() else {
@@ -195,8 +242,8 @@ pub(crate) fn broadcast_write_result(
     graph_name: &str,
     response_body: &str,
 ) {
-    // During replay, skip broadcasting to prevent recursion.
-    if crate::graph::graph::REPLAYING.load(Ordering::Relaxed) {
+    // During cluster broadcast replay, skip broadcasting to prevent recursion.
+    if crate::graph::graph::is_broadcast_replay() {
         return;
     }
     let Some(registry) = cluster_registry.as_ref() else {
@@ -410,6 +457,21 @@ pub fn build_router(
         .route("/indices/edge/properties", delete(indices::delete_edge_property_indices))
         // Shared state
         .with_state(state)
+        // Middleware: detect cluster replay requests via X-Bionic-Request-Id header
+        // and set per-task IS_BROADCAST_REPLAY so try_forward_json skips
+        // forwarding for the replayed request without blocking concurrent requests.
+        .layer(axum::middleware::from_fn(
+            |request: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| async move {
+                let is_replay = request.headers().get("X-Bionic-Request-Id")
+                    .and_then(|v| v.to_str().ok())
+                    .map_or(false, |id| crate::graph::graph::INFLIGHT_REQUESTS.lock().unwrap().contains(id));
+                if is_replay {
+                    crate::graph::graph::IS_BROADCAST_REPLAY.scope(true, async { next.run(request).await }).await
+                } else {
+                    next.run(request).await
+                }
+            },
+        ))
 }
 
 // ── Health ──────────────────────────────────────────────────────────────────
@@ -1467,7 +1529,7 @@ pub async fn create_document(
 
     // During cluster replay, use the provided ID to keep UUIDs in sync across nodes.
     // If the document already exists locally (e.g., created during forwarding), skip it.
-    let id = if crate::graph::graph::REPLAYING.load(Ordering::Relaxed) {
+    let id = if crate::graph::graph::is_broadcast_replay() {
         if let Some(ref replica_id) = body.id {
             if state.doc_mgr.get(replica_id).is_some() {
                 // Already created locally during forwarding — nothing more to do.
@@ -1976,8 +2038,9 @@ pub async fn get_task_handler(
     State(state): State<AppState>,
     Path(task_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    // Worker → Master forwarding (tasks run on master)
-    if let Some(resp) = try_forward_json(&state, "GET", &format!("/tasks/{}", task_id), None, None, None).await {
+    // Worker → Master forwarding (tasks run on master).
+    // Uses try_forward_read_json to avoid being blocked by REPLAYING flag.
+    if let Some(resp) = try_forward_read_json(&state, "GET", &format!("/tasks/{}", task_id), None, None, None).await {
         return resp;
     }
     state.task_mgr.get_task(&task_id)
@@ -1992,8 +2055,9 @@ pub async fn get_task_handler(
 pub async fn list_tasks_handler(
     State(state): State<AppState>,
 ) -> Json<serde_json::Value> {
-    // Worker → Master forwarding (tasks run on master)
-    if let Some(resp) = try_forward_json(&state, "GET", "/tasks", None, None, None).await {
+    // Worker → Master forwarding (tasks run on master).
+    // Uses try_forward_read_json to avoid being blocked by REPLAYING flag.
+    if let Some(resp) = try_forward_read_json(&state, "GET", "/tasks", None, None, None).await {
         match resp {
             Ok(json) => return json,
             Err(_) => return Json(serde_json::json!([])),
@@ -2010,6 +2074,20 @@ pub async fn extract_document_handler(
     Path(document_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<SubmitExtractionResponse>, StatusCode> {
+    // Worker → Master forwarding
+    let body_str = serde_json::to_string(&SubmitExtractionBody {
+        document_id: document_id.clone(),
+    }).map_err(|_| StatusCode::BAD_REQUEST)?;
+    if let Some(resp) = try_forward_json(&state, "POST", &format!("/documents/{}/extract", document_id), None, None, Some(&body_str)).await {
+        return resp.map(|json| {
+            Json(SubmitExtractionResponse {
+                task_id: json.get("task_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                status: json.get("status").and_then(|v| v.as_str()).unwrap_or("error").to_string(),
+                message: json.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            })
+        });
+    }
+
     // Get graph name from X-Graph-Name header
     let default_name = state.gm.get_default_name();
     let graph_name = headers

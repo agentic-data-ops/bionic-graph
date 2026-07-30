@@ -205,7 +205,7 @@ Touch（rank/atime 读取同步）：
 |--------|----------|
 | **Reads** | Any node (master or worker) can serve read requests (Gremlin, search, vertex/edge queries) |
 | **Writes** | Workers forward write requests to the master automatically via HTTP |
-| **Write broadcast** | After each write, the master broadcasts the entry to ALL workers via `/cluster/execute` (HTTP, sets `REPLAYING=true` to prevent recursion). Workers replay the entry into their local graph. |
+| **Write broadcast** | After each write, the master broadcasts the entry to ALL workers via `/cluster/execute` (HTTP, with `X-Bionic-Request-Id` header to prevent recursion). Workers detect the header via middleware, set `IS_BROADCAST_REPLAY` (task-local), and skip forwarding/broadcasting. Workers replay the entry into their local WAL and graph. |
 | **Heartbeat** | Workers send periodic heartbeats to the master (every 5s by default). Worker `node_id` must be unique — two workers with the same ID will overwrite each other in master's registry. |
 | **Data isolation** | Each node has its own `data/` directory — workers sync via write broadcast, not shared storage |
 | **Rank/Atime sync** | Read access triggers touch: worker→master reports the read via HTTP POST `/cluster/touch`, then master applies locally + **relay-broadcasts** to all workers. Each node updates its own DataHeader in-place (no WAL). |
@@ -231,6 +231,8 @@ cargo run --release
 ```
 
 After frontend changes, `touch src/ui_serve.rs` is required to force Rust recompilation (rust-embed doesn't auto-detect `dist/` changes).
+
+> **Frontend polling resiliency**: The Knowledge Base extraction task polling now includes `try-catch` around each poll iteration. If a single poll request fails (e.g., network glitch or cluster broadcast collision), the error is logged and polling continues — the import no longer gets stuck permanently.
 
 ### Commands
 
@@ -544,8 +546,11 @@ curl -X PUT localhost:8080/documents/<id> \
   -H 'Content-Type: application/json' \
   -d '{"title":"new-title","tags":["updated"]}'
 
-# Delete document
-curl -X DELETE localhost:8080/documents/<id>
+# Delete document (clean=true also removes associated graph vertices/edges)
+curl -X DELETE 'localhost:8080/documents/<id>?clean=true'
+
+# In cluster mode, documents are automatically synced to all workers with the
+# same UUID. Extraction tags and graph association are also broadcast.
 
 # Get document content
 curl localhost:8080/documents/<id>/content
