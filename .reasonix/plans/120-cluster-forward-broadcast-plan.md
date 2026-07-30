@@ -180,56 +180,78 @@ ClusterRequest
 // src/cluster/gateway.rs
 impl ClusterGateway {
     pub fn broadcast(&self, req: &ClusterRequest) {
-        if crate::graph::graph::is_broadcast_replay() { return; }
-        let Some(ref registry) = self.registry else { return; };
-        let workers = registry.alive_workers();
-        if workers.is_empty() { return; }
-
-        let is_tokenizer = req.path == "/settings/tokenizer/words";
-        let endpoint = if is_tokenizer {
+        ...
+        let endpoint = if req.path.starts_with("/settings/tokenizer") {
             "/cluster/tokenizer-sync"
         } else {
             "/cluster/execute"
         };
-
-        let payload = ForwardedRequest {
-            method: req.method.clone(),
-            path: req.path.clone(),
-            query: None,
-            body: req.body.clone(),
-            graph: req.graph.clone(),
-        };
-
-        for worker in &workers {
-            let url = format!("http://{}{}", worker.cluster_addr, endpoint);
-            let p = payload.clone();
-            tokio::spawn(async move {
-                if let Err(e) = reqwest::Client::new()
-                    .post(&url).json(&p).send().await
-                {
-                    log::warn!("Broadcast to worker {} failed: {}", worker.node_id, e);
-                }
-            });
-        }
-
-        // tokenizer 还需额外发送 operation 字段（add/remove）
-        if is_tokenizer {
-            // ClusterRequest.body 已包含 {"words": [...]}，
-            // handle_tokenizer_sync 从 ForwardedRequest.body 解析 words
-            // 无需额外处理
-        }
+        ...
     }
 }
 ```
 
-### 3.7 非转发场景处理
+### 3.8 查询参数忠实传递
+
+查询参数（`?force=true/false`、`?clean=true/false` 等）在转发和广播中必须**忠实于原始请求**传递，不做任何默认值推断。
+
+`ClusterRequest` 的 `path` 字段包含完整路径和查询字符串：
+
+```rust
+// handler 中构造请求
+let path = format!("/vertices/{}", id);
+let req = ClusterRequest::new(method, &path)
+    .with_query_str(query_str)  // "force=true" / "force=false" / None
+    .with_graph(graph_name)
+    .with_body(&body_str);
+```
+
+`with_query_str` 方法将查询参数拼接到 path 末尾：
+
+```rust
+impl ClusterRequest {
+    pub fn with_query_str(mut self, qs: Option<&str>) -> Self {
+        if let Some(q) = qs {
+            self.path.push('?');
+            self.path.push_str(q);
+        }
+        self
+    }
+}
+```
+
+转发和广播使用同一 path，保证查询参数一致：
+
+| 原始请求 | ClusterRequest.path | 转发 path | 广播 path |
+|---------|-------------------|-----------|----------|
+| `DELETE /vertices/2` | `/vertices/2` | `/vertices/2` | `/vertices/2` |
+| `DELETE /vertices/2?force=true` | `/vertices/2?force=true` | `/vertices/2?force=true` | `/vertices/2?force=true` |
+| `DELETE /vertices/2?force=false` | `/vertices/2?force=false` | `/vertices/2?force=false` | `/vertices/2?force=false` |
+| `DELETE /documents/x?clean=true` | `/documents/x?clean=true` | `/documents/x?clean=true` | `/documents/x?clean=true` |
+
+所有 handler 的查询参数统一处理：
+
+```rust
+// delete_vertex / delete_edge
+let query_str = params.force.map(|f| format!("force={}", f));
+let req = ClusterRequest::new("DELETE", &format!("/vertices/{}", id))
+    .with_query_str(query_str.as_deref())
+    .with_graph(graph_name);
+
+// delete_document
+let query_str = params.clean.map(|c| format!("clean={}", c));
+let req = ClusterRequest::new("DELETE", &format!("/documents/{}", id))
+    .with_query_str(query_str.as_deref());
+```
+
+### 3.10 非转发场景处理
 
 - **任务查询**：`get_task_handler` / `list_tasks_handler` 使用 `try_forward_read_json`（不检查 REPLAYING）
   → 改造后 `ClusterGateway` 需要提供 `forward_read` 方法，或通过参数控制是否检查 REPLAYING
 - **删除操作**：`delete_vertex` / `delete_edge` 的 `?force=true` 参数在 path 中携带
   → `ClusterRequest::with_query()` 统一处理
 
-### 3.8 ID 一致性保证（关键）
+### 3.11 ID 一致性保证（关键）
 
 顶点、边、文档的**创建操作**在广播时，body 中必须携带 master 分配的唯一 ID，确保所有 workers 使用相同 ID 创建：
 
@@ -275,7 +297,7 @@ if crate::graph::graph::is_broadcast_replay() {
 - ❌ `crud::create_vertex` 尚不支持指定 ID 创建（需要新增 `create_vertex_with_id` 函数）
 - ❌ `crud::create_edge` 尚不支持指定 ID 创建（需要新增 `create_edge_with_id` 函数）
 
-### 3.9 ID 自增器和重复 ID 检查
+### 3.12 ID 自增器和重复 ID 检查
 
 创建 `create_vertex_with_id` / `create_edge_with_id` 函数时，需处理：
 
