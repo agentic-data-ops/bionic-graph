@@ -66,45 +66,32 @@ pub struct ClusterRequest {
     pub headers: HashMap<String, String>,
     /// Request body (JSON string)
     pub body: Option<String>,
-    /// Graph name（从 X-Graph-Name header 提取的快捷字段）
-    pub graph: Option<String>,
 }
 ```
 
-`ForwardedRequest` 结构体相应扩展，增加 `headers` 字段：
+`ForwardedRequest` 结构体同步简化，移除冗余的 `graph` 字段，该信息已由 `headers["X-Graph-Name"]` 携带：
 
 ```rust
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ForwardedRequest {
     pub method: String,
-    pub path: String,
-    pub query: Option<String>,           // ← 已废弃，由 path 携带
+    pub path: String,                       // 含查询参数
     pub body: Option<String>,
-    pub graph: Option<String>,
-    pub headers: HashMap<String, String>, // ← 新增
+    pub headers: HashMap<String, String>,   // 含 X-Graph-Name、X-Time-Travel 等
 }
 ```
 
-Builder 方法：
+Builder 方法——不再需要 `with_graph`，直接通过 header 指定：
 
 ```rust
 impl ClusterRequest {
-    pub fn new(method: &str, path: &str) -> Self {
-        Self {
-            method: method.to_string(),
-            path: path.to_string(),
-            headers: HashMap::new(),
-            body: None,
-            graph: None,
-        }
-    }
+    pub fn new(method: &str, path: &str) -> Self { ... }
 
     /// 设置请求体
     pub fn with_body(mut self, body: &str) -> Self { ... }
 
     /// 设置 X-Graph-Name header
     pub fn with_graph(mut self, graph: &str) -> Self {
-        self.graph = Some(graph.to_string());
         self.headers.insert("X-Graph-Name".to_string(), graph.to_string());
         self
     }
@@ -119,20 +106,14 @@ impl ClusterRequest {
     pub fn with_header(mut self, key: &str, val: &str) -> Self { ... }
 
     /// 设置查询字符串，追加到 path 末尾
-    pub fn with_query_str(mut self, qs: Option<&str>) -> Self {
-        if let Some(q) = qs {
-            self.path.push('?');
-            self.path.push_str(q);
-        }
-        self
-    }
+    pub fn with_query_str(mut self, qs: Option<&str>) -> Self { ... }
 }
 ```
 
 **handler 中构造请求示例**：
 
 ```rust
-// create_vertex: 只转发 body + graph name
+// create_vertex: 转发 body + graph name
 let req = ClusterRequest::new("POST", "/vertices")
     .with_graph(graph_name)              // → X-Graph-Name header
     .with_body(&serde_json::to_string(&body)?);
