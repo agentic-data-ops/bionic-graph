@@ -17,9 +17,6 @@ use std::{
 
 use crate::storage::types::{BlockIdx, StorageResult};
 
-/// Number of free-block slots to keep pre-filled in memory.
-const DEFAULT_PRE_ALLOC_BLOCKS: usize = 128;
-
 /// Block-level bitmap manager.
 ///
 /// # Invariants
@@ -257,7 +254,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.bitmap");
 
-        let mut bf = BitmapFile::open(&path, 0, DEFAULT_PRE_ALLOC_BLOCKS).unwrap();
+        let mut bf = BitmapFile::open(&path, 0, 128).unwrap();
         assert_eq!(bf.free_block_count(), 0);
 
         // Allocate — should trigger extension.
@@ -275,7 +272,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.bitmap");
 
-        let mut bf = BitmapFile::open(&path, 10, DEFAULT_PRE_ALLOC_BLOCKS).unwrap();
+        let mut bf = BitmapFile::open(&path, 10, 128).unwrap();
         // Initially all 10 blocks are free.
         assert!(bf.free_block_count() > 0);
 

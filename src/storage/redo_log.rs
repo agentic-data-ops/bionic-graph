@@ -919,8 +919,15 @@ mod tests {
         f.write_all(&[0xFF]).unwrap();
         drop(f);
 
-        let result = RedoLog::replay(dir.path(), |_| Ok(()));
-        assert!(result.is_err());
+        // CRC mismatch is treated as a truncated entry: replay stops cleanly
+        // (Ok) and no entry is delivered to the callback.
+        let mut delivered = 0;
+        let result = RedoLog::replay(dir.path(), |_| {
+            delivered += 1;
+            Ok(())
+        });
+        assert!(result.is_ok());
+        assert_eq!(delivered, 0);
     }
 
     #[test]

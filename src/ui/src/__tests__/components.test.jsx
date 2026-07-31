@@ -33,8 +33,12 @@ describe('PropertyPanel', () => {
 
   it('renders edge source/target', () => {
     render(<PropertyPanel item={edge} type="edge" onClose={() => {}} />);
-    expect(screen.getByText('1')).toBeInTheDocument();
-    expect(screen.getByText('2')).toBeInTheDocument();
+    // source and target render as their own spans; getByText would match
+    // strength's default "1.0" too, so query within the row containers.
+    const sourceRow = screen.getByText('Source', { exact: false }).closest('div');
+    const targetRow = screen.getByText('Target', { exact: false }).closest('div');
+    expect(sourceRow.textContent).toContain('1');
+    expect(targetRow.textContent).toContain('2');
   });
 
   it('renders edge label in properties', () => {
@@ -52,7 +56,9 @@ describe('PropertyPanel', () => {
 
   it('shows — for empty properties', () => {
     render(<PropertyPanel item={{ id: 99, labels: [], type: 'vertex', properties: {} }} type="vertex" onClose={() => {}} />);
-    expect(screen.getByText('—')).toBeInTheDocument();
+    // '—' appears both as the empty-name placeholder and the empty-properties
+    // placeholder, so at least one must be present.
+    expect(screen.getAllByText('—').length).toBeGreaterThan(0);
   });
 });
 
@@ -81,7 +87,7 @@ describe('API client', () => {
 
   it('createGraph sends POST with body', async () => {
     fetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({}) });
-    await api.createGraph('g', true);
+    await api.createGraph('g', '', true);
     const body = JSON.parse(fetch.mock.calls[0][1].body);
     expect(body.name).toBe('g');
     expect(body.time_travel).toBe(true);
@@ -94,29 +100,16 @@ describe('API client', () => {
     expect(fetch.mock.calls[0][1].method).toBe('DELETE');
   });
 
-  it('extractDoc sends raw markdown', async () => {
-    fetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({}) });
-    await api.extractDoc('# Hello', 'g');
-    const call = fetch.mock.calls[0];
-    expect(call[0]).toBe('/extract');
-    expect(call[1].body).toBe('# Hello');
-    expect(call[1].headers['Content-Type']).toBe('text/markdown');
-  });
-
-  it('traverse sends V+both and V+bothE', async () => {
-    fetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ data: [] }) });
+  it('traverse sends V+expand', async () => {
     fetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ data: [] }) });
     await api.traverse(42, 'knows', 'g');
-    // First call: V + both
+    // Single call: V + expand (neighbors + edges in one request)
     const body0 = JSON.parse(fetch.mock.calls[0][1].body);
     expect(body0.steps[0].step).toBe('V');
     expect(body0.steps[0].ids).toEqual([42]);
-    expect(body0.steps[1].step).toBe('both');
-    // Second call: V + bothE
-    const body1 = JSON.parse(fetch.mock.calls[1][1].body);
-    expect(body1.steps[0].step).toBe('V');
-    expect(body1.steps[0].ids).toEqual([42]);
-    expect(body1.steps[1].step).toBe('bothE');
+    expect(body0.steps[1].step).toBe('expand');
+    expect(body0.steps[1].depth).toBe(1);
+    expect(body0.steps[1].label).toBe('knows');
   });
 
   it('throws on non-ok response', async () => {

@@ -375,15 +375,6 @@ class Client:
 
     # ── 10. Extraction ──────────────────────────────────────────────
 
-    def submit_extraction(self, document_id: str, graph: Optional[str] = None, model: Optional[str] = None) -> ExtractionSubmitResponse:
-        url = f"/extract"
-        body: dict = {"document_id": document_id}
-        if model:
-            body["model"] = model
-        return ExtractionSubmitResponse.model_validate(
-            self._request("POST", url, json=body, headers=self._graph_header(graph))
-        )
-
     def extract_document(self, doc_id: str, graph: Optional[str] = None, model: Optional[str] = None) -> ExtractionSubmitResponse:
         url = f"/documents/{doc_id}/extract"
         params = {}

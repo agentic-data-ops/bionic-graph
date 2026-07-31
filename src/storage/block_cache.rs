@@ -4,7 +4,6 @@
 use std::{
     collections::{HashMap, VecDeque},
     sync::RwLock,
-    time::Instant,
 };
 use crate::storage::types::{BlockIdx, BLOCK_SIZE, StorageError, StorageResult};
 

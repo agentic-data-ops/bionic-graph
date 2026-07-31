@@ -137,7 +137,11 @@ fn apply_env_overrides(settings: &mut Settings) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use tempfile::tempdir;
+
+    /// Serializes tests that mutate the global HOME env var.
+    static HOME_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_config_path() {
@@ -165,6 +169,8 @@ mod tests {
 
     #[test]
     fn test_load_nonexistent_creates_default() {
+        // Serialize tests that mutate the global HOME env var.
+        let _guard = HOME_LOCK.lock().unwrap();
         let dir = tempdir().unwrap();
         std::env::set_var("HOME", dir.path());
         let s = load_or_create_settings();
@@ -175,6 +181,11 @@ mod tests {
 
     #[test]
     fn test_save_and_reload() {
+        // Serialize tests that mutate the global HOME env var.
+        let _guard = HOME_LOCK.lock().unwrap();
+        // Clear any ACTIVE_CONFIG_PATH left by a previous test so that
+        // save_settings() resolves the path from the current HOME.
+        *ACTIVE_CONFIG_PATH.lock().unwrap() = None;
         let dir = tempdir().unwrap();
         std::env::set_var("HOME", dir.path());
         let mut s = Settings::default();

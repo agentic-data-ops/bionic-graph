@@ -34,8 +34,6 @@ use crate::cluster::node::now_micros;
 
 /// Default maximum entries per queue file before rolling to a new file.
 pub const DEFAULT_MAX_PER_FILE: usize = 1000;
-/// Backoff for retries after a failed delivery (1s → 2s → 4s → … capped at 30s).
-const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 /// A single queued broadcast destined for one worker.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -332,7 +330,7 @@ impl BroadcastQueue {
     /// Cleans up fully-delivered/empty files. Returns:
     /// - `Some(entry)` — the next entry to deliver (caller delivers outside the lock)
     /// - `None` — nothing to deliver now
-    fn prepare_next(&self, node_id: &str, ns: &mut NodeQueueState) -> Option<QueuedBroadcast> {
+    fn prepare_next(&self, _node_id: &str, ns: &mut NodeQueueState) -> Option<QueuedBroadcast> {
         // Drop fully-delivered or empty leading files.
         while let Some(fp) = ns.files.first() {
             let total = Self::file_line_count(&fp.file);

@@ -12,7 +12,7 @@ use crate::graph::serialize::{deserialize_edge, deserialize_token, deserialize_v
 use crate::storage::block_allocator::BlockAllocator;
 use crate::storage::memory_index::{MetaPointer, MemoryIndex};
 use crate::storage::data_file::DataFile;
-use crate::storage::types::{BlockHeader, ChunkType, DataHeader, DataStatus, PropertyValue, StorageResult, BLOCK_SIZE, DATA_HEADER_SIZE};
+use crate::storage::types::{BlockHeader, ChunkType, DataHeader, DataStatus, PropertyValue, StorageResult, DATA_HEADER_SIZE};
 
 /// Convert a PropertyValue to a string for property index lookup.
 fn prop_val_str(pv: &PropertyValue) -> String {
@@ -166,9 +166,8 @@ mod tests {
     use crate::storage::types::{DataHeader, VertexPayload, DATA_HEADER_SIZE};
     use tempfile::tempdir;
 
-    fn write_vertex_data(df: &DataFile, vid: u32, name: &str) -> StorageResult<MetaPointer> {
+    fn write_vertex_data(df: &DataFile, vid: u32, name: &str, offset: &mut u8) -> StorageResult<MetaPointer> {
         let payload = VertexPayload {
-            id: vid,
             name: name.to_string(),
             labels: vec![],
             keywords: vec![],
@@ -196,7 +195,7 @@ mod tests {
         let mut header = BlockHeader::decode(&block);
 
         // Manually find free chunks (simplified for test)
-        let offset = BlockAllocator::alloc_chunks(&mut header.bitmap, total_chunks)
+        let offset = BlockAllocator::alloc_chunks(&mut header.bitmap, offset, total_chunks)
             .ok_or_else(|| crate::storage::types::StorageError::Other("no free chunks".into()))?;
         header.encode(&mut block);
 
@@ -224,8 +223,9 @@ mod tests {
         let path = dir.path().join("data");
         let df = DataFile::open(&path).unwrap();
 
+        let mut offset = 0u8;
         for vid in 0..3 {
-            write_vertex_data(&df, vid, &format!("vertex-{}", vid)).unwrap();
+            write_vertex_data(&df, vid, &format!("vertex-{}", vid), &mut offset).unwrap();
         }
 
         let mem = build_memory_index(&df, &[], &[]).unwrap();

@@ -126,8 +126,6 @@ pub struct ClusterConfig {
     pub heartbeat_interval_secs: u64,
     /// Worker 超时阈值（秒）
     pub worker_timeout_secs: u64,
-    /// Worker 是否将写操作转发到 Master
-    pub forward_writes: bool,
 }
 
 impl Default for ClusterConfig {
@@ -139,7 +137,6 @@ impl Default for ClusterConfig {
             master_addr: None,
             heartbeat_interval_secs: 5,
             worker_timeout_secs: 30,
-            forward_writes: true,
         }
     }
 }

@@ -14,7 +14,6 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use std::sync::Mutex;
-use tokio::task::spawn_blocking;
 
 use crate::cluster::broadcast_queue::BroadcastQueue;
 use crate::cluster::node::NodeRegistry;
@@ -30,7 +29,6 @@ pub mod settings;
 pub mod tokenizer_settings;
 pub mod indices;
 use crate::storage::types::{PropertyValue, StorageResult};
-use crate::config::NodeRole;
 
 
 
@@ -155,7 +153,6 @@ pub fn build_router(
         .route("/documents/:id", delete(delete_document))
         .route("/documents/:id/content", get(get_document_content))
         // Extraction
-        .route("/extract", post(submit_extraction))
         .route("/documents/:id/extract", post(extract_document_handler))
         // Tasks (generic async task tracking)
         .route("/tasks/:task_id", get(get_task_handler))
@@ -1005,7 +1002,7 @@ pub async fn create_graph(
     if let Some(resp) = gateway.forward::<CreateGraphResponse>(&req).await? {
         // Forward succeeded — worker also creates the graph locally
         // so it's available immediately (broadcast may lag).
-        if let Ok(g) = state.gm.get(&params.name) {
+        if let Ok(_g) = state.gm.get(&params.name) {
             let _ = state.gm.update_meta(&params.name, &params.description, params.time_travel);
         }
         return Ok(Json(resp));
@@ -1501,12 +1498,6 @@ pub async fn get_document_content(
 
 // ── Extraction ──────────────────────────────────────────────────────────────
 
-/// Submit an extraction task.
-#[derive(Deserialize, Serialize)]
-pub struct SubmitExtractionBody {
-    pub document_id: String,
-}
-
 #[derive(Serialize, Deserialize)]
 pub struct SubmitExtractionResponse {
     pub task_id: String,
@@ -1514,40 +1505,26 @@ pub struct SubmitExtractionResponse {
     pub message: String,
 }
 
-pub async fn submit_extraction(
-    State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
-    Json(body): Json<SubmitExtractionBody>,
+/// Spawn a background extraction task for a document.
+///
+/// Verifies the document and target graph exist, creates a task entry, and
+/// spawns the LLM extraction pipeline. Used by `extract_document_handler`.
+async fn spawn_extraction_task(
+    state: AppState,
+    graph_name: String,
+    document_id: String,
 ) -> Result<Json<SubmitExtractionResponse>, StatusCode> {
-    // Worker → Master forwarding (include graph name)
-    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
-    let body_str = serde_json::to_string(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
-    let gateway = state.cluster_gateway();
-
-    // Worker → Master forwarding via ClusterGateway
-    let req = crate::cluster::request::ClusterRequest::new("POST", "/extract")
-        .with_body(&body_str)
-        .with_opt_graph(graph_name);
-    if let Some(resp) = gateway.forward::<SubmitExtractionResponse>(&req).await? {
-        return Ok(Json(resp));
-    }
-
-    let default_name = state.gm.get_default_name();
-    let graph_name = headers
-        .get("X-Graph-Name")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or(&default_name);
-    let doc_id = body.document_id.clone();
+    let doc_id = document_id;
 
     // Verify document exists
     let doc = state.doc_mgr.get(&doc_id).ok_or(StatusCode::NOT_FOUND)?;
     let content = state.doc_mgr.get_content(&doc_id).ok_or(StatusCode::NOT_FOUND)?;
 
     // Resolve the graph
-    let graph = state.gm.get(graph_name).map_err(|_| StatusCode::NOT_FOUND)?;
+    let graph = state.gm.get(&graph_name).map_err(|_| StatusCode::NOT_FOUND)?;
 
     // Create extraction task
-    let task_id = state.task_mgr.create_task("extraction", graph_name, &doc.title);
+    let task_id = state.task_mgr.create_task("extraction", &graph_name, &doc.title);
     {
         let mut tasks = state.task_mgr.tasks.lock().unwrap();
         if let Some(task) = tasks.get_mut(&task_id) {
@@ -1564,7 +1541,7 @@ pub async fn submit_extraction(
     let doc_title = doc.title.clone();
     let graph_arc = graph.clone();
     let doc_mgr = state.doc_mgr.clone();
-    let gname = graph_name.to_string();
+    let gname = graph_name;
     let gateway = state.cluster_gateway();
 
     tokio::spawn(async move {
@@ -1882,22 +1859,9 @@ pub async fn extract_document_handler(
     let graph_name = headers
         .get("X-Graph-Name")
         .and_then(|v| v.to_str().ok())
-        .unwrap_or(&default_name);
+        .unwrap_or(&default_name)
+        .to_string();
 
-    // Verify document exists
-    let _doc = state.doc_mgr.get(&document_id).ok_or(StatusCode::NOT_FOUND)?;
-    let _content = state.doc_mgr.get_content(&document_id).ok_or(StatusCode::NOT_FOUND)?;
-
-    // Resolve the graph
-    let _graph = state.gm.get(graph_name).map_err(|_| StatusCode::NOT_FOUND)?;
-
-    // Forward to submit_extraction logic, passing the original headers
-    // so graph name is derived from X-Graph-Name consistently.
-    submit_extraction(
-        State(state),
-        headers,
-        Json(SubmitExtractionBody {
-            document_id,
-        }),
-    ).await
+    // Spawn the extraction task (validates the document and graph internally).
+    spawn_extraction_task(state, graph_name, document_id).await
 }

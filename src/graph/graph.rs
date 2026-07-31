@@ -25,9 +25,9 @@ use std::sync::LazyLock;
 /// for this specific request — without blocking any concurrent requests.
 pub(crate) static INFLIGHT_REQUESTS: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 
-/// Per-task flag set by the replay-check middleware when the incoming request
-/// carries an X-Request-Id that is registered in INFLIGHT_REQUESTS.
-/// Used by try_forward_json to decide whether to skip forwarding.
+// Per-task flag set by the replay-check middleware when the incoming request
+// carries an X-Request-Id that is registered in INFLIGHT_REQUESTS.
+// Used by ClusterGateway::forward to decide whether to skip forwarding.
 tokio::task_local! {
     pub(crate) static IS_BROADCAST_REPLAY: bool;
 }
@@ -486,7 +486,7 @@ impl Graph {
 
     /// Scan all vertices and populate the property index for `key`.
     fn scan_vertex_property(graph: &Graph, key: &str) {
-        use crate::storage::types::PropertyValue;
+        
         let pairs: Vec<(u32, crate::storage::memory_index::MetaPointer)> = {
             let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
             mi.vertex_id.iter().map(|(&vid, &p)| (vid, p)).collect()
@@ -506,7 +506,7 @@ impl Graph {
 
     /// Scan all edges and populate the property index for `key`.
     fn scan_edge_property(graph: &Graph, key: &str) {
-        use crate::storage::types::PropertyValue;
+        
         let pairs: Vec<(u32, crate::storage::memory_index::MetaPointer)> = {
             let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
             mi.edge_id.iter().map(|(&eid, &p)| (eid, p)).collect()

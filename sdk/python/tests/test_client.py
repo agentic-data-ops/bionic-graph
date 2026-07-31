@@ -205,12 +205,6 @@ def test_get_document_content(client, mock):
 # ── Extraction ─────────────────────────────────────────────────────
 
 
-def test_submit_extraction(client, mock):
-    mock.post("/extract").respond(json={"task_id": "t1", "status": "pending"})
-    resp = client.submit_extraction("d1")
-    assert resp.task_id == "t1"
-
-
 def test_get_extraction_task(client, mock):
     mock.get("/tasks/t1").respond(json={"task_id": "t1", "status": "completed", "steps": [], "overall_pct": 100.0})
     task = client.get_extraction_task("t1")

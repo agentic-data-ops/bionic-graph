@@ -146,26 +146,6 @@ impl BlockAllocator {
 
     // ── Private helpers ──────────────────────────────────────────────────────
 
-    /// Find the next 0-bit starting from `start_bit` (0-indexed).
-    fn find_next_free_from(bitmap: &[u8; 32], start_bit: usize) -> Option<usize> {
-        for i in start_bit..CHUNKS_PER_BLOCK {
-            if !Self::test_bit(bitmap, i) {
-                return Some(i);
-            }
-        }
-        None
-    }
-
-    /// Check if `count` consecutive bits starting at `start_bit` are all free.
-    fn has_consecutive_free(bitmap: &[u8; 32], start_bit: usize, count: usize) -> bool {
-        for i in start_bit..start_bit + count {
-            if i >= CHUNKS_PER_BLOCK || Self::test_bit(bitmap, i) {
-                return false;
-            }
-        }
-        true
-    }
-
     pub(crate) fn test_bit(bitmap: &[u8; 32], bit: usize) -> bool {
         let byte = bit / 8;
         let bit_in_byte = bit % 8;
@@ -196,8 +176,9 @@ mod tests {
     #[test]
     fn test_alloc_one_chunk() {
         let mut bm = empty_bitmap();
+        let mut offset = 0u8;
         // Bit 1 = first data chunk → data offset 1
-        let off = BlockAllocator::alloc_chunks(&mut bm, 1);
+        let off = BlockAllocator::alloc_chunks(&mut bm, &mut offset, 1);
         assert_eq!(off, Some(1));
         assert!(BlockAllocator::test_bit(&bm, 1));
     }
@@ -205,23 +186,32 @@ mod tests {
     #[test]
     fn test_alloc_frees_and_reallocates() {
         let mut bm = empty_bitmap();
-        let off1 = BlockAllocator::alloc_chunks(&mut bm, 2).unwrap();
+        let mut offset = 0u8;
+        let off1 = BlockAllocator::alloc_chunks(&mut bm, &mut offset, 2).unwrap();
         assert_eq!(off1, 1); // first free data chunk at offset 1
         BlockAllocator::free_chunks(&mut bm, off1, 2);
-        let off2 = BlockAllocator::alloc_chunks(&mut bm, 2).unwrap();
-        assert_eq!(off2, 1); // same spot
+        // The allocation cursor advanced past the freed region; a fresh
+        // allocation continues from the cursor (3) instead of reusing [1,2].
+        let off2 = BlockAllocator::alloc_chunks(&mut bm, &mut offset, 2).unwrap();
+        assert_eq!(off2, 3);
+        // Freed chunks are still reusable via the fallback scan with a
+        // reset cursor.
+        let mut offset2 = 0u8;
+        let off3 = BlockAllocator::alloc_chunks(&mut bm, &mut offset2, 2).unwrap();
+        assert_eq!(off3, 1);
     }
 
     #[test]
     fn test_block_full() {
         let mut bm = empty_bitmap();
+        let mut offset = 0u8;
         // Fill all 255 data chunks: offsets 1..=255
         for expected_off in 1u8..=255u8 {
-            let off = BlockAllocator::alloc_chunks(&mut bm, 1).unwrap();
+            let off = BlockAllocator::alloc_chunks(&mut bm, &mut offset, 1).unwrap();
             assert_eq!(off, expected_off);
         }
         assert!(BlockAllocator::is_block_full(&bm));
-        assert!(BlockAllocator::alloc_chunks(&mut bm, 1).is_none());
+        assert!(BlockAllocator::alloc_chunks(&mut bm, &mut offset, 1).is_none());
     }
 
     #[test]
@@ -233,8 +223,9 @@ mod tests {
     #[test]
     fn test_chunk_count() {
         let mut bm = empty_bitmap();
+        let mut offset = 0u8;
         assert_eq!(BlockAllocator::chunk_count(&bm), 0);
-        BlockAllocator::alloc_chunks(&mut bm, 3).unwrap();
+        BlockAllocator::alloc_chunks(&mut bm, &mut offset, 3).unwrap();
         assert_eq!(BlockAllocator::chunk_count(&bm), 3);
     }
 
