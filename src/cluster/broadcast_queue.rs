@@ -6,11 +6,19 @@
 //!
 //! - Every broadcast request is written to a queue file **before** any
 //!   HTTP attempt, so a crash cannot lose it.
-//! - Queue files live at `<data_dir>/cluster/broadcast-<node>-<ts>.bin`,
-//!   one rolling file per target node, max 1000 entries each.
-//! - A consumer thread drains completed files in order, POSTing to
-//!   `/cluster/execute` (or `/cluster/tokenizer-sync` for tokenizer ops).
-//! - On network failure the consumer **retries forever** (with backoff)
+//! - Queue files live at `<data_dir>/cluster/broadcast-<node>-<ts>.bin`
+//!   (one file per target node, JSON Lines).
+//! - The consumer thread **drains in real time**: it delivers the oldest
+//!   undelivered entry, and only advances when the delivery succeeds — so
+//!   successful broadcasts are removed immediately (no waiting for a
+//!   rollover). Entries are re-read from disk on every attempt, so a
+//!   crash mid-delivery simply replays them (at-least-once).
+//! - The `max_per_file` limit (default 1000) is a **safety valve** only:
+//!   if undelivered entries pile up (e.g. a worker stays offline and
+//!   retries keep failing), the file is rolled/compacted to a new file so
+//!   a single file never grows unbounded. In normal operation entries are
+//!   consumed faster than they accumulate, so no rollover happens.
+//! - On transport failure the consumer retries forever (with backoff)
 //!   until the node succeeds; once a whole file is delivered it is deleted.
 //! - On master restart, leftover files are re-queued and drained before
 //!   the master starts serving.
@@ -26,11 +34,8 @@ use serde::{Deserialize, Serialize};
 use crate::cluster::forward::ForwardedRequest;
 use crate::cluster::node::now_micros;
 
-/// Default maximum entries per queue file before rolling to a new file.
+/// Default maximum **undelivered** entries per queue file before rolling.
 pub const DEFAULT_MAX_PER_FILE: usize = 1000;
-/// Max age of an active file before it is rolled (so low-traffic queues
-/// still get drained promptly). 1 second.
-const ROLLOVER_AGE: u64 = 1_000_000; // microseconds
 /// Backoff for retries after a failed delivery (1s → 2s → 4s → … capped at 30s).
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
@@ -47,20 +52,26 @@ pub struct QueuedBroadcast {
     pub created_at: u64,
 }
 
+/// Per-node queue state (guarded by `state`).
+struct NodeQueueState {
+    /// The file currently receiving appends for this node.
+    file: PathBuf,
+    /// Number of leading entries already delivered (advanced in order).
+    consumed: usize,
+}
+
 /// Persistent FIFO broadcast queue.
 ///
-/// Thread-safety: the writer (`enqueue`) and the consumer (`start_consumer`)
-/// run concurrently. The writer appends to a per-node "active" file; the
-/// consumer only drains files that are no longer active (rolled files and
-/// leftover files from a previous run).
+/// The writer (`enqueue`) and the consumer (`start_consumer`) coordinate
+/// through a single `state` mutex. File operations (append / delete /
+/// compact) happen under the lock; the network delivery happens outside it.
 pub struct BroadcastQueue {
     /// Directory holding the queue files (`<data_dir>/cluster`).
     dir: PathBuf,
-    /// Max entries per queue file.
+    /// Max undelivered entries per file before rolling.
     max_per_file: usize,
-    /// Active (still-being-written) file per target node:
-    /// node_id → (file path, entries written so far, file created_at).
-    active: Mutex<HashMap<String, (PathBuf, usize, u64)>>,
+    /// Per-node queue state: node_id → (file, consumed count).
+    state: Mutex<HashMap<String, NodeQueueState>>,
 }
 
 impl BroadcastQueue {
@@ -69,12 +80,12 @@ impl BroadcastQueue {
         Self {
             dir: data_dir.join("cluster"),
             max_per_file: max_per_file.max(1),
-            active: Mutex::new(HashMap::new()),
+            state: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Enqueue a broadcast for a target worker. Writes the entry to the
-    /// node's active queue file synchronously (durable before any HTTP).
+    /// Enqueue a broadcast for a target worker. Appends the entry to the
+    /// node's queue file synchronously (durable before any HTTP attempt).
     pub fn enqueue(&self, target_node: &str, target_addr: &str, req: &ForwardedRequest) {
         std::fs::create_dir_all(&self.dir).unwrap_or_else(|e| {
             log::error!("BroadcastQueue: failed to create {}: {}", self.dir.display(), e);
@@ -94,53 +105,27 @@ impl BroadcastQueue {
             }
         };
 
-        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
-        let full = {
-            // Roll if the current file is too old (low-traffic drain) or full.
-            if let Some((_, _, created_at)) = active.get(target_node) {
-                if now_micros().saturating_sub(*created_at) > ROLLOVER_AGE {
-                    active.remove(target_node);
-                    log::debug!("BroadcastQueue: rolling queue for {} (age rollover)", target_node);
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let node_state = state
+            .entry(target_node.to_string())
+            .or_insert_with(|| NodeQueueState {
+                file: self.new_queue_file(target_node),
+                consumed: 0,
+            });
+
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&node_state.file)
+        {
+            Ok(mut f) => {
+                if let Err(e) = writeln!(f, "{}", line) {
+                    log::error!("BroadcastQueue: append to {} failed: {}", node_state.file.display(), e);
                 }
             }
-
-            let now = now_micros();
-            let (file_path, count, _) = active
-                .entry(target_node.to_string())
-                .or_insert_with(|| (self.new_queue_file(target_node), 0, now));
-
-            let append_ok = match std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&*file_path)
-            {
-                Ok(mut f) => match writeln!(f, "{}", line) {
-                    Ok(()) => true,
-                    Err(e) => {
-                        log::error!("BroadcastQueue: append to {} failed: {}", file_path.display(), e);
-                        false
-                    }
-                },
-                Err(e) => {
-                    log::error!("BroadcastQueue: open {} failed: {}", file_path.display(), e);
-                    false
-                }
-            };
-            if !append_ok {
-                return;
+            Err(e) => {
+                log::error!("BroadcastQueue: open {} failed: {}", node_state.file.display(), e);
             }
-
-            *count += 1;
-            *count >= self.max_per_file
-        };
-        // Roll to a new file when the active file is full (releases the
-        // borrow on `active` before the next insert).
-        if full {
-            active.remove(target_node);
-            log::debug!(
-                "BroadcastQueue: rolled queue for {} (full), new files will be created on demand",
-                target_node
-            );
         }
     }
 
@@ -150,56 +135,9 @@ impl BroadcastQueue {
         self.dir.join(format!("broadcast-{}-{}.bin", safe, now_micros()))
     }
 
-    /// Current active (being-written) file paths — the consumer must skip these.
-    fn active_file_paths(&self) -> Vec<PathBuf> {
-        let active = self.active.lock().unwrap_or_else(|e| e.into_inner());
-        active.values().map(|(p, _, _)| p.clone()).collect()
-    }
-
-    /// List queue files that are ready to be consumed (not active).
-    fn ready_files(&self) -> Vec<PathBuf> {
-        let active = self.active_file_paths();
-        let mut files = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(&self.dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().map_or(false, |e| e == "bin")
-                    && path.file_name().map_or(false, |n| n.to_string_lossy().starts_with("broadcast-"))
-                    && !active.contains(&path)
-                {
-                    files.push(path);
-                }
-            }
-        }
-        files.sort();
-        files
-    }
-
-    /// Roll over any active files that have exceeded the age limit, so the
-    /// consumer can drain them even with no further enqueues. Called by the
-    /// consumer loop before each scan.
-    fn rollover_stale(&self) {
-        let stale: Vec<(String, PathBuf)> = {
-            let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
-            let now = now_micros();
-            active
-                .iter()
-                .filter(|(_, (_, _, created_at))| now.saturating_sub(*created_at) > ROLLOVER_AGE)
-                .map(|(node, (path, _, _))| (node.clone(), path.clone()))
-                .collect()
-        };
-        if stale.is_empty() {
-            return;
-        }
-        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
-        for (node, _) in &stale {
-            active.remove(node);
-        }
-        log::debug!("BroadcastQueue: rolled {} stale active file(s)", stale.len());
-    }
-
-    /// Load all entries from a queue file, in order.
-    fn load_file(&self, path: &Path) -> Vec<QueuedBroadcast> {
+    /// Read all complete (newline-terminated) lines of a queue file, in order.
+    /// A trailing partial line (being appended concurrently) is ignored.
+    fn read_file(path: &Path) -> Vec<QueuedBroadcast> {
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(e) => {
@@ -218,26 +156,7 @@ impl BroadcastQueue {
     /// `false` only on transport-level failure (worker unreachable).
     async fn deliver(entry: &QueuedBroadcast) -> bool {
         let req = &entry.req;
-        let url = format!(
-            "http://{}{}{}",
-            entry.target_addr,
-            req.path,
-            req.query.as_ref().map(|q| format!("?{}", q)).unwrap_or_default()
-        );
-
         let client = reqwest::Client::new();
-        let method = req.method.to_uppercase();
-        let request = match method.as_str() {
-            "GET" => client.get(&url),
-            "POST" => client.post(&url),
-            "PUT" => client.put(&url),
-            "DELETE" => client.delete(&url),
-            _ => {
-                log::error!("BroadcastQueue: unsupported method '{}' for {}", req.method, url);
-                // Unsupported method can never succeed — drop it.
-                return true;
-            }
-        };
 
         // Tokenizer operations use /cluster/tokenizer-sync with a special body.
         let is_tokenizer = req.path == "/settings/tokenizer/words";
@@ -264,9 +183,6 @@ impl BroadcastQueue {
 
         match request.send().await {
             Ok(resp) => {
-                // Any HTTP response means the worker received the request.
-                // A business-level failure (e.g. duplicate replay) is
-                // acceptable under at-least-once — don't block the queue.
                 let status = resp.status().as_u16();
                 if status < 500 {
                     log::debug!(
@@ -299,58 +215,99 @@ impl BroadcastQueue {
         }
     }
 
-    /// Drain a whole queue file in order. Blocks (with backoff) until every
-    /// entry is delivered, then deletes the file.
-    async fn drain_file(&self, path: &Path) {
-        let entries = self.load_file(path);
-        if entries.is_empty() {
-            // Nothing parseable — drop the file to avoid an infinite loop.
-            let _ = std::fs::remove_file(path);
-            log::warn!("BroadcastQueue: removed unparseable/empty queue file {}", path.display());
-            return;
+    /// Prepare the next undelivered entry for a node (lock held, no await).
+    /// Returns:
+    /// - `Some(entry)` — the next entry to deliver (caller delivers outside the lock)
+    /// - `None` — nothing to deliver now (file empty / fully delivered / compacted)
+    fn prepare_next(&self, node_id: &str, node_state: &mut NodeQueueState) -> Option<QueuedBroadcast> {
+        let entries = Self::read_file(&node_state.file);
+        let total = entries.len();
+        if total == 0 {
+            // Nothing parseable / empty — drop the file to avoid spinning.
+            let _ = std::fs::remove_file(&node_state.file);
+            log::warn!("BroadcastQueue: removed empty/unparseable queue file {}", node_state.file.display());
+            return None;
         }
 
-        log::info!(
-            "BroadcastQueue: draining {} entries from {}",
-            entries.len(),
-            path.display()
-        );
-
-        let mut backoff = Duration::from_secs(1);
-        let mut idx = 0;
-        while idx < entries.len() {
-            if Self::deliver(&entries[idx]).await {
-                idx += 1;
-                backoff = Duration::from_secs(1);
-            } else {
-                // Retry forever until the node succeeds.
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(MAX_BACKOFF);
+        // Safety valve: if undelivered entries exceed the cap, compact the
+        // file to keep only the undelivered tail in a fresh file.
+        if total.saturating_sub(node_state.consumed) >= self.max_per_file {
+            let undelivered = entries[node_state.consumed..].to_vec();
+            let new_file = self.new_queue_file(node_id);
+            if let Ok(mut f) = std::fs::File::create(&new_file) {
+                for e in &undelivered {
+                    if let Ok(line) = serde_json::to_string(e) {
+                        let _ = writeln!(f, "{}", line);
+                    }
+                }
+                let _ = std::fs::remove_file(&node_state.file);
+                log::warn!(
+                    "BroadcastQueue: rolled {} ({} undelivered entries exceed cap {}), new file {}",
+                    node_id,
+                    undelivered.len(),
+                    self.max_per_file,
+                    new_file.display()
+                );
+                node_state.file = new_file;
+                node_state.consumed = 0;
             }
+            return None;
         }
 
-        // Entire file delivered — delete it.
-        if let Err(e) = std::fs::remove_file(path) {
-            log::error!("BroadcastQueue: failed to remove {}: {}", path.display(), e);
-        } else {
-            log::info!("BroadcastQueue: delivered and removed {}", path.display());
+        if node_state.consumed >= total {
+            // All entries delivered — delete the file (guard against a
+            // concurrent append that raced the read by re-checking).
+            let still_all = Self::read_file(&node_state.file).len() <= node_state.consumed;
+            if still_all {
+                let _ = std::fs::remove_file(&node_state.file);
+                log::info!("BroadcastQueue: delivered and removed {}", node_state.file.display());
+            }
+            return None;
         }
+
+        Some(entries[node_state.consumed].clone())
     }
 
-    /// Spawn the background consumer loop. Scans for ready files, drains
-    /// them one at a time (oldest first), then waits and rescans.
+    /// Spawn the background consumer loop. Polls every node's queue,
+    /// delivering entries in order, retrying failures forever.
     pub fn start_consumer(self: &Arc<Self>) {
         let queue = self.clone();
         tokio::spawn(async move {
             loop {
-                queue.rollover_stale();
-                let ready = queue.ready_files();
-                if ready.is_empty() {
-                    tokio::time::sleep(Duration::from_millis(500)).await;
+                // Drop stale state entries whose file was fully delivered.
+                {
+                    let mut state = queue.state.lock().unwrap_or_else(|e| e.into_inner());
+                    state.retain(|_, ns| ns.file.exists());
+                }
+                let node_ids: Vec<String> = {
+                    let state = queue.state.lock().unwrap_or_else(|e| e.into_inner());
+                    state.keys().cloned().collect()
+                };
+                if node_ids.is_empty() {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
                     continue;
                 }
-                for path in ready {
-                    queue.drain_file(&path).await;
+                for node_id in &node_ids {
+                    // Prepare under the lock (no await); deliver outside it.
+                    let entry = {
+                        let mut state = queue.state.lock().unwrap_or_else(|e| e.into_inner());
+                        match state.get_mut(node_id.as_str()) {
+                            Some(ns) => queue.prepare_next(node_id, ns),
+                            None => None,
+                        }
+                    };
+                    if let Some(entry) = entry {
+                        let ok = Self::deliver(&entry).await;
+                        if ok {
+                            let mut state = queue.state.lock().unwrap_or_else(|e| e.into_inner());
+                            if let Some(ns) = state.get_mut(node_id.as_str()) {
+                                ns.consumed += 1;
+                            }
+                        } else {
+                            // Delivery failed — back off before retrying.
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                        }
+                    }
                 }
             }
         });
