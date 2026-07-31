@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// A forwarded write request.
+/// The `graph` field was removed in favor of `headers["X-Graph-Name"]`.
+/// Old serialized data with a `graph` field is silently ignored via `#[serde(deny_unknown_fields)]` removal.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ForwardedRequest {
     /// HTTP method (POST, PUT, DELETE).
@@ -22,8 +24,6 @@ pub struct ForwardedRequest {
     pub query: Option<String>,
     /// Request body as a JSON string.
     pub body: Option<String>,
-    /// Optional graph name.
-    pub graph: Option<String>,
     /// Original request headers (X-Graph-Name, X-Time-Travel, etc.).
     /// Set by ClusterRequest::to_forwarded(); proxy_to_api iterates
     /// these to faithfully reproduce the original request context.

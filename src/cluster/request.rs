@@ -86,9 +86,9 @@ impl ClusterRequest {
     }
 
     /// Convert to a `ForwardedRequest` for the cluster forwarding protocol.
-    /// The `graph` field is extracted from `X-Graph-Name` header for
-    /// backward compatibility; all headers (including X-Graph-Name) are
-    /// also passed through in the `headers` map for proxy_to_api.
+    /// All headers (including X-Graph-Name) are passed through in the
+    /// `headers` map for proxy_to_api to faithfully reproduce the
+    /// original request context.
     pub fn to_forwarded(&self) -> ForwardedRequest {
         let (path_only, query) = split_path_query(&self.path);
         ForwardedRequest {
@@ -96,10 +96,6 @@ impl ClusterRequest {
             path: path_only,
             query: query.map(|s| s.to_string()),
             body: self.body.clone(),
-            graph: self
-                .headers
-                .get("X-Graph-Name")
-                .cloned(),
             headers: self.headers.clone(),
         }
     }

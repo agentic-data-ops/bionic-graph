@@ -150,7 +150,7 @@ pub async fn handle_execute(
     State(state): State<ClusterAppState>,
     Json(req): Json<crate::cluster::forward::ForwardedRequest>,
 ) -> Json<crate::cluster::forward::ForwardedResponse> {
-    log::warn!("handle_execute: {} {} (graph={:?})", req.method, req.path, req.graph);
+    log::warn!("handle_execute: {} {} (graph={:?})", req.method, req.path, req.headers.get("X-Graph-Name"));
     let req_id = uuid::Uuid::new_v4().to_string();
     crate::graph::graph::INFLIGHT_REQUESTS.lock().unwrap().insert(req_id.clone());
     let result = proxy_to_api(&state.api_addr, &req, Some(&req_id)).await;
@@ -168,7 +168,8 @@ pub(crate) fn build_broadcast_entries_raw(
     let mut entries = Vec::new();
     let method = req.method.to_uppercase();
 
-    let graph_name = req.graph.clone().unwrap_or_else(|| gm.get_default_name());
+    let graph_name = req.headers.get("X-Graph-Name").cloned()
+        .unwrap_or_else(|| gm.get_default_name());
     let graph = match gm.get(&graph_name) {
         Ok(g) => g,
         Err(_) => return entries,
