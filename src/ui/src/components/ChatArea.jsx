@@ -352,7 +352,6 @@ ${webSearchContext}`,
           content: `The following information was retrieved from the knowledge graph. Prioritize it when answering the user's question.
 If the graph data is sufficient, directly reference its entities and relationships. If not, supplement with your own knowledge.
 Do not mention entity or relationship ID numbers — use their names directly.
-Provide the answer first, then the reasoning process.
 
 ${graphCtx}`,
         });
