@@ -28,7 +28,7 @@ Create a living knowledge graph that captures a person's identity, personality, 
 │       │                           │                         │
 │       │    ┌──────────────────────┘                         │
 │       ▼    ▼                                                 │
-│  Bionic-Graph graph (alex-soul)                              │
+│  Bionic-Graph graph (self-awareness)                         │
 │  ┌──────────────────────────────────────┐                    │
 │  │  Vertex "self" (root)               │                    │
 │  │  + 80+ entity vertices             │                    │
@@ -37,11 +37,11 @@ Create a living knowledge graph that captures a person's identity, personality, 
 │                                                              │
 │  plan                                                        │
 │  Search "my plan interest task activity" → LLM generates plans │
-│  → log/plan_<timestamp>.json → loaded into graph              │
+│  → log/plan-<timestamp>.json → loaded into graph              │
 │                                                              │
 │  act                                                         │
 │  Fetch plans sorted by priority → LLM simulates top-N       │
-│  → log/activity_<timestamp>.json → loaded into graph         │
+│  → log/activity-<timestamp>.json → loaded into graph         │
 │  → plan status updated                                       │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -81,14 +81,13 @@ examples/self_awareness/
 ├── README.md              # This file
 ├── self_soul.md           # Self-description Markdown document
 ├── cli.py                 # CLI entry — load / plan / act
-├── llm.py                 # LLM call wrapper (MaaS proxy)
+├── llm.py                 # LLM call wrapper (streaming + JSON validation)
 ├── prompts.py             # Prompt templates
 ├── graph_utils.py         # Graph utility functions
-├── self_soul.json         # [generated] Extracted KG from load phase (in log/)
 ├── log/                   # [generated] Timestamped output files
 │   ├── self_soul.json
-│   ├── plan_<timestamp>.json
-│   └── activity_<timestamp>.json
+│   ├── plan-<timestamp>.json
+│   └── activity-<timestamp>.json
 └── .gitignore             # log/ is gitignored
 ```
 
@@ -112,7 +111,7 @@ Commands:
            Options:
              --graph TEXT           Graph name (default: self-awareness)
              --model TEXT           LLM model name (default: settings default_model)
-             --output PATH          Output file path (default: log/plan_<timestamp>.json)
+             --output PATH          Output file path (default: log/plan-<timestamp>.json)
              --base-url TEXT        Backend URL (default: http://127.0.0.1:8080)
 
   act    Execute top-N activities sorted by priority
@@ -120,7 +119,7 @@ Commands:
              --count N             Number of activities to simulate (default: 3)
              --graph TEXT           Graph name (default: self-awareness)
              --model TEXT           LLM model name (default: settings default_model)
-             --output PATH          Output file path (default: log/activity_<timestamp>.json)
+             --output PATH          Output file path (default: log/activity-<timestamp>.json)
              --base-url TEXT        Backend URL (default: http://127.0.0.1:8080)
 
 Global options:
@@ -141,6 +140,16 @@ python cli.py plan --graph my-soul
 # Phase 3: Simulate top-3 activities
 python cli.py act --graph my-soul --count 3
 ```
+
+## LLM Interaction
+
+All three phases (`load` / `plan` / `act`) call the LLM through the Bionic-Graph backend MaaS proxy (`POST /proxy/openai/v1/chat/completions`). The calls use **streaming mode** (`stream=True`) so long-running extractions never hit a fixed read timeout:
+
+1. The response is streamed chunk-by-chunk and appended to a temp file (`<output>.tmp`) as it arrives.
+2. When the stream completes, the temp file is read back and validated as **JSON** (`json.loads`).
+3. **No retries** — any LLM/transport error or invalid JSON output aborts the command immediately with a non-zero exit code; the temp file is cleaned up on failure.
+
+The final validated JSON is written to the `--output` path (e.g. `log/self_soul.json`), so a failed run never leaves a partial JSON file in the output location.
 
 ## self_soul.md — Required Content
 
@@ -180,9 +189,9 @@ A complete example is provided in the bundled `self_soul.md`, which describes a 
                 │         ▼
 self_soul.md ──►  extraction  ──► self_soul.json ──► Graph
                                               │
-                     Graph state ──► LLM ──► log/plan_<timestamp>.json ──► Graph
+                     Graph state ──► LLM ──► log/plan-<timestamp>.json ──► Graph
                                               │
-                     Plans ──► LLM ──► log/activity_<timestamp>.json ──► Graph
+                     Plans ──► LLM ──► log/activity-<timestamp>.json ──► Graph
                                                             │
                                               Plan statuses updated
 ```

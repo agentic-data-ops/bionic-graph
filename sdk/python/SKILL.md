@@ -67,9 +67,9 @@ bgcli [global options] <topic> <action> [arguments]
 | `gremlin` | `execute`, `search` | Gremlin queries & search |
 | `document` | `list`, `create`, `get`, `update`, `delete`, `get-content` | Document management |
 | `extract` | `submit`, `get-task`, `list-tasks`, `wait` | Knowledge extraction |
-| `settings` | `get-search`, `set-search`, `get-llm`, `set-llm`, `get-rank`, `set-rank`, `get-web-search`, `set-web-search`, `proxy` | All settings |
+| `settings` | `get-search`, `set-search`, `get-llm`, `set-llm`, `get-rank`, `set-rank`, `get-web-search`, `set-web-search` | All settings |
 | `index` | `vertex-property create/list/show/delete/delete-batch`, `edge-property create/list/show/delete/delete-batch` | Custom property index management |
-| `maas` | `list-models`, `chat` | MaaS proxy |
+| `proxy` | `web-search`, `openai-models`, `openai-chat` | Proxy services (web search, LLM) |
 | **`chat`** | — | **Interactive chat session** |
 
 ## Interactive Chat

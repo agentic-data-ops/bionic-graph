@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from typing import Optional
 
@@ -60,6 +61,93 @@ def call_llm(
         if close_client:
             client.close()
         raise RuntimeError(f"LLM call failed after {max_retries} retries: {last_error}")
+
+
+def call_llm_stream_to_file(
+    system_prompt: str,
+    user_prompt: str,
+    tmp_path: str,
+    model: Optional[str] = None,
+    client: Optional[Client] = None,
+    timeout: float = 300.0,
+) -> dict:
+    """Stream the LLM response to a temp file, then validate it as JSON.
+
+    - stream=True: content chunks are appended to tmp_path as they arrive.
+    - After the stream completes, the temp file is read back and parsed as JSON.
+    - No retries: any LLM/transport/JSON error raises immediately.
+
+    Args:
+        system_prompt: System-level instruction.
+        user_prompt: User message content.
+        tmp_path: Temp file path to stream content into.
+        model: Optional model override (uses settings default_model if None).
+        client: Reusable Client instance. Creates a new one if None.
+        timeout: Request timeout in seconds.
+
+    Returns:
+        Parsed JSON dict.
+
+    Raises:
+        RuntimeError: if the LLM call fails or the output is not valid JSON.
+    """
+    close_client = False
+    if client is None:
+        client = Client(timeout=timeout)
+        close_client = True
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+    # ── Stream to temp file (append chunks as they arrive) ──
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            def _on_chunk(chunk: str) -> None:
+                f.write(chunk)
+                f.flush()
+
+            client.chat_completion(
+                messages=messages, model=model, stream=True, on_chunk=_on_chunk
+            )
+    except Exception as e:
+        # Fail fast — no retries. Clean up the temp file.
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        if close_client:
+            client.close()
+        raise RuntimeError(f"LLM stream call failed: {e}") from e
+
+    if close_client:
+        client.close()
+
+    # ── Read back and validate JSON ──
+    with open(tmp_path, "r", encoding="utf-8") as f:
+        text = f.read()
+
+    # Extract ```json ... ``` block if present (same logic as call_llm_json)
+    if "```json" in text:
+        start = text.index("```json") + 7
+        end = text.index("```", start) if "```" in text[start:] else len(text)
+        text = text[start:end].strip()
+    elif "```" in text:
+        start = text.index("```") + 3
+        end = text.index("```", start) if "```" in text[start:] else len(text)
+        text = text[start:end].strip()
+
+    try:
+        result = json.loads(text)
+    except json.JSONDecodeError as e:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise RuntimeError(f"LLM output is not valid JSON: {e}") from e
+
+    return result
 
 
 def call_llm_json(

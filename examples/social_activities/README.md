@@ -84,7 +84,7 @@ examples/social_activities/
 ├── README.md                  # This file
 ├── social_activities.md       # Group social activity Markdown document
 ├── cli.py                     # CLI entry — load / plan / act
-├── llm.py                     # LLM call wrapper (MaaS proxy)
+├── llm.py                     # LLM call wrapper (streaming + JSON validation)
 ├── prompts.py                 # Prompt templates
 ├── graph_utils.py             # Graph utility functions
 ├── log/                       # [generated] Timestamped output files
@@ -143,6 +143,16 @@ python cli.py plan --graph my-social-group
 # Phase 3: Simulate top-3 activities
 python cli.py act --graph my-social-group --count 3
 ```
+
+## LLM Interaction
+
+All three phases (`load` / `plan` / `act`) call the LLM through the Bionic-Graph backend MaaS proxy (`POST /proxy/openai/v1/chat/completions`). The calls use **streaming mode** (`stream=True`) so long-running extractions never hit a fixed read timeout:
+
+1. The response is streamed chunk-by-chunk and appended to a temp file (`<output>.tmp`) as it arrives.
+2. When the stream completes, the temp file is read back and validated as **JSON** (`json.loads`).
+3. **No retries** — any LLM/transport error or invalid JSON output aborts the command immediately with a non-zero exit code; the temp file is cleaned up on failure.
+
+The final validated JSON is written to the `--output` path (e.g. `log/social_activities.json`), so a failed run never leaves a partial JSON file in the output location.
 
 ## social_activities.md — Required Content
 
