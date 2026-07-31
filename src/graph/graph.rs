@@ -21,7 +21,7 @@ use std::sync::LazyLock;
 /// When `handle_execute` broadcasts a request to a worker, it generates a
 /// unique ID, registers it here, and passes it via `X-Request-Id`
 /// header through proxy_to_api. The axum middleware checks this header and
-/// sets per-task IS_BROADCAST_REPLAY so try_forward_json can skip forwarding
+/// sets per-task IS_BROADCAST_REPLAY so ClusterGateway::forward can skip forwarding
 /// for this specific request — without blocking any concurrent requests.
 pub(crate) static INFLIGHT_REQUESTS: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 
@@ -344,6 +344,32 @@ impl Graph {
     /// Allocate a new edge ID atomically.
     pub fn alloc_edge_id(&self) -> u32 {
         self.next_edge_id.fetch_add(1, Ordering::SeqCst)
+    }
+
+    /// Ensure the ID counter is at least `vid + 1`, so the allocated sequence
+    /// never regresses. Used during cluster replay when creating a vertex with
+    /// a master-assigned ID.
+    pub fn ensure_vertex_id(&self, vid: u32) {
+        let current = self.next_vertex_id.fetch_max(vid + 1, Ordering::Relaxed);
+        if current > vid {
+            log::warn!(
+                "vertex ID {} is behind allocator (max={}). This may indicate out-of-order replay.",
+                vid, current - 1
+            );
+        }
+    }
+
+    /// Ensure the ID counter is at least `eid + 1`, so the allocated sequence
+    /// never regresses. Used during cluster replay when creating an edge with
+    /// a master-assigned ID.
+    pub fn ensure_edge_id(&self, eid: u32) {
+        let current = self.next_edge_id.fetch_max(eid + 1, Ordering::Relaxed);
+        if current > eid {
+            log::warn!(
+                "edge ID {} is behind allocator (max={}). This may indicate out-of-order replay.",
+                eid, current - 1
+            );
+        }
     }
 
     /// Allocate a new token ID atomically.

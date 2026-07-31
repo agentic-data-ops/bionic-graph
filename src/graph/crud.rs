@@ -130,6 +130,71 @@ pub fn create_vertex(
     Ok(vid)
 }
 
+/// Create a vertex with a specific ID (used during cluster replay).
+/// This skips the auto-increment allocator and uses the master-assigned ID
+/// directly. Returns an error if the ID already exists.
+pub fn create_vertex_with_id(
+    graph: &Graph,
+    vid: u32,
+    name: &str,
+    labels: &[String],
+    keywords: &[String],
+    properties: &HashMap<String, PropertyValue>,
+) -> StorageResult<u32> {
+    // Check for ID collision
+    let existing = {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        mi.vertex_id.get(vid).copied()
+    };
+    if let Some(ptr) = existing {
+        log::error!(
+            "ID collision: vertex {} already exists at block={} chunk={}. \
+             This should not happen during cluster replay.",
+            vid, ptr.block_idx, ptr.chunk_offset
+        );
+        return Err(StorageError::Other(format!("vertex ID {} already exists", vid)));
+    }
+
+    // Advance the allocator past this ID
+    graph.ensure_vertex_id(vid);
+
+    let payload = VertexPayload {
+        name: name.to_string(),
+        labels: labels.to_vec(),
+        keywords: keywords.to_vec(),
+        properties: properties.clone(),
+        history: Vec::new(),
+    };
+
+    let serialized = profile::time("ser_vertex", || serialize_vertex(&payload))?;
+    let header = DataHeader::new_vertex(vid, serialized.len() as u16);
+    let ptr = profile::time("write_data_record", || write_data_record(graph, &header, &serialized))?;
+
+    // ── Update memory index ──────────────────────────────────────────
+    profile::time("idx_insert", || {
+        let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+        mi.vertex_id.insert(vid, ptr);
+        mi.vertex_name.insert(payload.name.clone(), vid);
+        mi.rank.insert(1, ptr);
+        for l in &payload.labels {
+            mi.add_vertex_label(l, ptr);
+        }
+        index_vertex_properties(&mut mi, &payload.properties, ptr);
+    });
+
+    // ── Tokenize attributes ──────────────────────────────────────────
+    profile::time("tokenize_vertex", || -> StorageResult<()> {
+        tokenize_vertex(&graph, vid, &payload)
+    })?;
+
+    // ── WAL ──────────────────────────────────────────────────────────
+    profile::time("wal_append", || -> StorageResult<()> {
+        graph.redo_log.append(OpType::VertexCreate, vid as u64, &serialized)
+    })?;
+
+    Ok(vid)
+}
+
 /// Create an edge. Returns the new edge ID.
 pub fn create_edge(
     graph: &Graph,
@@ -142,6 +207,74 @@ pub fn create_edge(
     properties: &HashMap<String, PropertyValue>,
 ) -> StorageResult<u32> {
     let eid = graph.alloc_edge_id();
+
+    let payload = EdgePayload {
+        name: name.to_string(),
+        labels: labels.to_vec(),
+        keywords: keywords.to_vec(),
+        strength,
+        properties: properties.clone(),
+        source,
+        target,
+        history: Vec::new(),
+    };
+
+    let serialized = serialize_edge(&payload)?;
+    let header = DataHeader::new_edge(eid, serialized.len() as u16);
+    let ptr = write_data_record(graph, &header, &serialized)?;
+
+    // ── Update memory index ──────────────────────────────────────────
+    {
+        let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+        mi.edge_id.insert(eid, ptr);
+        mi.edge_name.insert(payload.name.clone(), eid);
+        mi.rank.insert(1, ptr);
+        mi.vertex_adjacency.add_edge(eid, source, target, ptr);
+        for l in &payload.labels {
+            mi.add_edge_label(l, ptr);
+        }
+        index_edge_properties(&mut mi, &payload.properties, ptr);
+    }
+
+    // ── Tokenize ─────────────────────────────────────────────────────
+    tokenize_edge(&graph, eid, &payload)?;
+
+    // ── WAL ──────────────────────────────────────────────────────────
+    graph.redo_log.append(OpType::EdgeCreate, eid as u64, &serialized)?;
+
+    Ok(eid)
+}
+
+/// Create an edge with a specific ID (used during cluster replay).
+/// This skips the auto-increment allocator and uses the master-assigned ID
+/// directly. Returns an error if the ID already exists.
+pub fn create_edge_with_id(
+    graph: &Graph,
+    eid: u32,
+    source: u32,
+    target: u32,
+    name: &str,
+    labels: &[String],
+    keywords: &[String],
+    strength: f32,
+    properties: &HashMap<String, PropertyValue>,
+) -> StorageResult<u32> {
+    // Check for ID collision
+    let existing = {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        mi.edge_id.get(eid).copied()
+    };
+    if let Some(ptr) = existing {
+        log::error!(
+            "ID collision: edge {} already exists at block={} chunk={}. \
+             This should not happen during cluster replay.",
+            eid, ptr.block_idx, ptr.chunk_offset
+        );
+        return Err(StorageError::Other(format!("edge ID {} already exists", eid)));
+    }
+
+    // Advance the allocator past this ID
+    graph.ensure_edge_id(eid);
 
     let payload = EdgePayload {
         name: name.to_string(),

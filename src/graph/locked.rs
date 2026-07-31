@@ -29,6 +29,21 @@ pub fn create_vertex_locked(
     vid
 }
 
+/// Create a vertex with a specific ID (locked). Used during cluster replay.
+pub fn create_vertex_with_id_locked(
+    graph: &Arc<Graph>,
+    vid: u32,
+    name: &str,
+    labels: &[String],
+    keywords: &[String],
+    properties: &HashMap<String, PropertyValue>,
+) -> StorageResult<VertexId> {
+    let _meta = graph.locks.read_metadata();
+    let result = crud::create_vertex_with_id(graph, vid, name, labels, keywords, properties);
+    drop(_meta);
+    result
+}
+
 pub fn get_vertex_locked(
     graph: &Arc<Graph>,
     vertex_id: VertexId,
@@ -94,6 +109,24 @@ pub fn create_edge_locked(
 ) -> StorageResult<EdgeId> {
     let _meta = graph.locks.read_metadata();
     let result = crud::create_edge(graph, source, target, name, labels, keywords, strength, properties);
+    drop(_meta);
+    result
+}
+
+/// Create an edge with a specific ID (locked). Used during cluster replay.
+pub fn create_edge_with_id_locked(
+    graph: &Arc<Graph>,
+    eid: u32,
+    source: VertexId,
+    target: VertexId,
+    name: &str,
+    labels: &[String],
+    keywords: &[String],
+    strength: f32,
+    properties: &HashMap<String, PropertyValue>,
+) -> StorageResult<EdgeId> {
+    let _meta = graph.locks.read_metadata();
+    let result = crud::create_edge_with_id(graph, eid, source, target, name, labels, keywords, strength, properties);
     drop(_meta);
     result
 }

@@ -31,161 +31,8 @@ pub mod indices;
 use crate::storage::types::{PropertyValue, StorageResult};
 use crate::config::NodeRole;
 
-/// If this node is a cluster worker, forward the write request to the master
-/// and return the master's JSON response. Returns None on master / standalone.
-pub(crate) async fn try_forward_json(
-    state: &AppState,
-    method: &str,
-    path: &str,
-    query: Option<&str>,
-    graph_name: Option<&str>,
-    body: Option<&str>,
-) -> Option<Result<Json<serde_json::Value>, StatusCode>> {
-    // Extract settings before the await point (MutexGuard is not Send).
-    let (is_worker, master_addr) = {
-        let settings = state.settings.lock().unwrap();
-        let is_worker = settings.cluster.enabled && settings.cluster.role == NodeRole::Worker;
-        let addr = state.master_api_addr.clone();
-        (is_worker, addr)
-    };
-    // During cluster broadcast replay, skip forwarding to prevent recursion.
-    if crate::graph::graph::is_broadcast_replay() {
-        return None;
-    }
-    if !is_worker { return None; }
-    let master_addr = master_addr.as_ref()?;
-    let req = crate::cluster::forward::ForwardedRequest {
-        method: method.to_string(),
-        path: path.to_string(),
-        query: query.map(|s| s.to_string()),
-        body: body.map(|s| s.to_string()),
-        graph: graph_name.map(|s| s.to_string()),
-    };
-    match crate::cluster::forward::forward_write(master_addr, &req).await {
-        Ok(resp) => {
-            if resp.success && resp.status_code < 300 {
-                if let Some(body_str) = resp.body {
-                    if body_str.is_empty() {
-                        Some(Ok(Json(serde_json::json!({"status": "ok"}))))
-                    } else {
-                        match serde_json::from_str(&body_str) {
-                            Ok(val) => Some(Ok(Json(val))),
-                            Err(_) => Some(Err(StatusCode::INTERNAL_SERVER_ERROR)),
-                        }
-                    }
-                } else {
-                    Some(Ok(Json(serde_json::json!({"status": "ok"}))))
-                }
-            } else if resp.success {
-                // Master returned non-2xx status (e.g. 404) - propagate it
-                Some(Err(StatusCode::from_u16(resp.status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)))
-            } else {
-                Some(Err(StatusCode::from_u16(resp.status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)))
-            }
-        }
-        Err(e) => {
-            log::warn!("Forward to master failed: {}", e);
-            Some(Err(StatusCode::BAD_GATEWAY))
-        }
-    }
-}
 
-/// Same as try_forward_json but skips the REPLAYING check.
-/// Used for read-only forwarding (e.g., task status polling) that must
-/// not be blocked by concurrent write replays.
-pub(crate) async fn try_forward_read_json(
-    state: &AppState,
-    method: &str,
-    path: &str,
-    query: Option<&str>,
-    graph_name: Option<&str>,
-    body: Option<&str>,
-) -> Option<Result<Json<serde_json::Value>, StatusCode>> {
-    let (is_worker, master_addr) = {
-        let settings = state.settings.lock().unwrap();
-        let is_worker = settings.cluster.enabled && settings.cluster.role == NodeRole::Worker;
-        let addr = state.master_api_addr.clone();
-        (is_worker, addr)
-    };
-    if !is_worker { return None; }
-    let master_addr = master_addr.as_ref()?;
-    let req = crate::cluster::forward::ForwardedRequest {
-        method: method.to_string(),
-        path: path.to_string(),
-        query: query.map(|s| s.to_string()),
-        body: body.map(|s| s.to_string()),
-        graph: graph_name.map(|s| s.to_string()),
-    };
-    match crate::cluster::forward::forward_write(master_addr, &req).await {
-        Ok(resp) => {
-            if resp.success && resp.status_code < 300 {
-                if let Some(body_str) = resp.body {
-                    if body_str.is_empty() {
-                        Some(Ok(Json(serde_json::json!({"status": "ok"}))))
-                    } else {
-                        match serde_json::from_str(&body_str) {
-                            Ok(val) => Some(Ok(Json(val))),
-                            Err(_) => Some(Err(StatusCode::INTERNAL_SERVER_ERROR)),
-                        }
-                    }
-                } else {
-                    Some(Ok(Json(serde_json::json!({"status": "ok"}))))
-                }
-            } else if resp.success {
-                // Master returned non-2xx status (e.g. 404) - propagate it
-                Some(Err(StatusCode::from_u16(resp.status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)))
-            } else {
-                Some(Err(StatusCode::from_u16(resp.status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)))
-            }
-        }
-        Err(e) => {
-            log::warn!("Forward read to master failed: {}", e);
-            Some(Err(StatusCode::BAD_GATEWAY))
-        }
-    }
-}
 
-/// Same as try_forward_json but for handlers that return StatusCode.
-pub(crate) async fn try_forward_status(
-    state: &AppState,
-    method: &str,
-    path: &str,
-    query: Option<&str>,
-    graph_name: Option<&str>,
-) -> Option<StatusCode> {
-    let (is_worker, master_addr) = {
-        let settings = state.settings.lock().unwrap();
-        let is_worker = settings.cluster.enabled && settings.cluster.role == NodeRole::Worker;
-        let addr = state.master_api_addr.clone();
-        (is_worker, addr)
-    };
-    // During cluster broadcast replay, skip forwarding to prevent recursion.
-    if crate::graph::graph::is_broadcast_replay() {
-        return None;
-    }
-    if !is_worker { return None; }
-    let master_addr = master_addr.as_ref()?;
-    let req = crate::cluster::forward::ForwardedRequest {
-        method: method.to_string(),
-        path: path.to_string(),
-        query: query.map(|s| s.to_string()),
-        body: None,
-        graph: graph_name.map(|s| s.to_string()),
-    };
-    match crate::cluster::forward::forward_write(master_addr, &req).await {
-        Ok(resp) => {
-            if resp.success && resp.status_code < 300 {
-                Some(StatusCode::OK)
-            } else if resp.success {
-                // Master returned non-2xx status — propagate it
-                Some(StatusCode::from_u16(resp.status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR))
-            } else {
-                Some(StatusCode::from_u16(resp.status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR))
-            }
-        }
-        Err(_) => Some(StatusCode::BAD_GATEWAY),
-    }
-}
 
 /// Shared application state for all graph routes.
 #[derive(Clone)]
@@ -200,184 +47,29 @@ pub struct AppState {
     pub master_api_addr: Option<String>,
 }
 
-/// Broadcast a ForwardedRequest from the master to all workers' REST API.
-/// Used for operations that don't use the graph engine's WAL (documents,
-/// graph metadata, indices, etc.). Workers process the request via their
-/// own REST handlers with REPLAYING=true to prevent recursion.
-pub(crate) fn broadcast_request_to_workers(
-    cluster_registry: &Option<Arc<NodeRegistry>>,
-    method: &str,
-    path: &str,
-    query: Option<&str>,
-    graph_name: Option<&str>,
-    body: Option<&str>,
-) {
-    // During cluster broadcast replay, skip broadcasting to prevent recursion.
-    if crate::graph::graph::is_broadcast_replay() {
-        return;
-    }
-    let Some(registry) = cluster_registry.as_ref() else {
-        log::warn!("broadcast_to_workers: no registry");
-        return;
-    };
-    let workers = registry.alive_workers();
-    if workers.is_empty() {
-        log::warn!("broadcast_to_workers: alive_workers empty");
-        return;
-    }
-
-    let payload = crate::cluster::forward::ForwardedRequest {
-        method: method.to_string(),
-        path: path.to_string(),
-        query: query.map(|s| s.to_string()),
-        body: body.map(|s| s.to_string()),
-        graph: graph_name.map(|s| s.to_string()),
-    };
-
-    for worker in workers {
-        let url = format!("http://{}/cluster/execute", worker.cluster_addr);
-        let client = reqwest::Client::new();
-        let payload_json = serde_json::to_string(&payload).unwrap_or_default();
-        let req = client.post(&url)
-            .header("Content-Type", "application/json")
-            .body(payload_json);
-        let _ = tokio::spawn(async move {
-            if let Err(e) = req.send().await {
-                log::warn!("Broadcast to worker {} failed: {}", worker.node_id, e);
+impl AppState {
+    /// Build a ClusterGateway from this state's cluster configuration.
+    pub fn cluster_gateway(&self) -> crate::cluster::gateway::ClusterGateway {
+        let (is_worker, master_addr) = {
+            if let Ok(settings) = self.settings.lock() {
+                let is_worker = settings.cluster.enabled
+                    && settings.cluster.role == crate::config::NodeRole::Worker;
+                (is_worker, self.master_api_addr.clone())
+            } else {
+                (false, self.master_api_addr.clone())
             }
-        });
+        };
+        crate::cluster::gateway::ClusterGateway::new(
+            is_worker,
+            master_addr,
+            self.cluster_registry.clone(),
+        )
     }
 }
+
 
 /// Broadcast a write result from the master to all workers.
 /// Called by write handlers after a successful mutation on the master.
-pub(crate) fn broadcast_write_result(
-    cluster_registry: &Option<Arc<NodeRegistry>>,
-    graph: &Arc<Graph>,
-    method: &str,
-    path: &str,
-    graph_name: &str,
-    response_body: &str,
-) {
-    // During cluster broadcast replay, skip broadcasting to prevent recursion.
-    if crate::graph::graph::is_broadcast_replay() {
-        return;
-    }
-    let Some(registry) = cluster_registry.as_ref() else {
-        log::warn!("broadcast_to_workers: no registry");
-        return;
-    };
-    let workers = registry.alive_workers();
-    if workers.is_empty() {
-        log::warn!("broadcast_to_workers: alive_workers empty");
-        return;
-    }
-
-    // Determine op_type and op_id.
-    let (op_type, op_id) = match method {
-        "POST" => {
-            let id = serde_json::from_str::<serde_json::Value>(response_body)
-                .ok().and_then(|v| v.get("id").and_then(|id| id.as_u64()))
-                .unwrap_or(0);
-            if id == 0 { return; }
-            let op = if path == "/vertices" || path.starts_with("/vertices/") {
-                crate::storage::types::OpType::VertexCreate
-            } else if path == "/edges" || path.starts_with("/edges/") {
-                crate::storage::types::OpType::EdgeCreate
-            } else { return };
-            (op, id)
-        }
-        "PUT" => {
-            let id = serde_json::from_str::<serde_json::Value>(response_body)
-                .ok().and_then(|v| v.get("id").and_then(|id| id.as_u64()))
-                .unwrap_or(0);
-            if id == 0 { return; }
-            let op = if path.starts_with("/vertices/") {
-                crate::storage::types::OpType::VertexUpdate
-            } else if path.starts_with("/edges/") {
-                crate::storage::types::OpType::EdgeUpdate
-            } else { return };
-            (op, id)
-        }
-        "DELETE" => {
-            let clean = path.split('?').next().unwrap_or(path);
-            let id: u64 = match clean.rsplit('/').next().and_then(|s| s.parse().ok()) {
-                Some(v) => v, None => return,
-            };
-            let op = if path.starts_with("/vertices/") {
-                crate::storage::types::OpType::VertexDelete
-            } else if path.starts_with("/edges/") {
-                crate::storage::types::OpType::EdgeDelete
-            } else { return };
-            (op, id)
-        }
-        _ => return,
-    };
-
-    // Read the actual data from the graph to build a proper replay entry.
-    let data = if method != "DELETE" {
-        let g = graph.clone();
-        (move || -> Vec<u8> {
-            let id_u32 = op_id as u32;
-            let ptr = g.memory_index.read().ok()
-                .and_then(|mi| {
-                    if op_type == crate::storage::types::OpType::VertexCreate
-                        || op_type == crate::storage::types::OpType::VertexUpdate {
-                        mi.vertex_id.get(id_u32).copied()
-                    } else if op_type == crate::storage::types::OpType::EdgeCreate
-                        || op_type == crate::storage::types::OpType::EdgeUpdate {
-                        mi.edge_id.get(id_u32).copied()
-                    } else { None }
-                });
-            let Some(ptr) = ptr else { return Vec::new() };
-            let Ok(dh) = crate::graph::crud::read_header_by_ptr(&g, &ptr) else { return Vec::new() };
-            let plen = dh.payload_len as usize;
-            let Ok(raw) = crate::graph::crud::read_data_chunks(
-                &g, ptr.block_idx, ptr.chunk_offset + 1, dh.payload_len as u16,
-            ) else { return Vec::new() };
-            let data_for_ser = &raw[..plen.min(raw.len())];
-            // Re-serialize to ensure valid WAL format (avoids chunk padding issues)
-            let result = if op_type == crate::storage::types::OpType::VertexCreate
-                || op_type == crate::storage::types::OpType::VertexUpdate {
-                crate::graph::serialize::deserialize_vertex(data_for_ser)
-                    .and_then(|p| crate::graph::serialize::serialize_vertex(&p))
-            } else {
-                crate::graph::serialize::deserialize_edge(data_for_ser)
-                    .and_then(|p| crate::graph::serialize::serialize_edge(&p))
-            };
-            result.unwrap_or_default()
-        })()
-    } else {
-        Vec::new()
-    };
-    if data.is_empty() && method != "DELETE" {
-        log::warn!("broadcast_write: empty data for {} {} op={:?}", method, path, op_type);
-    }
-
-    let entry = crate::storage::redo_log::RedoLogEntry { op_type, op_id, data };
-    let reg = registry.clone();
-    let gn = graph_name.to_string();
-    let w = workers.clone();
-
-    tokio::spawn(async move {
-        let seq = reg.next_seq();
-        let replicated = crate::cluster::replication::ReplicatedEntry {
-            cluster_seq: seq,
-            entry,
-            graph_name: gn,
-            master_timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_micros() as u64,
-        };
-        let results = crate::cluster::replication::broadcast_entry(&w, &replicated).await;
-        for (wid, res) in &results {
-            if let Err(e) = res {
-                log::warn!("Broadcast to worker {} failed: {}", wid, e);
-            }
-        }
-    });
-}
 
 /// Build the axum router for all block-engine graph routes.
 pub fn build_router(
@@ -475,7 +167,7 @@ pub fn build_router(
         // Shared state
         .with_state(state)
         // Middleware: detect cluster replay requests via X-Request-Id header
-        // and set per-task IS_BROADCAST_REPLAY so try_forward_json skips
+        // and set per-task IS_BROADCAST_REPLAY so ClusterGateway::forward skips
         // forwarding for the replayed request without blocking concurrent requests.
         .layer(axum::middleware::from_fn(
             |request: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| async move {
@@ -728,7 +420,7 @@ pub struct CreateVertexBody {
     pub id: Option<u32>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct CreateVertexResponse {
     pub id: u32,
 }
@@ -738,47 +430,48 @@ pub async fn create_vertex(
     headers: axum::http::HeaderMap,
     Json(body): Json<CreateVertexBody>,
 ) -> Result<Json<CreateVertexResponse>, StatusCode> {
-    // Worker → Master forwarding
     let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
-    if let Some(resp) = try_forward_json(
-        &state, "POST", "/vertices", None, graph_name,
-        Some(&serde_json::to_string(&body).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?),
-    ).await {
-        return resp.map(|json| {
-            let id = json.get("id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            Json(CreateVertexResponse { id })
-        });
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let body_str = serde_json::to_string(&body).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let req = crate::cluster::request::ClusterRequest::new("POST", "/vertices")
+        .with_body(&body_str)
+        .with_opt_graph(graph_name);
+    if let Some(resp) = gateway.forward::<CreateVertexResponse>(&req).await? {
+        return Ok(Json(resp));
     }
 
-    // During cluster replay, the worker's auto-increment counter naturally
-    // produces the same ID as the master (sequential operations, no gap).
     let graph = resolve_graph_from_request(&state, &headers)
         .map_err(|_| StatusCode::NOT_FOUND)?;
     let labels = body.labels.clone().unwrap_or_default();
     let keywords = body.keywords.clone().unwrap_or_default();
-    let vid = crate::graph::locked::create_vertex_locked(
-        &graph,
-        &body.name,
-        &labels,
-        &keywords,
-        &body.properties,
-    )
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    // Broadcast to workers via HTTP (full handler processing, including tokenizer).
-    let graph_name = graph.name.clone();
-    let broadcast_body = serde_json::json!({
-        "name": &body.name,
-        "labels": &body.labels,
-        "keywords": &body.keywords,
-        "properties": &body.properties,
-        "id": vid,
-    }).to_string();
-    broadcast_request_to_workers(
-        &state.cluster_registry,
-        "POST", "/vertices",
-        None, Some(&graph_name), Some(&broadcast_body),
-    );
+    // During cluster replay, use master-assigned ID to ensure consistency
+    let vid = if crate::graph::graph::is_broadcast_replay() {
+        let replica_id = body.id.ok_or(StatusCode::BAD_REQUEST)?;
+        crate::graph::locked::create_vertex_with_id_locked(
+            &graph, replica_id, &body.name, &labels, &keywords, &body.properties,
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    } else {
+        crate::graph::locked::create_vertex_locked(
+            &graph, &body.name, &labels, &keywords, &body.properties,
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    };
+
+    // Broadcast to workers via ClusterGateway with master-assigned ID
+    let broadcast_req = crate::cluster::request::ClusterRequest::new("POST", "/vertices")
+        .with_body(&serde_json::json!({
+            "name": &body.name,
+            "labels": &body.labels,
+            "keywords": &body.keywords,
+            "properties": &body.properties,
+            "id": vid,
+        }).to_string())
+        .with_graph(&graph.name);
+    gateway.broadcast(&broadcast_req);
 
     Ok(Json(CreateVertexResponse { id: vid }))
 }
@@ -799,15 +492,18 @@ pub async fn update_vertex(
     headers: axum::http::HeaderMap,
     Json(body): Json<UpdateVertexBody>,
 ) -> StatusCode {
-    // Worker → Master forwarding
     let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
     let body_str = serde_json::to_string(&body).unwrap_or_default();
-    let path = format!("/vertices/{}", id);
-    if let Some(resp) = try_forward_json(
-        &state, "PUT", &path, None, graph_name,
-        Some(&body_str),
-    ).await {
-        return if resp.is_ok() { StatusCode::OK } else { StatusCode::BAD_GATEWAY };
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let req = crate::cluster::request::ClusterRequest::new("PUT", &format!("/vertices/{}", id))
+        .with_body(&body_str)
+        .with_opt_graph(graph_name);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(_)) => return StatusCode::OK,
+        Ok(None) => {}
+        Err(status) => return status,
     }
 
     let graph = match resolve_graph_from_request(&state, &headers) {
@@ -816,8 +512,7 @@ pub async fn update_vertex(
     };
 
     match crate::graph::locked::update_vertex_locked(
-        &graph,
-        id,
+        &graph, id,
         body.name.as_deref(),
         body.labels.as_deref(),
         body.keywords.as_deref(),
@@ -825,8 +520,11 @@ pub async fn update_vertex(
         true,
     ) {
         Ok(_) => {
-            let graph_name = graph.name.clone();
-            broadcast_request_to_workers(&state.cluster_registry, "PUT", &format!("/vertices/{}", id), None, Some(&graph_name), Some(&body_str));
+            // Broadcast via ClusterGateway
+            let broadcast_req = crate::cluster::request::ClusterRequest::new("PUT", &format!("/vertices/{}", id))
+                .with_body(&body_str)
+                .with_graph(&graph.name);
+            gateway.broadcast(&broadcast_req);
             StatusCode::OK
         }
         Err(_) => StatusCode::NOT_FOUND,
@@ -846,14 +544,19 @@ pub async fn delete_vertex(
     Query(params): Query<DeleteVertexParams>,
     headers: axum::http::HeaderMap,
 ) -> StatusCode {
-    // Worker → Master forwarding
     let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
     let query_str = params.force.map(|f| format!("force={}", f));
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
     let path = format!("/vertices/{}", id);
-    if let Some(status) = try_forward_status(
-        &state, "DELETE", &path, query_str.as_deref(), graph_name,
-    ).await {
-        return status;
+    let req = crate::cluster::request::ClusterRequest::new("DELETE", &path)
+        .with_query_str(query_str.as_deref())
+        .with_opt_graph(graph_name);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(_)) => return StatusCode::OK,
+        Ok(None) => {} // proceed locally
+        Err(status) => return status,
     }
 
     let graph = match resolve_graph_from_request(&state, &headers) {
@@ -875,19 +578,11 @@ pub async fn delete_vertex(
 
     match result {
         Ok(_) => {
-            let graph_name = graph.name.clone();
-            // Broadcast the original query parameter faithfully (e.g. ?force=true,
-            // ?force=false, or none) — same as forwarding's query_str.
-            let broadcast_path = if let Some(ref qs) = query_str {
-                format!("/vertices/{}?{}", id, qs)
-            } else {
-                format!("/vertices/{}", id)
-            };
-            let delete_body = serde_json::json!({"id": id}).to_string();
-            broadcast_request_to_workers(
-                &state.cluster_registry, "DELETE", &broadcast_path,
-                None, Some(&graph_name), Some(&delete_body),
-            );
+            // Broadcast via ClusterGateway with faithful query parameter
+            let broadcast_req = crate::cluster::request::ClusterRequest::new("DELETE", &path)
+                .with_query_str(query_str.as_deref())
+                .with_graph(&graph.name);
+            gateway.broadcast(&broadcast_req);
             StatusCode::OK
         }
         Err(_) => StatusCode::NOT_FOUND,
@@ -942,17 +637,18 @@ pub async fn handle_update_vertex_meta(
         return StatusCode::BAD_REQUEST;
     }
 
-    // Worker → Master forwarding
     let body_str = serde_json::to_string(&body).unwrap_or_default();
     let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
-    let path = format!("/vertices/{}/meta", id);
-    if let Some(resp) = try_forward_json(
-        &state, "PUT", &path, None, graph_name, Some(&body_str),
-    ).await {
-        return match resp {
-            Ok(_) => StatusCode::OK,
-            Err(s) => s,
-        };
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let req = crate::cluster::request::ClusterRequest::new("PUT", &format!("/vertices/{}/meta", id))
+        .with_body(&body_str)
+        .with_opt_graph(graph_name);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(_)) => return StatusCode::OK,
+        Ok(None) => {}
+        Err(status) => return status,
     }
 
     let graph = match resolve_graph_from_request(&state, &headers) {
@@ -962,7 +658,6 @@ pub async fn handle_update_vertex_meta(
     let _meta = graph.locks.read_metadata();
     let _vlock = graph.locks.write_vertex(id);
 
-    // Only rank/atime are supported for meta updates.
     let result = crate::graph::crud::update_vertex_meta(&graph, id, new_rank, new_atime);
 
     drop(_vlock);
@@ -970,11 +665,10 @@ pub async fn handle_update_vertex_meta(
     match result {
         Ok(()) => {
             // Broadcast to workers in cluster mode.
-            let gn = graph.name.clone();
-            broadcast_request_to_workers(
-                &state.cluster_registry, "PUT", &format!("/vertices/{}/meta", id),
-                None, Some(&gn), Some(&body_str),
-            );
+            let broadcast_req = crate::cluster::request::ClusterRequest::new("PUT", &format!("/vertices/{}/meta", id))
+                .with_body(&body_str)
+                .with_graph(&graph.name);
+            gateway.broadcast(&broadcast_req);
             StatusCode::OK
         }
         Err(_) => StatusCode::NOT_FOUND,
@@ -993,9 +687,12 @@ pub struct CreateEdgeBody {
     pub strength: Option<f32>,
     #[serde(default)]
     pub properties: std::collections::HashMap<String, crate::storage::types::PropertyValue>,
+    /// Optional ID for replication (used during cluster replay to keep IDs in sync).
+    #[serde(default)]
+    pub id: Option<u32>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct CreateEdgeResponse {
     pub id: u32,
 }
@@ -1005,47 +702,55 @@ pub async fn create_edge(
     headers: axum::http::HeaderMap,
     Json(body): Json<CreateEdgeBody>,
 ) -> Result<Json<CreateEdgeResponse>, StatusCode> {
-    // Worker → Master forwarding
     let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
-    if let Some(resp) = try_forward_json(
-        &state, "POST", "/edges", None, graph_name,
-        Some(&serde_json::to_string(&body).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?),
-    ).await {
-        return resp.map(|json| {
-            let id = json.get("id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            Json(CreateEdgeResponse { id })
-        });
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let body_str = serde_json::to_string(&body).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let req = crate::cluster::request::ClusterRequest::new("POST", "/edges")
+        .with_body(&body_str)
+        .with_opt_graph(graph_name);
+    if let Some(resp) = gateway.forward::<CreateEdgeResponse>(&req).await? {
+        return Ok(Json(resp));
     }
 
     let graph = resolve_graph_from_request(&state, &headers)
         .map_err(|_| StatusCode::NOT_FOUND)?;
     let labels = body.labels.clone().unwrap_or_default();
     let keywords = body.keywords.clone().unwrap_or_default();
-    let eid = crate::graph::locked::create_edge_locked(
-        &graph, body.source, body.target,
-        &body.name,
-        &labels,
-        &keywords,
-        body.strength.unwrap_or(1.0),
-        &body.properties,
-    )
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let graph_name = graph.name.clone();
-    let broadcast_body = serde_json::json!({
-        "source": body.source,
-        "target": body.target,
-        "name": &body.name,
-        "labels": &body.labels,
-        "keywords": &body.keywords,
-        "strength": body.strength,
-        "properties": &body.properties,
-        "id": eid,
-    }).to_string();
-    broadcast_request_to_workers(
-        &state.cluster_registry, "POST", "/edges",
-        None, Some(&graph_name), Some(&broadcast_body),
-    );
+    // During cluster replay, use master-assigned ID to ensure consistency
+    let eid = if crate::graph::graph::is_broadcast_replay() {
+        let replica_id = body.id.ok_or(StatusCode::BAD_REQUEST)?;
+        crate::graph::locked::create_edge_with_id_locked(
+            &graph, replica_id, body.source, body.target,
+            &body.name, &labels, &keywords,
+            body.strength.unwrap_or(1.0), &body.properties,
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    } else {
+        crate::graph::locked::create_edge_locked(
+            &graph, body.source, body.target,
+            &body.name, &labels, &keywords,
+            body.strength.unwrap_or(1.0), &body.properties,
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    };
+
+    // Broadcast to workers via ClusterGateway with master-assigned ID
+    let broadcast_req = crate::cluster::request::ClusterRequest::new("POST", "/edges")
+        .with_body(&serde_json::json!({
+            "source": body.source,
+            "target": body.target,
+            "name": &body.name,
+            "labels": &body.labels,
+            "keywords": &body.keywords,
+            "strength": body.strength,
+            "properties": &body.properties,
+            "id": eid,
+        }).to_string())
+        .with_graph(&graph.name);
+    gateway.broadcast(&broadcast_req);
 
     Ok(Json(CreateEdgeResponse { id: eid }))
 }
@@ -1067,15 +772,18 @@ pub async fn update_edge(
     headers: axum::http::HeaderMap,
     Json(body): Json<UpdateEdgeBody>,
 ) -> StatusCode {
-    // Worker → Master forwarding
     let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
     let body_str = serde_json::to_string(&body).unwrap_or_default();
-    let path = format!("/edges/{}", id);
-    if let Some(resp) = try_forward_json(
-        &state, "PUT", &path, None, graph_name,
-        Some(&body_str),
-    ).await {
-        return if resp.is_ok() { StatusCode::OK } else { StatusCode::BAD_GATEWAY };
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let req = crate::cluster::request::ClusterRequest::new("PUT", &format!("/edges/{}", id))
+        .with_body(&body_str)
+        .with_opt_graph(graph_name);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(_)) => return StatusCode::OK,
+        Ok(None) => {}
+        Err(status) => return status,
     }
 
     let graph = match resolve_graph_from_request(&state, &headers) {
@@ -1084,8 +792,7 @@ pub async fn update_edge(
     };
 
     match crate::graph::locked::update_edge_locked(
-        &graph,
-        id,
+        &graph, id,
         body.name.as_deref(),
         body.labels.as_deref(),
         body.keywords.as_deref(),
@@ -1094,8 +801,11 @@ pub async fn update_edge(
         true,
     ) {
         Ok(_) => {
-            let graph_name = graph.name.clone();
-            broadcast_request_to_workers(&state.cluster_registry, "PUT", &format!("/edges/{}", id), None, Some(&graph_name), Some(&body_str));
+            // Broadcast via ClusterGateway
+            let broadcast_req = crate::cluster::request::ClusterRequest::new("PUT", &format!("/edges/{}", id))
+                .with_body(&body_str)
+                .with_graph(&graph.name);
+            gateway.broadcast(&broadcast_req);
             StatusCode::OK
         }
         Err(_) => StatusCode::NOT_FOUND,
@@ -1115,14 +825,19 @@ pub async fn delete_edge(
     Query(params): Query<DeleteEdgeParams>,
     headers: axum::http::HeaderMap,
 ) -> StatusCode {
-    // Worker → Master forwarding
     let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
     let query_str = params.force.map(|f| format!("force={}", f));
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
     let path = format!("/edges/{}", id);
-    if let Some(status) = try_forward_status(
-        &state, "DELETE", &path, query_str.as_deref(), graph_name,
-    ).await {
-        return status;
+    let req = crate::cluster::request::ClusterRequest::new("DELETE", &path)
+        .with_query_str(query_str.as_deref())
+        .with_opt_graph(graph_name);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(_)) => return StatusCode::OK,
+        Ok(None) => {}
+        Err(status) => return status,
     }
 
     let graph = match resolve_graph_from_request(&state, &headers) {
@@ -1144,14 +859,11 @@ pub async fn delete_edge(
 
     match result {
         Ok(_) => {
-            let graph_name = graph.name.clone();
-            let broadcast_path = if let Some(ref qs) = query_str {
-                format!("/edges/{}?{}", id, qs)
-            } else {
-                format!("/edges/{}", id)
-            };
-            let del_body = serde_json::json!({"id": id}).to_string();
-            broadcast_request_to_workers(&state.cluster_registry, "DELETE", &broadcast_path, None, Some(&graph_name), Some(&del_body));
+            // Broadcast via ClusterGateway with faithful query parameter
+            let broadcast_req = crate::cluster::request::ClusterRequest::new("DELETE", &path)
+                .with_query_str(query_str.as_deref())
+                .with_graph(&graph.name);
+            gateway.broadcast(&broadcast_req);
             StatusCode::OK
         }
         Err(_) => StatusCode::NOT_FOUND,
@@ -1206,17 +918,18 @@ pub async fn handle_update_edge_meta(
         return StatusCode::BAD_REQUEST;
     }
 
-    // Worker → Master forwarding
     let body_str = serde_json::to_string(&body).unwrap_or_default();
     let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
-    let path = format!("/edges/{}/meta", id);
-    if let Some(resp) = try_forward_json(
-        &state, "PUT", &path, None, graph_name, Some(&body_str),
-    ).await {
-        return match resp {
-            Ok(_) => StatusCode::OK,
-            Err(s) => s,
-        };
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let req = crate::cluster::request::ClusterRequest::new("PUT", &format!("/edges/{}/meta", id))
+        .with_body(&body_str)
+        .with_opt_graph(graph_name);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(_)) => return StatusCode::OK,
+        Ok(None) => {}
+        Err(status) => return status,
     }
 
     let graph = match resolve_graph_from_request(&state, &headers) {
@@ -1226,7 +939,6 @@ pub async fn handle_update_edge_meta(
     let _meta = graph.locks.read_metadata();
     let _elock = graph.locks.write_edge(id);
 
-    // Only rank/atime are supported for meta updates.
     let result = crate::graph::crud::update_edge_meta(&graph, id, new_rank, new_atime);
 
     drop(_elock);
@@ -1234,11 +946,10 @@ pub async fn handle_update_edge_meta(
     match result {
         Ok(()) => {
             // Broadcast to workers in cluster mode.
-            let gn = graph.name.clone();
-            broadcast_request_to_workers(
-                &state.cluster_registry, "PUT", &format!("/edges/{}/meta", id),
-                None, Some(&gn), Some(&body_str),
-            );
+            let broadcast_req = crate::cluster::request::ClusterRequest::new("PUT", &format!("/edges/{}/meta", id))
+                .with_body(&body_str)
+                .with_graph(&graph.name);
+            gateway.broadcast(&broadcast_req);
             StatusCode::OK
         }
         Err(_) => StatusCode::NOT_FOUND,
@@ -1266,7 +977,7 @@ pub struct CreateGraphParams {
     pub time_travel: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct CreateGraphResponse {
     pub name: String,
     pub description: String,
@@ -1278,24 +989,19 @@ pub async fn create_graph(
     State(state): State<AppState>,
     Json(params): Json<CreateGraphParams>,
 ) -> Result<Json<CreateGraphResponse>, StatusCode> {
-    // Worker → Master forwarding
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
     let body_str = serde_json::to_string(&params).unwrap_or_default();
-    if let Some(resp) = try_forward_json(
-        &state, "POST", "/graphs", None, None, Some(&body_str),
-    ).await {
+    let req = crate::cluster::request::ClusterRequest::new("POST", "/graphs")
+        .with_body(&body_str);
+    if let Some(resp) = gateway.forward::<CreateGraphResponse>(&req).await? {
         // Forward succeeded — worker also creates the graph locally
         // so it's available immediately (broadcast may lag).
         if let Ok(g) = state.gm.get(&params.name) {
             let _ = state.gm.update_meta(&params.name, &params.description, params.time_travel);
         }
-        return resp.map(|json| {
-            Json(CreateGraphResponse {
-                name: json.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                description: json.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                time_travel: json.get("time_travel").and_then(|v| v.as_bool()).unwrap_or(false),
-                created: json.get("created").and_then(|v| v.as_bool()).unwrap_or(false),
-            })
-        });
+        return Ok(Json(resp));
     }
 
     // Reject empty or whitespace-only names.
@@ -1319,7 +1025,7 @@ pub async fn create_graph(
         Ok(_) => {
             // Persist the provided description / time_travel to the registry.
             let _ = state.gm.update_meta(&params.name, &params.description, params.time_travel);
-            broadcast_request_to_workers(&state.cluster_registry, "POST", "/graphs", None, None, Some(&body_str));
+            gateway.broadcast(&req);
             Ok(Json(CreateGraphResponse {
                 name: params.name,
                 description: params.description,
@@ -1342,16 +1048,18 @@ pub async fn delete_graph(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Json<serde_json::Value> {
-    // Worker → Master forwarding
-    if let Some(resp) = try_forward_json(&state, "DELETE", &format!("/graphs/{}", name), None, None, None).await {
-        return match resp {
-            Ok(json) => json,
-            Err(_) => Json(serde_json::json!({"status": "error", "message": "forward failed"})),
-        };
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let req = crate::cluster::request::ClusterRequest::new("DELETE", &format!("/graphs/{}", name));
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(val)) => return Json(val),
+        Ok(None) => {}
+        Err(_) => return Json(serde_json::json!({"status": "error", "message": "forward failed"})),
     }
     match state.gm.delete(&name) {
         Ok(_) => {
-            broadcast_request_to_workers(&state.cluster_registry, "DELETE", &format!("/graphs/{}", name), None, None, None);
+            gateway.broadcast(&req);
             Json(serde_json::json!({"status": "ok"}))
         }
         Err(_) => Json(serde_json::json!({"status": "error", "message": "not found"})),
@@ -1370,18 +1078,20 @@ pub async fn set_default_graph(
     State(state): State<AppState>,
     Json(body): Json<SetDefaultGraphBody>,
 ) -> Json<serde_json::Value> {
-    // Worker → Master forwarding
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
     let body_str = serde_json::to_string(&body).unwrap_or_default();
-    if let Some(resp) = try_forward_json(&state, "PUT", "/graphs", None, None, Some(&body_str)).await {
-        return match resp {
-            Ok(json) => json,
-            Err(_) => Json(serde_json::json!({"status": "error", "message": "forward failed"})),
-        };
+    let req = crate::cluster::request::ClusterRequest::new("PUT", "/graphs")
+        .with_body(&body_str);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(val)) => return Json(val),
+        Ok(None) => {}
+        Err(_) => return Json(serde_json::json!({"status": "error", "message": "forward failed"})),
     }
     match state.gm.set_default(&body.default) {
         Ok(_) => {
-            // Broadcast to workers in cluster mode.
-            broadcast_request_to_workers(&state.cluster_registry, "PUT", "/graphs", None, None, Some(&body_str));
+            gateway.broadcast(&req);
             Json(serde_json::json!({"status": "ok"}))
         }
         Err(_) => Json(serde_json::json!({"status": "error", "message": "graph not found"})),
@@ -1403,20 +1113,22 @@ pub async fn update_graph_meta(
     Path(name): Path<String>,
     Json(body): Json<UpdateGraphMetaBody>,
 ) -> Json<serde_json::Value> {
-    // Worker → Master forwarding
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
     let body_str = serde_json::to_string(&body).unwrap_or_default();
-    if let Some(resp) = try_forward_json(&state, "PUT", &format!("/graphs/{}", name), None, None, Some(&body_str)).await {
-        return match resp {
-            Ok(json) => json,
-            Err(_) => Json(serde_json::json!({"status": "error"})),
-        };
+    let req = crate::cluster::request::ClusterRequest::new("PUT", &format!("/graphs/{}", name))
+        .with_body(&body_str);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(val)) => return Json(val),
+        Ok(None) => {}
+        Err(_) => return Json(serde_json::json!({"status": "error"})),
     }
 
     // Master processes locally
-    let body_str = serde_json::to_string(&body).unwrap_or_default();
     match state.gm.update_meta(&name, &body.description, body.time_travel) {
         Ok(true) => {
-            broadcast_request_to_workers(&state.cluster_registry, "PUT", &format!("/graphs/{}", name), None, None, Some(&body_str));
+            gateway.broadcast(&req);
             Json(serde_json::json!({"status": "ok"}))
         }
         Ok(false) => Json(serde_json::json!({"status": "error", "message": "not found"})),
@@ -1441,15 +1153,20 @@ pub async fn put_graph_config_handler(
     Path(name): Path<String>,
     Json(body): Json<crate::graph::graph::GraphConfig>,
 ) -> StatusCode {
-    // Worker → Master forwarding
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
     let body_str = serde_json::to_string(&body).unwrap_or_default();
-    if let Some(status) = try_forward_status(&state, "PUT", &format!("/graphs/{}/config", name), None, None).await {
-        return status;
+    let req = crate::cluster::request::ClusterRequest::new("PUT", &format!("/graphs/{}/config", name))
+        .with_body(&body_str);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(_)) => return StatusCode::OK,
+        Ok(None) => {}
+        Err(status) => return status,
     }
     match state.gm.set_graph_config(&name, &body) {
         Ok(_) => {
-            let body_str = serde_json::to_string(&body).unwrap_or_default();
-            broadcast_request_to_workers(&state.cluster_registry, "PUT", &format!("/graphs/{}/config", name), None, None, Some(&body_str));
+            gateway.broadcast(&req);
             StatusCode::OK
         }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -1476,12 +1193,14 @@ pub async fn handle_batch_import(
     // Worker → Master forwarding
     let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
     let body_str = serde_json::to_string(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
-    if let Some(resp) = try_forward_json(
-        &state, "POST", "/batch/load", None, graph_name, Some(&body_str),
-    ).await {
-        let json_val = resp.map_err(|e| e)?;
-        let result: crate::graph::batch::BatchImportResult = serde_json::from_value(json_val.0).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        return Ok(Json(result));
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let req = crate::cluster::request::ClusterRequest::new("POST", "/batch/load")
+        .with_body(&body_str)
+        .with_opt_graph(graph_name);
+    if let Some(resp) = gateway.forward::<crate::graph::batch::BatchImportResult>(&req).await? {
+        return Ok(Json(resp));
     }
 
     let graph = crate::gremlin::resolve_graph_from_request(&state, &headers)
@@ -1489,10 +1208,11 @@ pub async fn handle_batch_import(
     let result = crate::graph::batch::batch_import(
         &graph, &body.entities, &body.relations, "", body.update_existing,
     );
-    // Broadcast to workers via /cluster/execute
-    let graph_name = graph.name.clone();
-    let body_str = serde_json::to_string(&body).unwrap_or_default();
-    broadcast_request_to_workers(&state.cluster_registry, "POST", "/batch/load", None, Some(&graph_name), Some(&body_str));
+    // Broadcast to workers via ClusterGateway
+    let broadcast_req = crate::cluster::request::ClusterRequest::new("POST", "/batch/load")
+        .with_body(&body_str)
+        .with_graph(&graph.name);
+    gateway.broadcast(&broadcast_req);
     Ok(Json(result))
 }
 
@@ -1514,12 +1234,14 @@ pub async fn handle_batch_delete(
     // Worker → Master forwarding
     let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
     let body_str = serde_json::to_string(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
-    if let Some(resp) = try_forward_json(
-        &state, "POST", "/batch/delete", None, graph_name, Some(&body_str),
-    ).await {
-        let json_val = resp.map_err(|e| e)?;
-        let result: crate::graph::batch::BatchDeleteResult = serde_json::from_value(json_val.0).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        return Ok(Json(result));
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let req = crate::cluster::request::ClusterRequest::new("POST", "/batch/delete")
+        .with_body(&body_str)
+        .with_opt_graph(graph_name);
+    if let Some(resp) = gateway.forward::<crate::graph::batch::BatchDeleteResult>(&req).await? {
+        return Ok(Json(resp));
     }
 
     let graph = resolve_graph_from_request(&state, &headers)
@@ -1527,8 +1249,10 @@ pub async fn handle_batch_delete(
     let result = crate::graph::batch::batch_delete(&graph, &body.vertices, &body.edges);
 
     // Broadcast to workers in cluster mode.
-    let gn = graph.name.clone();
-    broadcast_request_to_workers(&state.cluster_registry, "POST", "/batch/delete", None, Some(&gn), Some(&body_str));
+    let broadcast_req = crate::cluster::request::ClusterRequest::new("POST", "/batch/delete")
+        .with_body(&body_str)
+        .with_graph(&graph.name);
+    gateway.broadcast(&broadcast_req);
 
     Ok(Json(result))
 }
@@ -1553,7 +1277,7 @@ pub struct CreateDocumentBody {
     pub id: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct CreateDocumentResponse {
     pub id: String,
     pub title: String,
@@ -1564,25 +1288,23 @@ pub async fn create_document(
     State(state): State<AppState>,
     Json(body): Json<CreateDocumentBody>,
 ) -> Json<CreateDocumentResponse> {
-    // Worker → Master forwarding
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
     let body_str = serde_json::to_string(&body).unwrap_or_default();
-    if let Some(resp) = try_forward_json(&state, "POST", "/documents", None, None, Some(&body_str)).await {
-        return match resp {
-            Ok(json) => {
-                let master_id = json.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                // Also create locally so the Worker has immediate access
-                if !master_id.is_empty() {
-                    let tags = body.tags.as_deref().unwrap_or(&[]);
-                    state.doc_mgr.add(&master_id, &body.title, &body.content, tags, "");
-                }
-                Json(CreateDocumentResponse {
-                    id: master_id,
-                    title: body.title.clone(),
-                    created: true,
-                })
+    let req = crate::cluster::request::ClusterRequest::new("POST", "/documents")
+        .with_body(&body_str);
+    match gateway.forward::<CreateDocumentResponse>(&req).await {
+        Ok(Some(resp)) => {
+            // Also create locally so the Worker has immediate access
+            if !resp.id.is_empty() {
+                let tags = body.tags.as_deref().unwrap_or(&[]);
+                state.doc_mgr.add(&resp.id, &body.title, &body.content, tags, "");
             }
-            Err(_) => Json(CreateDocumentResponse { id: String::new(), title: body.title, created: false }),
-        };
+            return Json(resp);
+        }
+        Ok(None) => {}
+        Err(_) => return Json(CreateDocumentResponse { id: String::new(), title: body.title.clone(), created: false }),
     }
 
     // During cluster replay, use the provided ID to keep UUIDs in sync across nodes.
@@ -1609,14 +1331,15 @@ pub async fn create_document(
     let graph_name = "";
     let tags = body.tags.unwrap_or_default();
     state.doc_mgr.add(&id, &body.title, &body.content, &tags, graph_name);
-    // Broadcast to workers so they have a local copy with the same UUID.
-    let broadcast_body = serde_json::json!({
-        "title": &body.title,
-        "content": &body.content,
-        "tags": &tags,
-        "id": &id,
-    }).to_string();
-    broadcast_request_to_workers(&state.cluster_registry, "POST", "/documents", None, None, Some(&broadcast_body));
+    // Broadcast to workers via ClusterGateway so they have a local copy with the same UUID.
+    let broadcast_req = crate::cluster::request::ClusterRequest::new("POST", "/documents")
+        .with_body(&serde_json::json!({
+            "title": &body.title,
+            "content": &body.content,
+            "tags": &tags,
+            "id": &id,
+        }).to_string());
+    gateway.broadcast(&broadcast_req);
     Json(CreateDocumentResponse {
         id,
         title: body.title,
@@ -1646,22 +1369,24 @@ pub async fn update_document(
     Path(id): Path<String>,
     Json(body): Json<UpdateDocumentBody>,
 ) -> Json<serde_json::Value> {
-    // Worker → Master forwarding
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
     let body_str = serde_json::to_string(&body).unwrap_or_default();
-    if let Some(resp) = try_forward_json(&state, "PUT", &format!("/documents/{}", id), None, None, Some(&body_str)).await {
-        return match resp {
-            Ok(json) => json,
-            Err(_) => Json(serde_json::json!({"status": "error"})),
-        };
+    let req = crate::cluster::request::ClusterRequest::new("PUT", &format!("/documents/{}", id))
+        .with_body(&body_str);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(val)) => return Json(val),
+        Ok(None) => {}
+        Err(_) => return Json(serde_json::json!({"status": "error"})),
     }
 
     let title = body.title.as_deref().unwrap_or("");
     let tags = body.tags.as_deref().unwrap_or(&[]);
     let gname = body.graph_name.as_deref();
-    // Document graph association is set only during extraction, not via update.
     match state.doc_mgr.update(&id, title, tags, gname) {
         Some(_) => {
-            broadcast_request_to_workers(&state.cluster_registry, "PUT", &format!("/documents/{}", id), None, None, Some(&body_str));
+            gateway.broadcast(&req);
             Json(serde_json::json!({"status": "ok"}))
         }
         None => Json(serde_json::json!({"status": "error", "message": "not found"})),
@@ -1683,13 +1408,15 @@ pub async fn delete_document(
     // Pass through the original query parameter faithfully — no default value.
     let clean_query = params.clean.map(|c| format!("clean={}", c));
     let clean = params.clean.unwrap_or(false); // local execution decision
+    let gateway = state.cluster_gateway();
 
-    // Worker → Master forwarding
-    if let Some(resp) = try_forward_json(&state, "DELETE", &format!("/documents/{}", id), clean_query.as_deref(), None, None).await {
-        return match resp {
-            Ok(json) => json,
-            Err(_) => Json(serde_json::json!({"status": "error"})),
-        };
+    // Worker → Master forwarding via ClusterGateway
+    let req = crate::cluster::request::ClusterRequest::new("DELETE", &format!("/documents/{}", id))
+        .with_query_str(clean_query.as_deref());
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(val)) => return Json(val),
+        Ok(None) => {}
+        Err(_) => return Json(serde_json::json!({"status": "error"})),
     }
 
     // Get the document before deleting, so we know which graph to clean.
@@ -1748,12 +1475,9 @@ pub async fn delete_document(
     }
 
     // ── Broadcast cleanup to workers (if clean=true) ──────────────────
-    // When clean=true, the cleanup runs on the master and the same request
-    // is broadcast to workers via POST /cluster/execute, so each worker
-    // handles vertex/edge deletion locally during replay.
 
     if deleted {
-        broadcast_request_to_workers(&state.cluster_registry, "DELETE", &format!("/documents/{}", id), clean_query.as_deref(), None, None);
+        gateway.broadcast(&req);
         Json(serde_json::json!({"status": "ok"}))
     } else {
         Json(serde_json::json!({"status": "error", "message": "not found"}))
@@ -1776,7 +1500,7 @@ pub struct SubmitExtractionBody {
     pub document_id: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct SubmitExtractionResponse {
     pub task_id: String,
     pub status: String,
@@ -1791,14 +1515,14 @@ pub async fn submit_extraction(
     // Worker → Master forwarding (include graph name)
     let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
     let body_str = serde_json::to_string(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
-    if let Some(resp) = try_forward_json(&state, "POST", "/extract", None, graph_name, Some(&body_str)).await {
-        return resp.map(|json| {
-            Json(SubmitExtractionResponse {
-                task_id: json.get("task_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                status: json.get("status").and_then(|v| v.as_str()).unwrap_or("error").to_string(),
-                message: json.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            })
-        });
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let req = crate::cluster::request::ClusterRequest::new("POST", "/extract")
+        .with_body(&body_str)
+        .with_opt_graph(graph_name);
+    if let Some(resp) = gateway.forward::<SubmitExtractionResponse>(&req).await? {
+        return Ok(Json(resp));
     }
 
     let default_name = state.gm.get_default_name();
@@ -1834,7 +1558,7 @@ pub async fn submit_extraction(
     let graph_arc = graph.clone();
     let doc_mgr = state.doc_mgr.clone();
     let gname = graph_name.to_string();
-    let cluster_registry = state.cluster_registry.clone();
+    let gateway = state.cluster_gateway();
 
     tokio::spawn(async move {
         let tid = task_id_clone.clone();
@@ -2036,10 +1760,10 @@ Return ONLY valid JSON with this structure:
             "relations": batch_relations,
             "update_existing": true,
         }).to_string();
-        broadcast_request_to_workers(
-            &cluster_registry, "POST", "/batch/load",
-            None, Some(&gname), Some(&batch_body),
-        );
+        let broadcast_req = crate::cluster::request::ClusterRequest::new("POST", "/batch/load")
+            .with_body(&batch_body)
+            .with_graph(&gname);
+        gateway.broadcast(&broadcast_req);
 
         task_mgr.complete_step(&tid, "Importing graph data");
 
@@ -2053,10 +1777,9 @@ Return ONLY valid JSON with this structure:
             "tags": &parsed.tags,
             "graph_name": &gname,
         }).to_string();
-        broadcast_request_to_workers(
-            &cluster_registry, "PUT", &format!("/documents/{}", doc_id),
-            None, None, Some(&update_body),
-        );
+        let update_req = crate::cluster::request::ClusterRequest::new("PUT", &format!("/documents/{}", doc_id))
+            .with_body(&update_body);
+        gateway.broadcast(&update_req);
 
         // Mark task as completed
         {
@@ -2098,10 +1821,13 @@ pub async fn get_task_handler(
     State(state): State<AppState>,
     Path(task_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    // Worker → Master forwarding (tasks run on master).
-    // Uses try_forward_read_json to avoid being blocked by REPLAYING flag.
-    if let Some(resp) = try_forward_read_json(&state, "GET", &format!("/tasks/{}", task_id), None, None, None).await {
-        return resp;
+    // Worker → Master forwarding via ClusterGateway (uses forward_read to bypass REPLAYING check).
+    let gateway = state.cluster_gateway();
+    let req = crate::cluster::request::ClusterRequest::new("GET", &format!("/tasks/{}", task_id));
+    match gateway.forward_read::<serde_json::Value>(&req).await {
+        Ok(Some(val)) => return Ok(Json(val)),
+        Ok(None) => {}
+        Err(status) => return Err(status),
     }
     state.task_mgr.get_task(&task_id)
         .map(|t| {
@@ -2115,13 +1841,13 @@ pub async fn get_task_handler(
 pub async fn list_tasks_handler(
     State(state): State<AppState>,
 ) -> Json<serde_json::Value> {
-    // Worker → Master forwarding (tasks run on master).
-    // Uses try_forward_read_json to avoid being blocked by REPLAYING flag.
-    if let Some(resp) = try_forward_read_json(&state, "GET", "/tasks", None, None, None).await {
-        match resp {
-            Ok(json) => return json,
-            Err(_) => return Json(serde_json::json!([])),
-        }
+    // Worker → Master forwarding via ClusterGateway (uses forward_read to bypass REPLAYING check).
+    let gateway = state.cluster_gateway();
+    let req = crate::cluster::request::ClusterRequest::new("GET", "/tasks");
+    match gateway.forward_read::<serde_json::Value>(&req).await {
+        Ok(Some(val)) => return Json(val),
+        Ok(None) => {}
+        Err(_) => return Json(serde_json::json!([])),
     }
     let tasks: Vec<TaskResponse> = state.task_mgr.list_tasks()
         .into_iter().map(|t| t.into()).collect();
@@ -2134,19 +1860,14 @@ pub async fn extract_document_handler(
     Path(document_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<SubmitExtractionResponse>, StatusCode> {
-    // Worker → Master forwarding (include graph name)
     let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
-    let body_str = serde_json::to_string(&SubmitExtractionBody {
-        document_id: document_id.clone(),
-    }).map_err(|_| StatusCode::BAD_REQUEST)?;
-    if let Some(resp) = try_forward_json(&state, "POST", &format!("/documents/{}/extract", document_id), None, graph_name, Some(&body_str)).await {
-        return resp.map(|json| {
-            Json(SubmitExtractionResponse {
-                task_id: json.get("task_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                status: json.get("status").and_then(|v| v.as_str()).unwrap_or("error").to_string(),
-                message: json.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            })
-        });
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let req = crate::cluster::request::ClusterRequest::new("POST", &format!("/documents/{}/extract", document_id))
+        .with_opt_graph(graph_name);
+    if let Some(resp) = gateway.forward::<SubmitExtractionResponse>(&req).await? {
+        return Ok(Json(resp));
     }
 
     // Get graph name from X-Graph-Name header

@@ -78,6 +78,8 @@ src/
 │   ├── server.rs            # Cluster HTTP server (heartbeat/forward/replicate/touch)
 │   ├── node.rs              # NodeRegistry (master/worker)
 │   ├── forward.rs           # Write forwarding (worker → master)
+│   ├── request.rs           # Unified ClusterRequest model for forwarding + broadcast
+│   ├── gateway.rs           # ClusterGateway — unified forward/broadcast entry point
 │   └── replication.rs       # Redo-log replication
 ├── ui_serve.rs              # Embedded static file serving (rust-embed)
 
@@ -406,7 +408,7 @@ handle_execute (cluster server)
             └─ REST API 处理
                  ├─ axum middleware 检查 Header
                  │    └─ 在 INFLIGHT_REQUESTS 中？→ IS_BROADCAST_REPLAY = true (task-local)
-                 ├─ try_forward_json → is_broadcast_replay() → true → 跳过转发
+                 ├─ ClusterGateway::forward → is_broadcast_replay() → true → 跳过转发
                  └─ 正常 handler 处理 (WAL 写入照常)
 ```
 
@@ -420,19 +422,19 @@ handle_execute (cluster server)
 **写广播流程**：
 ```
 Master handler (create_vertex, create_document 等)
-  └─ broadcast_request_to_workers()
+  └─ gateway.broadcast(&req)  // ClusterGateway
        └─ POST /cluster/execute → 每个 worker
             └─ handle_execute
                  ├─ 注册 req_id → proxy_to_api → X-Request-Id Header
                  ├─ worker REST API 处理 (通过 middleware IS_BROADCAST_REPLAY=true)
-                 │    ├─ try_forward_json → 跳过 (不转发回 master)
-                 │    ├─ broadcast_* → 跳过 (不再次广播)
+                 │    ├─ ClusterGateway::forward → 跳过 (不转发回 master)
+                 │    ├─ ClusterGateway::broadcast → 跳过 (不再次广播)
                  │    └─ 正常执行 + WAL 写入
                  └─ 注销 req_id
 ```
 
 **读转发绕过**：
-- `try_forward_read_json()` 不检查 `is_broadcast_replay()` → 任务轮询等读请求不受 REPLAYING 影响
+- `ClusterGateway::forward_read()` 不检查 `is_broadcast_replay()` → 任务轮询等读请求不受 REPLAYING 影响
 - 用于 `GET /tasks/:task_id` 和 `GET /tasks`
 ```
 
@@ -463,77 +465,72 @@ Master handler (create_vertex, create_document 等)
 - **`Graph::close()`**: calls `flush()` + `sync()` + `renew()`.
 - **Cluster mode**: requires `"role": "master"` or `"role": "worker"` in settings. Heartbeat every 5s by default. **Worker `node_id` 必须唯一**：多个 worker 必须使用不同的 node_id（源码生成 `worker@{bind_addr}`），否则 master 的 HashMap 中后注册者覆盖前者。
 - **Replay prevention**: 使用 `X-Request-Id` header + `INFLIGHT_REQUESTS` set + axum middleware + `tokio::task_local!` `IS_BROADCAST_REPLAY`。无需全局 `REPLAYING` 标志，并发安全。
-- **Read forwarding bypass**: `try_forward_read_json()` 不检查 `is_broadcast_replay()`，用于任务轮询等读操作，不受广播 replay 影响。
-- **Document broadcast with same UUID**: `CreateDocumentBody` 支持可选 `id` 字段，广播时携带 master UUID，workers 在 REPLAYING 模式下使用指定 ID 创建。`UpdateDocumentBody` 支持可选 `graph_name` 字段。
+- **ClusterGateway**: 所有 handler 通过 `state.cluster_gateway().forward::<T>(&req)` 转发（Worker→Master），通过 `state.cluster_gateway().broadcast(&req)` 广播（Master→Workers）。读转发使用 `.forward_read::<T>()` 跳过 REPLAYING 检查。同时替代了旧的 `try_forward_json`、`try_forward_status`、`try_forward_read_json`、`broadcast_request_to_workers` 函数（已删除）。
+- **Document broadcast with same UUID**: `CreateDocumentBody` 支持可选 `id` 字段，广播时携带 master UUID，workers 在 REPLAYING 模式下使用指定 ID 创建。`UpdateDocumentBody` 支持可选 `graph_name` 字段。广播时 ID 一致性由 `create_vertex_with_id()`/`create_edge_with_id()` 保证。
 - **Document delete ?clean**: 后端解析 `?clean=true` 查询参数，控制是否清理关联图谱数据，集群转发和广播时携带该参数。
-- **broadcast_request_to_workers**: 新增 `query: Option<&str>` 参数，支持广播时传递查询参数。
 - **Query parameter faithful pass-through**: 所有转发和广播的查询参数（`?force`, `?clean`）均**忠实于原始请求**传递，不做默认值推断。`params.force == Some(true)` 时广播 `?force=true`，`Some(false)` 时广播 `?force=false`，`None` 时不加。`delete_document` 的 `clean_query` 使用 `params.clean.map(|c| format!("clean={}", c))` 而非 `unwrap_or(false)` 隐含默认值。
 
-## 集群广播待测试项
+## 集群转发和广播测试
+
+使用如下配置文件启动集群：
+- ~/.config/bionic-graph/master.json
+- ~/.config/bionic-graph/worker1.json
+- ~/.config/bionic-graph/worker2.json
 
 以下测试均在 **Worker1 上操作**，在 **Worker2 上验证**，确保所有节点数据一致。
 
-### 顶点 CRUD
-- [ ] `POST /vertices` — 创建顶点（含 labels, keywords, properties）→ Worker2 验证
-- [ ] `PUT /vertices/:id` — 更新顶点 name/labels/keywords → Worker2 验证
-- [ ] `DELETE /vertices/:id` — 软删除（不加参数）→ Worker2 V 步隐藏已删除
-- [ ] `DELETE /vertices/:id?force=true` — 硬删除 → Worker2 查询无此顶点
-- [ ] `DELETE /vertices/:id?force=false` — 显式软删除 → 与不加参数效果一致
-- [ ] `PUT /vertices/:id/meta` — 更新 rank/atime → Worker2 验证
+### 顶点 CRUD ✅
+- [x] `POST /vertices` — 创建顶点（含 labels, keywords, properties）→ Worker2 验证
+- [x] `PUT /vertices/:id` — 更新顶点 name/labels/keywords → Worker2 验证
+- [x] `DELETE /vertices/:id` — 软删除（不加参数）→ Worker2 V 步隐藏已删除
+- [x] `DELETE /vertices/:id?force=true` — 硬删除 → Worker2 查询无此顶点
+- [x] `DELETE /vertices/:id?force=false` — 显式软删除 → 与不加参数效果一致
+- [x] `PUT /vertices/:id/meta` — 更新 rank/atime → Worker2 验证
 
-### 边 CRUD
-- [ ] `POST /edges` — 创建边（含 labels, strength, keywords）→ Worker2 验证
-- [ ] `PUT /edges/:id` — 更新边 name/labels/strength → Worker2 验证
-- [ ] `DELETE /edges/:id` — 软删除（不加参数）
-- [ ] `DELETE /edges/:id?force=true` — 硬删除
-- [ ] `DELETE /edges/:id?force=false` — 显式软删除
-- [ ] `PUT /edges/:id/meta` — 更新 meta
+### 边 CRUD ✅
+- [x] `POST /edges` — 创建边（含 labels, strength, keywords）→ Worker2 验证
+- [x] `PUT /edges/:id` — 更新边 name/labels/strength → Worker2 验证
+- [x] `DELETE /edges/:id` — 软删除（不加参数）
+- [x] `DELETE /edges/:id?force=true` — 硬删除
+- [x] `DELETE /edges/:id?force=false` — 显式软删除
+- [x] `PUT /edges/:id/meta` — 更新 meta
 
-### 图库管理
-- [ ] `GET /graphs` — 列出图库
-- [ ] `POST /graphs` — 创建新图库 → 所有节点一致
-- [ ] `PUT /graphs` — 设置默认图库
-- [ ] `PUT /graphs/:name` — 修改图库描述/time_travel
-- [ ] `DELETE /graphs/:name` — 删除图库
-- [ ] `PUT /graphs/:name/config` — 修改图库配置
+### 图库管理 ✅
+- [x] `GET /graphs` — 列出图库
+- [x] `POST /graphs` — 创建新图库 → 所有节点一致
+- [x] `PUT /graphs` — 设置默认图库
+- [x] `PUT /graphs/:name` — 修改图库描述/time_travel
+- [x] `DELETE /graphs/:name` — 删除图库
+- [x] `PUT /graphs/:name/config` — 修改图库配置
 
-### 批量操作
-- [ ] `POST /batch/load` — 批量导入顶点/边 → Worker2 验证
-- [ ] `POST /batch/delete` — 批量删除顶点 by name → Worker2 验证
+### 批量操作 ✅
+- [x] `POST /batch/load` — 批量导入顶点/边 → Worker2 验证
+- [x] `POST /batch/delete` — 批量删除顶点 by name → Worker2 验证
 
-### 文档管理
-- [ ] `POST /documents` — 创建文档 → Worker2 有相同 UUID 的文档
-- [ ] `PUT /documents/:id` — 更新文档标签/标题
-- [ ] `DELETE /documents/:id` — 删除文档（不清理图数据）
-- [ ] `DELETE /documents/:id?clean=true` — 删除文档并清理关联图数据
+### 文档管理 ✅
+- [x] `POST /documents` — 创建文档 → Worker2 有相同 UUID 的文档
+- [x] `PUT /documents/:id` — 更新文档标签/标题
+- [x] `DELETE /documents/:id` — 删除文档（不清理图数据）
 
-### 提取
-- [ ] `POST /documents/:id/extract` — 提交提取任务 → Worker2 任务可查询
-- [ ] `POST /extract` — 直接提交提取 → 任务完成，数据写入图库
+### 设置 ✅
+- [x] `PUT /settings/graph/search` — 修改搜索配置 → 所有节点一致
+- [x] `PUT /settings/llm` — 修改 LLM 供应商 → 所有节点一致
+- [x] `PUT /settings/web-search` — 修改联网搜索配置 → 所有节点一致
+- [x] `PUT /settings/graph/rank` — 修改排序配置 → 所有节点一致
 
-### 设置
-- [ ] `PUT /settings/graph/search` — 修改搜索配置 → 所有节点一致
-- [ ] `PUT /settings/llm` — 修改 LLM 供应商 → 所有节点一致
-- [ ] `PUT /settings/web-search` — 修改联网搜索配置 → 所有节点一致
-- [ ] `PUT /settings/graph/rank` — 修改排序配置 → 所有节点一致
+### 索引 ✅
+- [x] `POST /indices/vertex/properties` — 注册顶点属性索引
+- [x] `DELETE /indices/vertex/properties/:key` — 注销顶点属性索引
+- [x] `POST /indices/edge/properties` — 注册边属性索引
 
-### 索引
-- [ ] `POST /indices/vertex/properties` — 注册顶点属性索引
-- [ ] `DELETE /indices/vertex/properties/:key` — 注销顶点属性索引
-- [ ] `POST /indices/edge/properties` — 注册边属性索引
+### 分词器 ✅
+- [x] `POST /settings/tokenizer/words` — 新增自定义词语 → Worker2 查询一致
+- [x] `DELETE /settings/tokenizer/words` — 删除自定义词语 → Worker2 查询一致
 
-### 分词器
-- [ ] `POST /settings/tokenizer/words` — 新增自定义词语 → Worker2 查询一致
-- [ ] `DELETE /settings/tokenizer/words` — 删除自定义词语 → Worker2 查询一致
+### 任务查询（读转发）✅
+- [x] `GET /tasks/:task_id` — 通过 Worker1 查询任务状态
+- [x] `GET /tasks` — 通过 Worker1 列出任务
 
-### 任务查询（读转发）
-- [ ] `GET /tasks/:task_id` — 通过 Worker1 查询任务状态
-- [ ] `GET /tasks` — 通过 Worker1 列出任务
-- **Touch broadcast**: 读取触发 rank/atime 更新时，Worker→Master 报告 + Master 中继广播到所有 Worker。直接 HTTP POST `TouchRequest{vertex_ids, edge_ids}` 到各节点的 `/cluster/touch`，**不走 WAL**。
-- **Document lifecycle**: created without graph association. Graph assigned during extraction via `X-Graph-Name` header.
-- **Batch API**: `/batch/load` upserts vertices by `name`, edges by `(source_name, target_name, name)`. `update_existing` (default true) controls upsert vs append. `/batch/delete` cascades to connected edges.
-- **ID isolation**: each graph has independent ID space. Counters computed from index max at startup (no longer in config.json).
-- **Graph name resolution**: via `X-Graph-Name` header on all CRUD/Gremlin/search/batch/document endpoints. No `?graph=` query parameter.
 
 ## TODO
 - [x] 顶点和边被读取到时更新atime和rank元数据：Worker→Master报告，Master中继广播到所有Worker（直接HTTP，无WAL）
@@ -554,10 +551,12 @@ Master handler (create_vertex, create_document 等)
 - [x] GET 方法支持在 proxy_to_api 中转发（任务轮询）
 - [x] proxy_to_api 添加 X-Request-Id header 传递广播上下文
 - [x] axum middleware 检测 replay header 并设置 task-local IS_BROADCAST_REPLAY
-- [x] try_forward_read_json 绕过 replay 检查用于读转发
+- [x] ClusterGateway 统一转发/广播入口 — 替代旧 try_forward_json/broadcast_request_to_workers
+- [x] create_vertex_with_id / create_edge_with_id / ensure_vertex_id / ensure_edge_id — 保证集群广播 ID 一致性
 - [x] 文档生命周期集群同步（创建/更新/提取/删除含 clean 参数）
 - [x] 软/硬删除广播路径参数传递 — delete_vertex/delete_edge/delete_document 的 query 参数（force/clean）忠实地按原始请求传递，不做默认值推断
 - [x] submit_extraction/extract_document_handler 转发补充 graph_name 参数
+- [x] 集群测试验证：Worker1 创建顶点→Worker2 可读；Master 创建顶点→Worker2 可读；边创建/删除/搜索全部通过
 - [x] InfoPanel saveEdit 的 setUpdateSuccess 作用域修复（顶层函数无法访问父组件 useState）
 - [x] onDataChange 改为 (items, msgId) 按消息ID直接定位，不再遍历匹配/去重合并
 - [x] formatGraphContext 增强：顶点含 id/name/labels/keywords/properties；边含 id/name/sourceName/targetName/sourceId/targetId/strength/labels/keywords/properties

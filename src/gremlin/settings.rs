@@ -9,11 +9,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::settings::SearchSettings;
 use crate::gremlin::AppState;
-use crate::gremlin::{broadcast_request_to_workers, try_forward_json};
-
-// ── Handlers ────────────────────────────────────────────────────────────────
-
-/// GET /settings/search
 pub async fn get_search_settings(
     State(state): State<AppState>,
 ) -> Json<SearchSettings> {
@@ -26,10 +21,15 @@ pub async fn update_search_settings(
     State(state): State<AppState>,
     Json(new_settings): Json<SearchSettings>,
 ) -> Json<serde_json::Value> {
-    // Worker → Master forwarding
+    // Worker → Master forwarding via ClusterGateway
     let body_str = serde_json::to_string(&new_settings).unwrap_or_default();
-    if let Some(resp) = try_forward_json(&state, "PUT", "/settings/graph/search", None, None, Some(&body_str)).await {
-        return match resp { Ok(json) => json, Err(_) => Json(serde_json::json!({"status": "error"})) };
+    let gateway = state.cluster_gateway();
+    let req = crate::cluster::request::ClusterRequest::new("PUT", "/settings/graph/search")
+        .with_body(&body_str);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(val)) => return Json(val),
+        Ok(None) => {}
+        Err(_) => return Json(serde_json::json!({"status": "error"})),
     }
 
     let save_result = {
@@ -43,7 +43,7 @@ pub async fn update_search_settings(
     }
 
     // Broadcast to workers in cluster mode.
-    broadcast_request_to_workers(&state.cluster_registry, "PUT", "/settings/graph/search", None, None, Some(&body_str));
+    gateway.broadcast(&req);
 
     Json(serde_json::json!({ "status": "ok" }))
 }
@@ -69,10 +69,15 @@ pub async fn update_llm_settings(
     State(state): State<AppState>,
     Json(body): Json<UpdateLlmBody>,
 ) -> Json<serde_json::Value> {
-    // Worker → Master forwarding
+    // Worker → Master forwarding via ClusterGateway
     let body_str = serde_json::to_string(&body).unwrap_or_default();
-    if let Some(resp) = try_forward_json(&state, "PUT", "/settings/llm", None, None, Some(&body_str)).await {
-        return match resp { Ok(json) => json, Err(_) => Json(serde_json::json!({"status": "error"})) };
+    let gateway = state.cluster_gateway();
+    let req = crate::cluster::request::ClusterRequest::new("PUT", "/settings/llm")
+        .with_body(&body_str);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(val)) => return Json(val),
+        Ok(None) => {}
+        Err(_) => return Json(serde_json::json!({"status": "error"})),
     }
 
     let save_result = {
@@ -91,7 +96,7 @@ pub async fn update_llm_settings(
     }
 
     // Broadcast to workers in cluster mode.
-    broadcast_request_to_workers(&state.cluster_registry, "PUT", "/settings/llm", None, None, Some(&body_str));
+    gateway.broadcast(&req);
 
     Json(serde_json::json!({ "status": "ok" }))
 }
@@ -113,10 +118,15 @@ pub async fn update_web_search_settings(
     State(state): State<AppState>,
     Json(new_config): Json<WebSearchConfig>,
 ) -> Json<serde_json::Value> {
-    // Worker → Master forwarding
+    // Worker → Master forwarding via ClusterGateway
     let body_str = serde_json::to_string(&new_config).unwrap_or_default();
-    if let Some(resp) = try_forward_json(&state, "PUT", "/settings/web-search", None, None, Some(&body_str)).await {
-        return match resp { Ok(json) => json, Err(_) => Json(serde_json::json!({"status": "error"})) };
+    let gateway = state.cluster_gateway();
+    let req = crate::cluster::request::ClusterRequest::new("PUT", "/settings/web-search")
+        .with_body(&body_str);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(val)) => return Json(val),
+        Ok(None) => {}
+        Err(_) => return Json(serde_json::json!({"status": "error"})),
     }
 
     let save_result = {
@@ -130,7 +140,7 @@ pub async fn update_web_search_settings(
     }
 
     // Broadcast to workers in cluster mode.
-    broadcast_request_to_workers(&state.cluster_registry, "PUT", "/settings/web-search", None, None, Some(&body_str));
+    gateway.broadcast(&req);
 
     Json(serde_json::json!({ "status": "ok" }))
 }
@@ -238,10 +248,15 @@ pub async fn update_rank_settings(
     State(state): State<AppState>,
     Json(new_config): Json<RankConfig>,
 ) -> Json<serde_json::Value> {
-    // Worker → Master forwarding
+    // Worker → Master forwarding via ClusterGateway
     let body_str = serde_json::to_string(&new_config).unwrap_or_default();
-    if let Some(resp) = try_forward_json(&state, "PUT", "/settings/graph/rank", None, None, Some(&body_str)).await {
-        return match resp { Ok(json) => json, Err(_) => Json(serde_json::json!({"status": "error"})) };
+    let gateway = state.cluster_gateway();
+    let req = crate::cluster::request::ClusterRequest::new("PUT", "/settings/graph/rank")
+        .with_body(&body_str);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(val)) => return Json(val),
+        Ok(None) => {}
+        Err(_) => return Json(serde_json::json!({"status": "error"})),
     }
 
     let save_result = {
@@ -255,7 +270,7 @@ pub async fn update_rank_settings(
     }
 
     // Broadcast to workers in cluster mode.
-    broadcast_request_to_workers(&state.cluster_registry, "PUT", "/settings/graph/rank", None, None, Some(&body_str));
+    gateway.broadcast(&req);
 
     Json(serde_json::json!({ "status": "ok" }))
 }

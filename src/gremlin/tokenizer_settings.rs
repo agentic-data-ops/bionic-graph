@@ -6,7 +6,7 @@
 use axum::{extract::State, Json};
 use std::sync::atomic::Ordering;
 
-use crate::gremlin::{try_forward_json, AppState};
+use crate::gremlin::AppState;
 
 /// GET /settings/tokenizer/words — list all custom words
 pub async fn get_tokenizer_words(
@@ -26,38 +26,22 @@ pub async fn add_tokenizer_words(
         return Json(serde_json::json!({ "status": "ok", "message": "no words provided" }));
     }
 
-    // Worker → Master forwarding (via try_forward_json for consistent routing)
     let body_str = serde_json::to_string(&body).unwrap_or_default();
-    if let Some(resp) = try_forward_json(&state, "POST", "/settings/tokenizer/words", None, None, Some(&body_str)).await {
-        return match resp {
-            Ok(json) => json,
-            Err(_) => Json(serde_json::json!({"status": "error"})),
-        };
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway (tokenizer ops handled by gateway)
+    let req = crate::cluster::request::ClusterRequest::new("POST", "/settings/tokenizer/words")
+        .with_body(&body_str);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(val)) => return Json(val),
+        Ok(None) => {}
+        Err(_) => return Json(serde_json::json!({"status": "error"})),
     }
 
     crate::graph::tokenizer::add_custom_words(&body.words);
 
-    // Broadcast to workers in cluster mode (master only).
-    if let Some(ref registry) = state.cluster_registry {
-        let workers = registry.alive_workers();
-        if !workers.is_empty() {
-            let words = body.words.clone();
-            tokio::spawn(async move {
-                for worker in &workers {
-                    let url = format!("http://{}/cluster/tokenizer-sync", worker.cluster_addr);
-                    let sync_body = serde_json::json!({
-                        "operation": "add",
-                        "words": words,
-                    });
-                    if let Err(e) = reqwest::Client::new()
-                        .post(&url).json(&sync_body).send().await
-                    {
-                        log::warn!("Tokenizer sync to worker {} failed: {}", worker.node_id, e);
-                    }
-                }
-            });
-        }
-    }
+    // Broadcast to workers in cluster mode (master only). Gateway auto-routes to /cluster/tokenizer-sync.
+    gateway.broadcast(&req);
 
     Json(serde_json::json!({ "status": "ok", "added": body.words.len() }))
 }
@@ -72,38 +56,22 @@ pub async fn remove_tokenizer_words(
         return Json(serde_json::json!({ "status": "ok", "message": "no words provided" }));
     }
 
-    // Worker → Master forwarding (via try_forward_json for consistent routing)
     let body_str = serde_json::to_string(&body).unwrap_or_default();
-    if let Some(resp) = try_forward_json(&state, "DELETE", "/settings/tokenizer/words", None, None, Some(&body_str)).await {
-        return match resp {
-            Ok(json) => json,
-            Err(_) => Json(serde_json::json!({"status": "error"})),
-        };
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway (tokenizer ops handled by gateway)
+    let req = crate::cluster::request::ClusterRequest::new("DELETE", "/settings/tokenizer/words")
+        .with_body(&body_str);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(val)) => return Json(val),
+        Ok(None) => {}
+        Err(_) => return Json(serde_json::json!({"status": "error"})),
     }
 
     crate::graph::tokenizer::remove_custom_words(&body.words);
 
-    // Broadcast to workers in cluster mode (master only).
-    if let Some(ref registry) = state.cluster_registry {
-        let workers = registry.alive_workers();
-        if !workers.is_empty() {
-            let words = body.words.clone();
-            tokio::spawn(async move {
-                for worker in &workers {
-                    let url = format!("http://{}/cluster/tokenizer-sync", worker.cluster_addr);
-                    let sync_body = serde_json::json!({
-                        "operation": "remove",
-                        "words": words,
-                    });
-                    if let Err(e) = reqwest::Client::new()
-                        .post(&url).json(&sync_body).send().await
-                    {
-                        log::warn!("Tokenizer sync to worker {} failed: {}", worker.node_id, e);
-                    }
-                }
-            });
-        }
-    }
+    // Broadcast to workers in cluster mode (master only). Gateway auto-routes to /cluster/tokenizer-sync.
+    gateway.broadcast(&req);
 
     Json(serde_json::json!({ "status": "ok", "removed": body.words.len() }))
 }

@@ -104,7 +104,7 @@ async fn handle_forward(
 
     // Tokenizer operations: broadcast directly to workers' tokenizer-sync endpoint.
     // Regular vertex/edge operations are already broadcast by the REST API
-    // handlers via broadcast_write_result, so skip them here.
+    // handlers via ClusterGateway::broadcast, so skip them here.
     if result.success && req.path == "/settings/tokenizer/words" {
         let workers = state.registry.alive_workers();
         let op = match req.method.to_uppercase().as_str() {

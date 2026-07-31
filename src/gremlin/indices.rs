@@ -12,7 +12,7 @@ use axum::{extract::{Path, State}, Json};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::gremlin::{AppState, try_forward_json, broadcast_request_to_workers};
+use crate::gremlin::AppState;
 use crate::graph::graph::Graph;
 use crate::storage::memory_index::MetaPointer;
 use crate::storage::types::PropertyValue;
@@ -93,11 +93,18 @@ pub async fn create_vertex_property_index(
     headers: axum::http::HeaderMap,
     Json(body): Json<RegisterKeyBody>,
 ) -> Json<serde_json::Value> {
-    // Worker → Master forwarding
     let body_str = serde_json::to_string(&body).unwrap_or_default();
     let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
-    if let Some(resp) = try_forward_json(&state, "POST", "/indices/vertex/properties", None, graph_name, Some(&body_str)).await {
-        return match resp { Ok(json) => json, Err(_) => Json(serde_json::json!({"status": "error"})) };
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let req = crate::cluster::request::ClusterRequest::new("POST", "/indices/vertex/properties")
+        .with_body(&body_str)
+        .with_opt_graph(graph_name);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(val)) => return Json(val),
+        Ok(None) => {}
+        Err(_) => return Json(serde_json::json!({"status": "error"})),
     }
 
     let graph = get_graph(&state, graph_name);
@@ -113,7 +120,7 @@ pub async fn create_vertex_property_index(
     }
     // Persist the updated index keys to config.json.
     let _ = graph.persist_indices_config();
-    broadcast_request_to_workers(&state.cluster_registry, "POST", "/indices/vertex/properties", None, graph_name, Some(&body_str));
+    gateway.broadcast(&req);
     Json(serde_json::json!({
         "status": "ok", "key": body.key, "type": "vertex", "created": !already,
     }))
@@ -164,10 +171,16 @@ pub async fn delete_vertex_property_index(
     Path(key): Path<String>,
     headers: axum::http::HeaderMap,
 ) -> Json<serde_json::Value> {
-    // Worker → Master forwarding
     let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
-    if let Some(resp) = try_forward_json(&state, "DELETE", &format!("/indices/vertex/properties/{}", key), None, graph_name, None).await {
-        return match resp { Ok(json) => json, Err(_) => Json(serde_json::json!({"status": "error"})) };
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let req = crate::cluster::request::ClusterRequest::new("DELETE", &format!("/indices/vertex/properties/{}", key))
+        .with_opt_graph(graph_name);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(val)) => return Json(val),
+        Ok(None) => {}
+        Err(_) => return Json(serde_json::json!({"status": "error"})),
     }
     let graph = get_graph(&state, graph_name);
     let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
@@ -175,7 +188,7 @@ pub async fn delete_vertex_property_index(
     drop(mi);
     // Persist the updated index keys to config.json.
     let _ = graph.persist_indices_config();
-    broadcast_request_to_workers(&state.cluster_registry, "DELETE", &format!("/indices/vertex/properties/{}", key), None, graph_name, None);
+    gateway.broadcast(&req);
     Json(serde_json::json!({"status": "ok", "key": key, "deleted": deleted}))
 }
 
@@ -184,11 +197,18 @@ pub async fn delete_vertex_property_indices(
     headers: axum::http::HeaderMap,
     Json(body): Json<UnregisterKeysBody>,
 ) -> Json<serde_json::Value> {
-    // Worker → Master forwarding
     let body_str = serde_json::to_string(&body).unwrap_or_default();
     let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
-    if let Some(resp) = try_forward_json(&state, "DELETE", "/indices/vertex/properties", None, graph_name, Some(&body_str)).await {
-        return match resp { Ok(json) => json, Err(_) => Json(serde_json::json!({"status": "error"})) };
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let req = crate::cluster::request::ClusterRequest::new("DELETE", "/indices/vertex/properties")
+        .with_body(&body_str)
+        .with_opt_graph(graph_name);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(val)) => return Json(val),
+        Ok(None) => {}
+        Err(_) => return Json(serde_json::json!({"status": "error"})),
     }
     let graph = get_graph(&state, graph_name);
     let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
@@ -201,7 +221,7 @@ pub async fn delete_vertex_property_indices(
     drop(mi);
     // Persist the updated index keys to config.json.
     let _ = graph.persist_indices_config();
-    broadcast_request_to_workers(&state.cluster_registry, "DELETE", "/indices/vertex/properties", None, graph_name, Some(&body_str));
+    gateway.broadcast(&req);
     Json(serde_json::json!({"status": "ok", "deleted": deleted}))
 }
 
@@ -212,11 +232,18 @@ pub async fn create_edge_property_index(
     headers: axum::http::HeaderMap,
     Json(body): Json<RegisterKeyBody>,
 ) -> Json<serde_json::Value> {
-    // Worker → Master forwarding
     let body_str = serde_json::to_string(&body).unwrap_or_default();
     let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
-    if let Some(resp) = try_forward_json(&state, "POST", "/indices/edge/properties", None, graph_name, Some(&body_str)).await {
-        return match resp { Ok(json) => json, Err(_) => Json(serde_json::json!({"status": "error"})) };
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let req = crate::cluster::request::ClusterRequest::new("POST", "/indices/edge/properties")
+        .with_body(&body_str)
+        .with_opt_graph(graph_name);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(val)) => return Json(val),
+        Ok(None) => {}
+        Err(_) => return Json(serde_json::json!({"status": "error"})),
     }
 
     let graph = get_graph(&state, graph_name);
@@ -232,7 +259,7 @@ pub async fn create_edge_property_index(
     }
     // Persist the updated index keys to config.json.
     let _ = graph.persist_indices_config();
-    broadcast_request_to_workers(&state.cluster_registry, "POST", "/indices/edge/properties", None, graph_name, Some(&body_str));
+    gateway.broadcast(&req);
     Json(serde_json::json!({
         "status": "ok", "key": body.key, "type": "edge", "created": !already,
     }))
@@ -283,10 +310,16 @@ pub async fn delete_edge_property_index(
     Path(key): Path<String>,
     headers: axum::http::HeaderMap,
 ) -> Json<serde_json::Value> {
-    // Worker → Master forwarding
     let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
-    if let Some(resp) = try_forward_json(&state, "DELETE", &format!("/indices/edge/properties/{}", key), None, graph_name, None).await {
-        return match resp { Ok(json) => json, Err(_) => Json(serde_json::json!({"status": "error"})) };
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let req = crate::cluster::request::ClusterRequest::new("DELETE", &format!("/indices/edge/properties/{}", key))
+        .with_opt_graph(graph_name);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(val)) => return Json(val),
+        Ok(None) => {}
+        Err(_) => return Json(serde_json::json!({"status": "error"})),
     }
     let graph = get_graph(&state, graph_name);
     let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
@@ -294,7 +327,7 @@ pub async fn delete_edge_property_index(
     drop(mi);
     // Persist the updated index keys to config.json.
     let _ = graph.persist_indices_config();
-    broadcast_request_to_workers(&state.cluster_registry, "DELETE", &format!("/indices/edge/properties/{}", key), None, graph_name, None);
+    gateway.broadcast(&req);
     Json(serde_json::json!({"status": "ok", "key": key, "deleted": deleted}))
 }
 
@@ -303,11 +336,18 @@ pub async fn delete_edge_property_indices(
     headers: axum::http::HeaderMap,
     Json(body): Json<UnregisterKeysBody>,
 ) -> Json<serde_json::Value> {
-    // Worker → Master forwarding
     let body_str = serde_json::to_string(&body).unwrap_or_default();
     let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
-    if let Some(resp) = try_forward_json(&state, "DELETE", "/indices/edge/properties", None, graph_name, Some(&body_str)).await {
-        return match resp { Ok(json) => json, Err(_) => Json(serde_json::json!({"status": "error"})) };
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let req = crate::cluster::request::ClusterRequest::new("DELETE", "/indices/edge/properties")
+        .with_body(&body_str)
+        .with_opt_graph(graph_name);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(val)) => return Json(val),
+        Ok(None) => {}
+        Err(_) => return Json(serde_json::json!({"status": "error"})),
     }
     let graph = get_graph(&state, graph_name);
     let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
@@ -320,6 +360,6 @@ pub async fn delete_edge_property_indices(
     drop(mi);
     // Persist the updated index keys to config.json.
     let _ = graph.persist_indices_config();
-    broadcast_request_to_workers(&state.cluster_registry, "DELETE", "/indices/edge/properties", None, graph_name, Some(&body_str));
+    gateway.broadcast(&req);
     Json(serde_json::json!({"status": "ok", "deleted": deleted}))
 }

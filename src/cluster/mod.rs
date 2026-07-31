@@ -36,6 +36,8 @@
 //! ```
 
 pub mod forward;
+pub mod gateway;
 pub mod node;
 pub mod replication;
+pub mod request;
 pub mod server;
