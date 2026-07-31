@@ -761,22 +761,21 @@ fn try_flush_entries(
     }
 
     // ── helpers ─────────────────────────────────────────────────────────────
-    // Rotate WAL: create new file, spawn background flush + old-file deletion.
-    let flush_and_remove = |old_path: PathBuf, fd: Arc<Mutex<Option<Box<dyn Fn() -> StorageResult<()> + Send>>>>| {
-        log::info!("WAL rotation: spawning background flush for {}", old_path.display());
-        thread::spawn(move || {
-            log::info!("Background flush: flushing dirty blocks...");
-            if let Ok(guard) = fd.lock() {
-                if let Some(ref f) = *guard {
-                    if let Err(e) = f() {
-                        log::error!("Background dirty-block flush failed: {}", e);
-                    }
-                }
+    // Rotate WAL: flush dirty blocks to the data file, THEN delete the old
+    // file — done synchronously in the writer thread so a crash (kill -9)
+    // cannot land between the flush and the delete and lose data that only
+    // existed in the old WAL.
+    let flush_and_remove = |old_path: PathBuf, fd: Arc<Mutex<Option<Box<dyn Fn() -> StorageResult<()> + Send>>>>| -> StorageResult<()> {
+        log::info!("WAL rotation: flushing dirty blocks before deleting {}", old_path.display());
+        if let Ok(guard) = fd.lock() {
+            if let Some(ref f) = *guard {
+                f()?;
             }
-            log::info!("Background flush: deleting old WAL {}", old_path.display());
-            let _ = fs::remove_file(&old_path);
-            log::info!("Background flush: complete for {}", old_path.display());
-        });
+        }
+        log::info!("WAL rotation: deleting old WAL {}", old_path.display());
+        fs::remove_file(&old_path)?;
+        log::info!("WAL rotation: complete for {}", old_path.display());
+        Ok(())
     };
 
     // Check time-based rotation.
@@ -786,7 +785,7 @@ fn try_flush_entries(
             let new_writer = create_new_file(dir, *checkpoint_seq)?;
             *checkpoint_seq += 1;
             writer.file.sync_all()?;
-            flush_and_remove(old_path, flush_dirty.clone());
+            flush_and_remove(old_path, flush_dirty.clone())?;
             *writer = new_writer;
         }
     }
@@ -798,7 +797,7 @@ fn try_flush_entries(
         let new_writer = create_new_file(dir, *checkpoint_seq)?;
         *checkpoint_seq += 1;
         writer.file.sync_all()?;
-        flush_and_remove(old_path, flush_dirty.clone());
+        flush_and_remove(old_path, flush_dirty.clone())?;
         *writer = new_writer;
     }
 

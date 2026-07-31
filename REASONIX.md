@@ -34,8 +34,7 @@ src/
 │   ├── block_cache.rs       # LRU cache with dirty tracking (default 4096 blocks = 64MB)
 │   ├── redo_log.rs          # WAL: FIFO queue + background batch writer (≤128 entries),
 │   │                        #   size (64MB) + time (15min, configurable) rotation,
-│   │                        #   async background flush on rotation (刷脏块+删旧WAL),
-│   │                        #   CRC32, replay
+│   │                        #   同步 flush 脏块+删旧WAL（崩溃安全），CRC32, replay
 │   ├── memory_index.rs      # In-memory BTreeMap/HashMap indexes (vertex, edge,
 │   │                        #   token, rank, atime, adjacency)
 │   └── memory_index_builder.rs  # Rebuild in-memory index by scanning data file at startup
@@ -460,7 +459,7 @@ Master handler (create_vertex, create_document 等)
 - **`touch src/ui_serve.rs`** needed after frontend changes.
 - **Extraction**: uses `crate::graph::batch::batch_import()` internally — upserts vertices by name, edges by (source_name, target_name, name). SYSTEM_PROMPT tells LLM to output `name`, `labels`, `keywords`, `properties` for entities; and `source`, `target`, `name`, `labels`, `keywords`, `strength`, `properties` for relations.
 - **WAL batch writer**: `append()` encodes the entry and sends via `mpsc::channel` to background thread. Caller blocks on Condvar until the writer commits the batch and advances epoch.
-- **WAL rotation**: Size (default 64MB) or time (default 900s) triggers rotation. Writer creates new WAL file, syncs old one, spawns **background thread** to flush `block_cache` dirty blocks via `flush_dirty()`, then deletes old WAL file. Writer continues processing new entries immediately (not blocked by flush).
+- **WAL rotation**: Size (default 64MB) or time (default 900s) triggers rotation. Writer **synchronously** flushes `block_cache` dirty blocks via `flush_dirty()` (so the data survives in the data file), then deletes the old WAL file — a crash (kill -9) cannot land between the flush and the delete. Writer is blocked during rotation, but rotation is infrequent.
 - **Rank/Atime WAL**: All rank/atime update paths (`update_rank_and_atime`, `update_vertex_meta`, `update_edge_meta`, `rank_decay`) now write WAL entries (`OpType::VertexMetaUpdate` / `EdgeMetaUpdate`, bincode-serialized `(rank, atime)`). Crash consistency is guaranteed via WAL replay on startup.
 - **SIGINT/SIGTERM**: server calls `GraphManager::close_all()` → flushes dirty blocks + syncs + renews WAL.
 - **`Graph::close()`**: calls `flush()` + `sync()` + `renew()`.
