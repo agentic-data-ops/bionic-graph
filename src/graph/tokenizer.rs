@@ -5,23 +5,33 @@
 //! segments Chinese via its built-in dictionary.
 //!
 //! Supports custom user dictionary words loaded from a JSON config file
-//! (default `~/.config/bionic-graph/tokenizer.json`). Words can be added
-//! and removed at runtime via API endpoints.
+//! at `<data_dir>/tokenizer/words.json`. Words can be added and removed
+//! at runtime via API endpoints.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
 
 use crate::storage::types::Hit;
 
-/// Path to the tokenizer config file (set via CLI before any API calls).
-static CONFIG_PATH: OnceLock<PathBuf> = OnceLock::new();
+/// Data directory root — tokenizer words file is at `<data_dir>/tokenizer/words.json`.
+static DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
 
-/// Set the tokenizer config file path (called once at startup).
-pub fn set_config_path(path: PathBuf) {
-    let _ = CONFIG_PATH.set(path.clone());
-    // Load custom words from the config file into jieba.
-    let words = load_words_from_config(CONFIG_PATH.get());
+/// Return the path to the tokenizer words config file.
+fn words_path() -> PathBuf {
+    DATA_DIR
+        .get()
+        .cloned()
+        .unwrap_or_else(|| PathBuf::from("data"))
+        .join("tokenizer")
+        .join("words.json")
+}
+
+/// Set the data directory (called once at startup).
+/// Custom words are loaded from `<data_dir>/tokenizer/words.json` into jieba.
+pub fn set_data_dir(dir: &Path) {
+    let _ = DATA_DIR.set(dir.to_path_buf());
+    let words = load_words_from_config();
     if !words.is_empty() {
         let jieba = jieba();
         let mut j = jieba.write().unwrap_or_else(|e| e.into_inner());
@@ -31,31 +41,29 @@ pub fn set_config_path(path: PathBuf) {
     }
 }
 
-/// Load custom words list from the JSON config file.
-fn load_words_from_config(path: Option<&PathBuf>) -> Vec<String> {
-    if let Some(p) = path {
-        if p.exists() {
-            if let Ok(content) = std::fs::read_to_string(p) {
-                if let Ok(cfg) = serde_json::from_str::<HashMap<String, Vec<String>>>(&content) {
-                    return cfg.get("custom_words").cloned().unwrap_or_default();
-                }
+/// Load custom words list from `<data_dir>/tokenizer/words.json`.
+fn load_words_from_config() -> Vec<String> {
+    let p = words_path();
+    if p.exists() {
+        if let Ok(content) = std::fs::read_to_string(&p) {
+            if let Ok(cfg) = serde_json::from_str::<HashMap<String, Vec<String>>>(&content) {
+                return cfg.get("custom_words").cloned().unwrap_or_default();
             }
         }
     }
     Vec::new()
 }
 
-/// Persist custom words list to the JSON config file.
-fn save_words_to_config(path: Option<&PathBuf>, words: &[String]) {
-    if let Some(p) = path {
-        if let Some(parent) = p.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let mut map = HashMap::new();
-        map.insert("custom_words".to_string(), words.to_vec());
-        if let Ok(json) = serde_json::to_string_pretty(&map) {
-            let _ = std::fs::write(p, &json);
-        }
+/// Persist custom words list to `<data_dir>/tokenizer/words.json`.
+fn save_words_to_config(words: &[String]) {
+    let p = words_path();
+    if let Some(parent) = p.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let mut map = HashMap::new();
+    map.insert("custom_words".to_string(), words.to_vec());
+    if let Ok(json) = serde_json::to_string_pretty(&map) {
+        let _ = std::fs::write(&p, &json);
     }
 }
 
@@ -79,13 +87,13 @@ pub fn add_custom_words(words: &[String]) {
     drop(j);
 
     // Persist updated word list.
-    let mut all = load_words_from_config(CONFIG_PATH.get());
+    let mut all = load_words_from_config();
     for word in words {
         if !all.contains(word) {
             all.push(word.clone());
         }
     }
-    save_words_to_config(CONFIG_PATH.get(), &all);
+    save_words_to_config(&all);
 }
 
 /// Remove custom words from the jieba dictionary.
@@ -99,7 +107,7 @@ pub fn remove_custom_words(words: &[String]) {
     let mut j = jieba.write().unwrap_or_else(|e| e.into_inner());
 
     // Get current custom words from config.
-    let mut all = load_words_from_config(CONFIG_PATH.get());
+    let mut all = load_words_from_config();
     all.retain(|w| !words.contains(w));
 
     // Reload: clear + re-add default dict + all remaining custom words.
@@ -112,12 +120,12 @@ pub fn remove_custom_words(words: &[String]) {
     }
     drop(j);
 
-    save_words_to_config(CONFIG_PATH.get(), &all);
+    save_words_to_config(&all);
 }
 
 /// List all current custom words.
 pub fn list_custom_words() -> Vec<String> {
-    load_words_from_config(CONFIG_PATH.get())
+    load_words_from_config()
 }
 
 /// English stop words to filter out.

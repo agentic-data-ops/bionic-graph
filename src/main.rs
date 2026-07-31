@@ -3,11 +3,60 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Parser;
+use bionic_graph::cluster::node::{GraphSyncCommand, WorkerInfo};
 use bionic_graph::cluster::server::{build_cluster_router, ClusterAppState};
 use bionic_graph::config::load_or_create_settings_from;
 use bionic_graph::config::NodeRole;
 use bionic_graph::gremlin::build_router as build_new_router;
 use bionic_graph::graph_manager::GraphManager;
+
+/// Apply graph sync commands received from the master in a heartbeat ack (6.2).
+/// Workers create missing graphs, update metadata/config to match, delete
+/// graphs the master doesn't have, and sync the default graph.
+fn apply_graph_sync_commands(
+    gm: &GraphManager,
+    commands: &[GraphSyncCommand],
+) {
+    for cmd in commands {
+        match cmd {
+            GraphSyncCommand::CreateGraph { name, description, time_travel, config } => {
+                match gm.get(name) {
+                    Ok(_) => {
+                        let _ = gm.update_meta(name, description, *time_travel);
+                        let _ = gm.set_graph_config(name, config);
+                        log::info!("Graph sync: created graph '{}' (desc={}, tt={})", name, description, time_travel);
+                    }
+                    Err(e) => log::warn!("Graph sync: failed to create graph '{}': {}", name, e),
+                }
+            }
+            GraphSyncCommand::UpdateGraphMeta { name, description, time_travel } => {
+                match gm.update_meta(name, description, *time_travel) {
+                    Ok(true) => log::info!("Graph sync: updated graph '{}' (desc={}, tt={})", name, description, time_travel),
+                    Ok(false) => log::warn!("Graph sync: graph '{}' not found for update", name),
+                    Err(e) => log::warn!("Graph sync: failed to update graph '{}': {}", name, e),
+                }
+            }
+            GraphSyncCommand::UpdateGraphConfig { name, config } => {
+                match gm.set_graph_config(name, config) {
+                    Ok(()) => log::info!("Graph sync: updated config of graph '{}'", name),
+                    Err(e) => log::warn!("Graph sync: failed to update config of graph '{}': {}", name, e),
+                }
+            }
+            GraphSyncCommand::DeleteGraph { name } => {
+                match gm.delete(name) {
+                    Ok(()) => log::info!("Graph sync: deleted graph '{}' (absent on master)", name),
+                    Err(e) => log::warn!("Graph sync: failed to delete graph '{}': {}", name, e),
+                }
+            }
+            GraphSyncCommand::SetDefaultGraph { name } => {
+                match gm.set_default(name) {
+                    Ok(()) => log::info!("Graph sync: set default graph to '{}'", name),
+                    Err(e) => log::warn!("Graph sync: failed to set default graph '{}': {}", name, e),
+                }
+            }
+        }
+    }
+}
 
 /// Check whether a process with the given PID is alive on Unix.
 ///
@@ -107,9 +156,6 @@ struct Args {
     #[arg(long = "config")]
     config: Option<String>,
 
-    /// Path to tokenizer custom dictionary config (default: ~/.config/bionic-graph/tokenizer.json)
-    #[arg(long = "tokenizer-config")]
-    tokenizer_config: Option<String>,
 }
 
 #[tokio::main]
@@ -140,12 +186,8 @@ async fn main() {
         std::process::exit(1);
     }
 
-    // Initialize tokenizer with custom dictionary config.
-    let tokenizer_config = args.tokenizer_config.unwrap_or_else(|| {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        format!("{}/.config/bionic-graph/tokenizer.json", home)
-    });
-    bionic_graph::graph::tokenizer::set_config_path(std::path::PathBuf::from(&tokenizer_config));
+    // Initialize tokenizer with custom dictionary config from data directory.
+    bionic_graph::graph::tokenizer::set_data_dir(&data_dir_path);
 
     // Shared shutdown signal for all servers.
     let shutdown = Arc::new(tokio::sync::Notify::new());
@@ -184,6 +226,10 @@ async fn main() {
     // Initialize the new block-based graph manager.
     let gm = Arc::new(GraphManager::new(data_dir_path.clone()));
 
+    // Open all registered graphs at startup (WAL replay, index rebuild).
+    // This ensures the first user query doesn't pay the one-time cost.
+    gm.open_all();
+
     // Ensure the default graph "graph0" exists on first startup.
     if let Err(e) = gm.get("graph0") {
         log::warn!("Failed to create default graph 'graph0': {}", e);
@@ -193,28 +239,41 @@ async fn main() {
     // the main API server and the cluster communication server.
     let cluster_registry: Option<Arc<bionic_graph::cluster::node::NodeRegistry>> =
         if settings.cluster.enabled {
-            Some(Arc::new(bionic_graph::cluster::node::NodeRegistry::new(&settings.cluster)))
+            let mut reg = bionic_graph::cluster::node::NodeRegistry::new(&settings.cluster);
+            reg.set_data_dir(data_dir_path.clone());
+            Some(Arc::new(reg))
+        } else {
+            None
+        };
+
+    // Create the persistent broadcast queue (master only). Workers don't
+    // broadcast, so they get None.
+    let broadcast_queue: Option<Arc<bionic_graph::cluster::broadcast_queue::BroadcastQueue>> =
+        if settings.cluster.enabled && settings.cluster.role == NodeRole::Master {
+            Some(Arc::new(
+                bionic_graph::cluster::broadcast_queue::BroadcastQueue::new(
+                    &data_dir_path,
+                    bionic_graph::cluster::broadcast_queue::DEFAULT_MAX_PER_FILE,
+                ),
+            ))
         } else {
             None
         };
 
     // ── Main API server ──────────────────────────────────────────────────────
-    // Determine master API address for worker→master forwarding.
+    // Determine master address for worker→master write forwarding.
+    // Workers forward writes to the master's cluster server (/cluster/forward).
     let master_api_addr: Option<String> = if settings.cluster.enabled && settings.cluster.role == NodeRole::Worker {
         settings.cluster.master_addr.as_ref().map(|addr| {
-            // Derive master's API port: cluster port (e.g. 9090) → API port (e.g. 8090)
-            if let Some(col) = addr.rfind(':') {
-                let host = &addr[..col];
-                let port: u16 = addr[col+1..].parse().unwrap_or(9090);
-                format!("{}:{}", host, port.saturating_sub(1000))
-            } else {
-                addr.clone()
-            }
+            // master_addr is the cluster address (e.g. "127.0.0.1:9090").
+            // The /cluster/forward endpoint is on the cluster server, so use it directly.
+            // If master_addr already has http:// prefix, strip it.
+            addr.trim_start_matches("http://").trim_start_matches("https://").to_string()
         })
     } else {
         None
     };
-    let app = build_new_router(gm.clone(), settings.clone(), cluster_registry.clone(), master_api_addr);
+    let app = build_new_router(gm.clone(), settings.clone(), cluster_registry.clone(), master_api_addr, broadcast_queue.clone());
 
     let api_addr: SocketAddr = format!("{}:{}", settings.server.host, settings.server.port)
         .parse()
@@ -268,8 +327,64 @@ async fn main() {
             .await
             .expect("Failed to bind cluster address");
 
-        // If master, spawn heartbeat cleanup task.
+        // If master, persist own identity + spawn heartbeat cleanup task and
+        // wait for known workers to register (startup readiness, 6.1).
         if is_master {
+            // Record the master's own identity in nodes.json.
+            let master_info = WorkerInfo::new(
+                &format!("master@{}", settings.cluster.bind_addr),
+                &format!("{}:{}", settings.server.host, settings.server.port),
+                &settings.cluster.bind_addr,
+            );
+            registry.set_master_info(master_info);
+
+            // Start the persistent broadcast queue consumer (6.3).
+            // Leftover queue files from a previous run are drained here,
+            // delivering any undelivered broadcasts before serving.
+            if let Some(ref queue) = broadcast_queue {
+                queue.start_consumer();
+            }
+
+            // Load workers known from a previous run (nodes.json).
+            let known = registry.load_known(&std::path::Path::new(&settings.graph.storage.data_dir));
+            if !known.is_empty() {
+                log::info!(
+                    "Master startup: {} known worker(s) from nodes.json: {:?}",
+                    known.len(),
+                    known
+                );
+                // Wait up to `worker_timeout_secs` for all known workers to
+                // register via heartbeat. Continue after timeout if at least
+                // one has registered, or allow single-node degradation.
+                let reg = registry.clone();
+                let timeout = Duration::from_secs(settings.cluster.worker_timeout_secs.max(5));
+                let sig = shutdown.clone();
+                tokio::spawn(async move {
+                    let deadline = tokio::time::Instant::now() + timeout;
+                    loop {
+                        let registered = reg.known_registered_count();
+                        let total = reg.known_total();
+                        if registered >= total {
+                            log::info!("Master startup: all {} known worker(s) registered.", total);
+                            break;
+                        }
+                        if tokio::time::Instant::now() >= deadline {
+                            log::warn!(
+                                "Master startup: timeout waiting for known workers ({}/{} registered). \
+                                 Continuing with available nodes.",
+                                registered,
+                                total
+                            );
+                            break;
+                        }
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                            _ = sig.notified() => break,
+                        }
+                    }
+                });
+            }
+
             let reg = registry.clone();
             let interval = Duration::from_secs(settings.cluster.heartbeat_interval_secs);
             let sig = shutdown.clone();
@@ -281,6 +396,7 @@ async fn main() {
                             if !expired.is_empty() {
                                 log::info!("Purged {} expired worker(s): {:?}", expired.len(), expired);
                             }
+                            reg.persist();
                         }
                         _ = sig.notified() => break,
                     }
@@ -294,23 +410,60 @@ async fn main() {
                 let master_cluster = master_addr.clone();
                 let interval = Duration::from_secs(settings.cluster.heartbeat_interval_secs);
                 let sig = shutdown.clone();
+                let worker_gm = gm.clone();
                 tokio::spawn(async move {
                     let client = reqwest::Client::new();
                     loop {
+                        // Gather local graph list (metadata + config) and default
+                        // graph for the master to diff (6.2).
+                        let (graph_metas, default_name) = worker_gm.get_registry();
+                        let graphs: Vec<bionic_graph::cluster::node::WorkerGraphSnapshot> = graph_metas
+                            .iter()
+                            .map(|meta| bionic_graph::cluster::node::WorkerGraphSnapshot {
+                                meta: meta.clone(),
+                                config: worker_gm.get_graph_config(&meta.name),
+                            })
+                            .collect();
                         let heartbeat = bionic_graph::cluster::node::ClusterMessage::Heartbeat {
-                            node_id: "worker".to_string(),
-                            api_addr: settings.server.host.clone(),
+                            node_id: format!("worker@{}", settings.cluster.bind_addr),
+                            api_addr: format!("{}:{}", settings.server.host, settings.server.port),
                             cluster_addr: settings.cluster.bind_addr.clone(),
                             last_acked_seq: 0,
+                            graphs,
+                            default_graph: default_name,
                         };
                         let url = format!("http://{}/cluster/heartbeat", master_cluster);
-                        if let Err(e) = client
+                        match client
                             .post(&url)
                             .json(&heartbeat)
                             .send()
                             .await
                         {
-                            log::warn!("Heartbeat to master failed: {}", e);
+                            Ok(resp) => {
+                                // Apply any graph sync commands from the master.
+                                if let Ok(ack) = resp
+                                    .json::<bionic_graph::cluster::node::ClusterMessage>()
+                                    .await
+                                {
+                                    if let bionic_graph::cluster::node::ClusterMessage::HeartbeatAck {
+                                        sync_commands,
+                                        ..
+                                    } = ack
+                                    {
+                                        if !sync_commands.is_empty() {
+                                            log::info!(
+                                                "Master sent {} graph sync command(s): {:?}",
+                                                sync_commands.len(),
+                                                sync_commands
+                                            );
+                                            apply_graph_sync_commands(&worker_gm, &sync_commands);
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                log::warn!("Heartbeat to master failed: {}", e);
+                            }
                         }
                         tokio::select! {
                             _ = tokio::time::sleep(interval) => {},

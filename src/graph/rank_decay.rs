@@ -36,7 +36,7 @@ pub fn spawn_rank_decay(
             // Collect inactive pointers under a read lock.
             let inactive: Vec<(u64, crate::storage::memory_index::MetaPointer)> = {
                 let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-                mi.atime_index.range_up_to(threshold)
+                mi.atime.range_up_to(threshold)
             };
 
             if inactive.is_empty() {
@@ -79,25 +79,10 @@ fn try_decay(
         crate::storage::types::ChunkType::Vertex => {
             // Update rank/atime indexes.
             let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-            mi.ranks.remove(old_rank, ptr);
-            mi.ranks.insert(new_rank, *ptr);
-            mi.atime_index.remove(_old_atime, ptr);
-            mi.atime_index.insert(now, *ptr);
-            drop(mi);
-
-            // Persist to DataHeader in-place (no WAL — rank decay is soft state).
-            let mut hdr = dh;
-            hdr.rank = new_rank;
-            hdr.atime = now;
-            hdr.mtime = now;
-            let _ = crate::graph::crud::update_header_in_place(graph, ptr, &hdr);
-        }
-        crate::storage::types::ChunkType::Edge => {
-            let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-            mi.ranks.remove(old_rank, ptr);
-            mi.ranks.insert(new_rank, *ptr);
-            mi.atime_index.remove(_old_atime, ptr);
-            mi.atime_index.insert(now, *ptr);
+            mi.rank.remove(old_rank, ptr);
+            mi.rank.insert(new_rank, *ptr);
+            mi.atime.remove(_old_atime, ptr);
+            mi.atime.insert(now, *ptr);
             drop(mi);
 
             // Persist to DataHeader in-place.
@@ -106,6 +91,33 @@ fn try_decay(
             hdr.atime = now;
             hdr.mtime = now;
             let _ = crate::graph::crud::update_header_in_place(graph, ptr, &hdr);
+
+            // Write WAL entry for crash consistency.
+            if !crate::graph::graph::WAL_REPLAYING.load(std::sync::atomic::Ordering::Relaxed) {
+                let data = bincode::serialize(&(new_rank, now)).unwrap_or_default();
+                let _ = graph.redo_log.append(crate::storage::types::OpType::VertexMetaUpdate, hdr.entity_id as u64, &data);
+            }
+        }
+        crate::storage::types::ChunkType::Edge => {
+            let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+            mi.rank.remove(old_rank, ptr);
+            mi.rank.insert(new_rank, *ptr);
+            mi.atime.remove(_old_atime, ptr);
+            mi.atime.insert(now, *ptr);
+            drop(mi);
+
+            // Persist to DataHeader in-place.
+            let mut hdr = dh;
+            hdr.rank = new_rank;
+            hdr.atime = now;
+            hdr.mtime = now;
+            let _ = crate::graph::crud::update_header_in_place(graph, ptr, &hdr);
+
+            // Write WAL entry for crash consistency.
+            if !crate::graph::graph::WAL_REPLAYING.load(std::sync::atomic::Ordering::Relaxed) {
+                let data = bincode::serialize(&(new_rank, now)).unwrap_or_default();
+                let _ = graph.redo_log.append(crate::storage::types::OpType::EdgeMetaUpdate, hdr.entity_id as u64, &data);
+            }
         }
         _ => return Err("unknown chunk type".to_string()),
     }

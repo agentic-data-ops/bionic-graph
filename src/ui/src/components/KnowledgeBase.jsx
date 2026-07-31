@@ -218,24 +218,28 @@ export default function KnowledgeBase({ open, onClose, providers, activeProvider
     const poll = async () => {
       for (let i = 0; i < 120; i++) {
         await new Promise(r => setTimeout(r, 3000));
-        const task = await getExtractionTask(taskId);
-        const runStep = task.steps?.find(s => s.status === 'running');
-        if (runStep) {
-          addStep({ label: runStep.label, status: 'running', detail: runStep.detail || '' });
-        }
-        if (task.status === 'completed') {
-          const stats = task.stats || {};
-          addStep({ label: `Extraction complete: ${stats.new_vertices || 0} vertices, ${stats.new_edges || 0} edges`, status: 'done', detail: '' });
-          addStep({ label: 'Import complete', status: 'done', detail: '' });
-          const docs = await listDocuments();
-          setDocuments(Array.isArray(docs) ? docs : (docs.documents || []));
-          setImporting(false);
-          return;
-        }
-        if (task.status === 'failed') {
-          addStep({ label: 'Extraction failed', status: 'failed', detail: task.error || 'Unknown error' });
-          setImporting(false);
-          return;
+        try {
+          const task = await getExtractionTask(taskId);
+          const runStep = task.steps?.find(s => s.status === 'running');
+          if (runStep) {
+            addStep({ label: runStep.label, status: 'running', detail: runStep.detail || '' });
+          }
+          if (task.status === 'completed') {
+            const stats = task.stats || {};
+            addStep({ label: `Extraction complete: ${stats.new_vertices || 0} vertices, ${stats.new_edges || 0} edges`, status: 'done', detail: '' });
+            addStep({ label: 'Import complete', status: 'done', detail: '' });
+            const docs = await listDocuments();
+            setDocuments(Array.isArray(docs) ? docs : (docs.documents || []));
+            setImporting(false);
+            return;
+          }
+          if (task.status === 'failed') {
+            addStep({ label: 'Extraction failed', status: 'failed', detail: task.error || 'Unknown error' });
+            setImporting(false);
+            return;
+          }
+        } catch (e) {
+          console.warn('Task poll failed, retrying:', e.message);
         }
       }
       addStep({ label: 'Extraction timed out', status: 'failed', detail: '' });

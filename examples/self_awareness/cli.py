@@ -20,7 +20,7 @@ from bionic_graph import Client
 # because the script dir is added to sys.path automatically.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from llm import call_llm, call_llm_json
+from llm import call_llm, call_llm_json, call_llm_stream_to_file
 from prompts import (
     EXTRACT_SYSTEM_PROMPT,
     EXTRACT_USER_PROMPT_TEMPLATE,
@@ -49,11 +49,13 @@ def _get_default_model(client: Client) -> str:
     """Get the default LLM model from the server settings."""
     try:
         settings = client.get_llm_settings()
-        default = settings.get("default_model", "")
+        # Backend returns {"llm": {providers, default_model, ...}}
+        llm_cfg = settings.get("llm", settings)
+        default = llm_cfg.get("default_model", "")
         if default:
             return default
         # Fall back to first model of first provider
-        providers = settings.get("providers", [])
+        providers = llm_cfg.get("providers", [])
         if providers:
             p = providers[0]
             models = p.get("models", [])
@@ -137,12 +139,19 @@ def run_load(args: argparse.Namespace) -> None:
     client = _make_client(args.base_url)
     try:
         model = args.model or _get_default_model(client)
-        result = call_llm_json(
-            EXTRACT_SYSTEM_PROMPT,
-            user_prompt,
-            model=model,
-            client=client,
-        )
+        # Stream response to a temp file; no retry — fail fast on any error.
+        tmp_path = args.output + ".tmp"
+        try:
+            result = call_llm_stream_to_file(
+                EXTRACT_SYSTEM_PROMPT,
+                user_prompt,
+                tmp_path,
+                model=model,
+                client=client,
+            )
+        except RuntimeError as e:
+            print(f"  ❌ LLM extraction failed: {e}")
+            sys.exit(1)
     finally:
         client.close()
 
@@ -265,20 +274,27 @@ def run_plan(args: argparse.Namespace) -> None:
         print("\n🤖 Calling LLM to generate plans...")
         user_prompt = PLAN_USER_PROMPT_TEMPLATE.format(graph_summary=graph_summary)
 
+        # Resolve output path (auto-generate timestamped log path if not specified)
+        output_path = args.output or _log_path("plan")
+
         model = args.model or _get_default_model(client)
-        result = call_llm_json(
-            PLAN_SYSTEM_PROMPT,
-            user_prompt,
-            model=model,
-            client=client,
-        )
+        tmp_path = output_path + ".tmp"
+        try:
+            result = call_llm_stream_to_file(
+                PLAN_SYSTEM_PROMPT,
+                user_prompt,
+                tmp_path,
+                model=model,
+                client=client,
+            )
+        except RuntimeError as e:
+            print(f"  ❌ Plan generation failed: {e}")
+            sys.exit(1)
 
         if "entities" not in result or "relations" not in result:
             print("  ERROR: LLM output missing 'entities' or 'relations' key")
             sys.exit(1)
 
-        # Resolve output path (auto-generate timestamped log path if not specified)
-        output_path = args.output or _log_path("plan")
         plan_count = len(result["entities"])
         relation_count = len(result["relations"])
         print(f"  Generated {plan_count} plan items and {relation_count} relations")
@@ -356,13 +372,22 @@ def run_act(args: argparse.Namespace) -> None:
             plans_json=plans_json,
         )
 
+        # Resolve output path (auto-generate timestamped log path if not specified)
+        output_path = args.output or _log_path("activity")
+
         model = args.model or _get_default_model(client)
-        result = call_llm_json(
-            ACT_SYSTEM_PROMPT,
-            user_prompt,
-            model=model,
-            client=client,
-        )
+        tmp_path = output_path + ".tmp"
+        try:
+            result = call_llm_stream_to_file(
+                ACT_SYSTEM_PROMPT,
+                user_prompt,
+                tmp_path,
+                model=model,
+                client=client,
+            )
+        except RuntimeError as e:
+            print(f"  ❌ Activity simulation failed: {e}")
+            sys.exit(1)
 
         if "entities" not in result:
             print("  ERROR: LLM output missing 'entities' key")
@@ -370,9 +395,6 @@ def run_act(args: argparse.Namespace) -> None:
 
         activity_count = len(result["entities"])
         print(f"  Simulated {activity_count} activity/activities")
-
-        # Resolve output path (auto-generate timestamped log path if not specified)
-        output_path = args.output or _log_path("activity")
 
         # Save activity log
         _write_json(output_path, result)

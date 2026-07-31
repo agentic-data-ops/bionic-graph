@@ -1,14 +1,15 @@
 //! Tokenizer custom-word configuration endpoint.
 //!
 //! Allows users to add/remove custom dictionary words at runtime.
-//! Persisted to the tokenizer config file (default ~/.config/bionic-graph/tokenizer.json).
+//! Persisted to `<data_dir>/tokenizer/words.json`.
 
 use axum::{extract::State, Json};
+use std::sync::atomic::Ordering;
 
 use crate::gremlin::AppState;
 
-/// GET /settings/tokenizer — list all custom words
-pub async fn get_tokenizer_settings(
+/// GET /settings/tokenizer/words — list all custom words
+pub async fn get_tokenizer_words(
     State(_state): State<AppState>,
 ) -> Json<serde_json::Value> {
     let words = crate::graph::tokenizer::list_custom_words();
@@ -25,48 +26,22 @@ pub async fn add_tokenizer_words(
         return Json(serde_json::json!({ "status": "ok", "message": "no words provided" }));
     }
 
-    // If this is a worker node, forward to master.
-    if let Some(ref master_api) = state.master_api_addr {
-        let url = format!("http://{}/settings/tokenizer/words", master_api);
-        match reqwest::Client::new()
-            .post(&url)
-            .json(&serde_json::json!({"words": body.words}))
-            .send().await
-        {
-            Ok(resp) => {
-                if let Ok(body) = resp.text().await {
-                    return Json(serde_json::from_str(&body).unwrap_or(serde_json::json!({"status": "forwarded"})));
-                }
-            }
-            Err(e) => {
-                return Json(serde_json::json!({"status": "error", "message": format!("forward failed: {}", e)}));
-            }
-        }
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway (tokenizer ops handled by gateway)
+    let req = crate::cluster::request::ClusterRequest::new("POST", "/settings/tokenizer/words")
+        .with_body(&body_str);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(val)) => return Json(val),
+        Ok(None) => {}
+        Err(_) => return Json(serde_json::json!({"status": "error"})),
     }
 
     crate::graph::tokenizer::add_custom_words(&body.words);
 
-    // Broadcast to workers in cluster mode (master only).
-    if let Some(ref registry) = state.cluster_registry {
-        let workers = registry.alive_workers();
-        if !workers.is_empty() {
-            let words = body.words.clone();
-            tokio::spawn(async move {
-                for worker in &workers {
-                    let url = format!("http://{}/cluster/tokenizer-sync", worker.cluster_addr);
-                    let sync_body = serde_json::json!({
-                        "operation": "add",
-                        "words": words,
-                    });
-                    if let Err(e) = reqwest::Client::new()
-                        .post(&url).json(&sync_body).send().await
-                    {
-                        log::warn!("Tokenizer sync to worker {} failed: {}", worker.node_id, e);
-                    }
-                }
-            });
-        }
-    }
+    // Broadcast to workers in cluster mode (master only). Gateway auto-routes to /cluster/tokenizer-sync.
+    gateway.broadcast(&req);
 
     Json(serde_json::json!({ "status": "ok", "added": body.words.len() }))
 }
@@ -81,53 +56,27 @@ pub async fn remove_tokenizer_words(
         return Json(serde_json::json!({ "status": "ok", "message": "no words provided" }));
     }
 
-    // If this is a worker node, forward to master.
-    if let Some(ref master_api) = state.master_api_addr {
-        let url = format!("http://{}/settings/tokenizer/words", master_api);
-        match reqwest::Client::new()
-            .delete(&url)
-            .json(&serde_json::json!({"words": body.words}))
-            .send().await
-        {
-            Ok(resp) => {
-                if let Ok(body) = resp.text().await {
-                    return Json(serde_json::from_str(&body).unwrap_or(serde_json::json!({"status": "forwarded"})));
-                }
-            }
-            Err(e) => {
-                return Json(serde_json::json!({"status": "error", "message": format!("forward failed: {}", e)}));
-            }
-        }
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway (tokenizer ops handled by gateway)
+    let req = crate::cluster::request::ClusterRequest::new("DELETE", "/settings/tokenizer/words")
+        .with_body(&body_str);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(val)) => return Json(val),
+        Ok(None) => {}
+        Err(_) => return Json(serde_json::json!({"status": "error"})),
     }
 
     crate::graph::tokenizer::remove_custom_words(&body.words);
 
-    // Broadcast to workers in cluster mode (master only).
-    if let Some(ref registry) = state.cluster_registry {
-        let workers = registry.alive_workers();
-        if !workers.is_empty() {
-            let words = body.words.clone();
-            tokio::spawn(async move {
-                for worker in &workers {
-                    let url = format!("http://{}/cluster/tokenizer-sync", worker.cluster_addr);
-                    let sync_body = serde_json::json!({
-                        "operation": "remove",
-                        "words": words,
-                    });
-                    if let Err(e) = reqwest::Client::new()
-                        .post(&url).json(&sync_body).send().await
-                    {
-                        log::warn!("Tokenizer sync to worker {} failed: {}", worker.node_id, e);
-                    }
-                }
-            });
-        }
-    }
+    // Broadcast to workers in cluster mode (master only). Gateway auto-routes to /cluster/tokenizer-sync.
+    gateway.broadcast(&req);
 
     Json(serde_json::json!({ "status": "ok", "removed": body.words.len() }))
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 pub struct TokenizerWordsBody {
     pub words: Vec<String>,
 }

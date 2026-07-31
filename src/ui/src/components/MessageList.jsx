@@ -118,7 +118,7 @@ function ChatMessage({ message, graphRef, onMaximizeRef, theme, onEdit, onSaveTo
       </div>
     );
   }
-  if (message.type === 'search_progress') {
+  if (message.type === 'graph_search') {
     return (
       <div className="flex justify-start mb-3 message-enter">
         <div className="w-full max-w-[90%] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-2xl overflow-hidden shadow-sm">
@@ -137,7 +137,7 @@ function ChatMessage({ message, graphRef, onMaximizeRef, theme, onEdit, onSaveTo
                   </svg>
                 </button>
               </div>
-               <div className="h-[420px] relative"><GraphViewer ref={graphRef} data={message.graphData} graph={message.graphName} theme={theme} timeTravelEnabled={message.timeTravelEnabled || false} timeTravelAt={message.timeTravelAt} onDataChange={onDataChange} /></div>
+               <div className="h-[420px] relative"><GraphViewer ref={graphRef} data={message.graphData} graph={message.graphName} theme={theme} timeTravelEnabled={message.timeTravelEnabled || false} timeTravelAt={message.timeTravelAt} onDataChange={(items) => onDataChange(items, message.id)} /></div>
             </div>
           )}
         </div>
@@ -157,12 +157,12 @@ function ChatMessage({ message, graphRef, onMaximizeRef, theme, onEdit, onSaveTo
               </svg>
             </button>
           </div>
-          <div className="h-[420px] relative"><GraphViewer ref={graphRef} data={message.data} graph={message.graphName} theme={theme} timeTravelEnabled={message.timeTravelEnabled || false} timeTravelAt={message.timeTravelAt} onDataChange={onDataChange} /></div>
+          <div className="h-[420px] relative"><GraphViewer ref={graphRef} data={message.data} graph={message.graphName} theme={theme} timeTravelEnabled={message.timeTravelEnabled || false} timeTravelAt={message.timeTravelAt} onDataChange={(items) => onDataChange(items, message.id)} /></div>
         </div>
       </div>
     );
   }
-  if (message.type === 'web_search_progress') {
+  if (message.type === 'web_search') {
     return (
       <div className="flex justify-start mb-3 message-enter">
         <div className="w-full max-w-[90%] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-2xl overflow-hidden shadow-sm">
@@ -215,7 +215,7 @@ export default function MessageList({ messages, searchStream, theme, onEdit, onS
 
   const allMessages = searchStream ? [...messages, {
     id: '__search_progress__',
-    type: searchStream.type || 'search_progress',
+    type: searchStream.type || 'graph_search',
     title: searchStream.title || searchStream.query || 'Graph Search',
     steps: searchStream.steps || [], graphData: searchStream.graphData, graphName: searchStream.graphName,
     timeTravelEnabled: searchStream.timeTravelEnabled || false, timeTravelAt: searchStream.timeTravelAt,

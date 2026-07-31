@@ -89,8 +89,18 @@ impl GraphManager {
     }
 
     /// Update the per-graph config and persist to disk.
+    /// When the `indices` section changes, synchronizes the in-memory
+    /// property index (registering new keys / unregistering removed keys).
     pub fn set_graph_config(&self, name: &str, config: &GraphConfig) -> StorageResult<()> {
         let path = self.data_dir.join("graphs").join(name);
+
+        // Sync in-memory property index if the graph is currently open.
+        if let Ok(graph) = self.get(name) {
+            graph.sync_indices_from_config(&config.indices)?;
+            // Also persist indices config to disk alongside the full config.
+            graph.persist_indices_config()?;
+        }
+
         config.save(&path)?;
         Ok(())
     }
@@ -117,6 +127,20 @@ impl GraphManager {
     pub fn get_meta(&self, name: &str) -> Option<GraphMetadata> {
         let reg = self.registry.read().unwrap_or_else(|e| e.into_inner());
         reg.get_meta(name).cloned()
+    }
+
+    /// Open all registered graphs at startup so the first user request
+    /// doesn't pay the cost of `Graph::open()` (WAL replay etc.).
+    pub fn open_all(&self) {
+        let names: Vec<String> = {
+            let reg = self.registry.read().unwrap_or_else(|e| e.into_inner());
+            reg.graphs.iter().map(|g| g.name.clone()).collect()
+        };
+        for name in &names {
+            if let Err(e) = self.get(name) {
+                log::warn!("Failed to open graph '{}' at startup: {}", name, e);
+            }
+        }
     }
 
     /// Check if a graph has time-travel enabled.

@@ -286,6 +286,21 @@ class Client:
             self._request("POST", "/gremlin", json={"steps": steps}, headers=headers)
         )
 
+    def has_name(self, name: str, source_name: Optional[str] = None,
+                 target_name: Optional[str] = None,
+                 graph: Optional[str] = None,
+                 time_travel: Optional[int] = None) -> GremlinResponse:
+        """Look up a vertex or edge by name (uses vertex_name/edge_name index).
+
+        For edges, optionally specify source_name and target_name.
+        """
+        step: dict = {"step": "hasName", "name": name}
+        if source_name is not None:
+            step["sourceName"] = source_name
+        if target_name is not None:
+            step["targetName"] = target_name
+        return self.execute_gremlin([step], graph, time_travel)
+
     def search(
         self,
         text: str,
@@ -450,7 +465,7 @@ class Client:
         raise ApiError(502, data.get("error", "proxy search failed"))
 
     def get_tokenizer_words(self) -> TokenizerConfig:
-        return TokenizerConfig.model_validate(self._request("GET", "/settings/tokenizer"))
+        return TokenizerConfig.model_validate(self._request("GET", "/settings/tokenizer/words"))
 
     def add_tokenizer_words(self, words: list[str]) -> StatusResponse:
         return StatusResponse.model_validate(
@@ -512,3 +527,45 @@ class Client:
                         except json.JSONDecodeError:
                             pass
         return {"choices": [{"message": {"content": full_content}}]}
+
+    # ── Property index ─────────────────────────────────────────────────────
+
+    def create_vertex_property_index(self, key: str, graph: Optional[str] = None) -> dict:
+        return self._request("POST", "/indices/vertex/properties",
+                             json={"key": key}, headers=self._graph_header(graph))
+
+    def show_vertex_property_index(self, key: str, graph: Optional[str] = None) -> dict:
+        return self._request("GET", f"/indices/vertex/properties/{key}",
+                             headers=self._graph_header(graph))
+
+    def list_vertex_property_indices(self, graph: Optional[str] = None) -> dict:
+        return self._request("GET", "/indices/vertex/properties",
+                             headers=self._graph_header(graph))
+
+    def delete_vertex_property_index(self, key: str, graph: Optional[str] = None) -> dict:
+        return self._request("DELETE", f"/indices/vertex/properties/{key}",
+                             headers=self._graph_header(graph))
+
+    def delete_vertex_property_indices(self, keys: list[str], graph: Optional[str] = None) -> dict:
+        return self._request("DELETE", "/indices/vertex/properties",
+                             json={"keys": keys}, headers=self._graph_header(graph))
+
+    def create_edge_property_index(self, key: str, graph: Optional[str] = None) -> dict:
+        return self._request("POST", "/indices/edge/properties",
+                             json={"key": key}, headers=self._graph_header(graph))
+
+    def show_edge_property_index(self, key: str, graph: Optional[str] = None) -> dict:
+        return self._request("GET", f"/indices/edge/properties/{key}",
+                             headers=self._graph_header(graph))
+
+    def list_edge_property_indices(self, graph: Optional[str] = None) -> dict:
+        return self._request("GET", "/indices/edge/properties",
+                             headers=self._graph_header(graph))
+
+    def delete_edge_property_index(self, key: str, graph: Optional[str] = None) -> dict:
+        return self._request("DELETE", f"/indices/edge/properties/{key}",
+                             headers=self._graph_header(graph))
+
+    def delete_edge_property_indices(self, keys: list[str], graph: Optional[str] = None) -> dict:
+        return self._request("DELETE", "/indices/edge/properties",
+                             json={"keys": keys}, headers=self._graph_header(graph))

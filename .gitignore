@@ -12,9 +12,11 @@ target
 # Python SDK build artifacts
 sdk/python/*.egg-info/
 sdk/python/.venv/
+sdk/python/build/
 
 # Self-awareness example log output
 examples/self_awareness/log/
 
 # Social activities example log output
 examples/social_activities/log/
+

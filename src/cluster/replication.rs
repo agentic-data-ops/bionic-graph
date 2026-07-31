@@ -26,6 +26,8 @@ pub struct ReplicatedEntry {
     pub cluster_seq: u64,
     /// The actual redo log entry.
     pub entry: RedoLogEntry,
+    /// Name of the graph this entry belongs to.
+    pub graph_name: String,
     /// Timestamp (microseconds) when the entry was created on the master.
     pub master_timestamp: u64,
 }
@@ -112,20 +114,24 @@ pub async fn broadcast_entry(
 ///
 /// The worker writes the entry to its own redo log and applies it to the
 /// local graph state. Returns the sequence number that was acked.
-///
-/// In production, this would:
-/// 1. Deserialize the RedoLogEntry
-/// 2. Apply it to the local Graph (via crud::replay_entry)
-/// 3. Update the worker's last_acked_seq
 pub fn handle_replicated_entry(
-    _entry: &ReplicatedEntry,
-    _current_seq: u64,
+    entry: &ReplicatedEntry,
+    current_seq: u64,
+    graph: &crate::graph::graph::Graph,
 ) -> ReplicationAck {
-    // TODO: apply to local graph via crud::replay_entry
+    let success = (|| -> Result<(), String> {
+        graph.redo_log
+            .append(entry.entry.op_type, entry.entry.op_id, &entry.entry.data)
+            .map_err(|e| format!("append to redo_log: {}", e))?;
+        crate::graph::crud::replay_entry(graph, &entry.entry)
+            .map_err(|e| format!("replay_entry: {}", e))?;
+        Ok(())
+    })();
+
     ReplicationAck {
         worker_id: "local".to_string(),
-        acked_seq: _current_seq,
-        success: true,
-        error: None,
+        acked_seq: if success.is_ok() { current_seq } else { current_seq },
+        success: success.is_ok(),
+        error: success.err(),
     }
 }

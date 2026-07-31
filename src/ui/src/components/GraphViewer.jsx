@@ -208,7 +208,7 @@ function DocViewer({ docId, onClose }) {
   );
 }
 
-function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onShowDocument, onSelectVertex, graphData, nodesRef, readOnly, onDataChange }) {
+function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onShowDocument, onSelectVertex, graphData, nodesRef, edgesRef, readOnly, onDataChange }) {
   const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const [editLabel, setEditLabel] = useState('');
@@ -281,17 +281,21 @@ function InfoPanel({ item, type, onClose, graphName, onDelete, onDeleteEdge, onS
       if (type === 'vertex') {
         await updateVertexProperties(item.id, newLabels, editProps, graphName, name, keywords);
       } else {
-        const newLabel = editLabel.trim() || item.name || '';
-        const newLabels = editLabel.split(',').map((s) => s.trim()).filter(Boolean);
-        await updateEdgeProperties(item.id, newLabel, editProps, graphName, newLabels, keywords, strength);
+        await updateEdgeProperties(item.id, name, editProps, graphName, newLabels, keywords, strength);
       }
       item.labels = newLabels;
       item.properties = editProps;
       item.name = name;
       item.keywords = keywords;
       item.strength = strength;
+      // Update vis-network DataSet so the visual label refreshes immediately,
+      // and collectUpdatedData() includes the updated values.
+      if (type === 'edge') {
+        if (edgesRef?.current) edgesRef.current.update({ id: item.id, label: name || `#${item.id}`, _original: item });
+      } else if (type === 'vertex') {
+        if (nodesRef?.current) nodesRef.current.update({ id: item.id, label: name || `#${item.id}`, _original: item });
+      }
       setEditing(false);
-      setUpdateSuccess(t('graph.updateSuccess'));
       onDataChange?.();
     } catch (e) {
       setError(e.message || 'Save failed');
@@ -803,11 +807,15 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
     if (!data?.data?.length) {
       netRef.current?.destroy();
       netRef.current = null;
+      nodesRef.current = null;
+      edgesRef.current = null;
       return;
     }
 
     const container = containerRef.current;
-    if (!container) return;
+    if (!container) {
+      return;
+    }
 
     // Sync timeTravel refs for getSnapshot
     timeTravelAtRef.current = timeTravelAt;
@@ -878,7 +886,6 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
     try {
       await deleteVertex(vid, graph, force);
     } catch (e) {
-      console.error('Delete failed:', e);
       setConfirmDelete(null);
       return;
     }
@@ -902,7 +909,6 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
     try {
       await deleteEdge(eid, graph, force);
     } catch (e) {
-      console.error('Delete edge failed:', e);
       setConfirmDeleteEdge(null);
       return;
     }
@@ -916,31 +922,26 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
     onDataChange?.(collectUpdatedData());
   }, [confirmDeleteEdge, graph, t, onDataChange, collectUpdatedData]);
 
-  if (!data?.data?.length) {
-    return <div className="flex items-center justify-center text-[var(--text-tertiary)] text-sm min-h-[200px]">{t('graphViewer.noData')}</div>;
-  }
-
   return (
     <div className={`flex-1 flex min-h-0 ${className || ''}`} style={{ height: '100%', width: '100%' }}>
       <div className="relative flex-1 min-h-0">
         {/* Toolbar: label filter + search + add buttons */}
         <div className="absolute top-3 left-3 z-10 flex items-start gap-2">
-          {/* Label filter dropdown */}
-          {allLabels.length > 0 && (
-            <div className="relative">
-              <button
-                className="px-2.5 py-1.5 rounded-lg bg-[var(--bg-secondary)] text-[var(--text-primary)] text-xs font-medium hover:bg-[var(--bg-hover)] transition-all shadow-lg whitespace-nowrap flex items-center gap-1.5"
-                onClick={() => setLabelFilterOpen(!labelFilterOpen)}
-              >
-                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
-                </svg>
-                {labelFilter.length > 0 ? (
-                  <span className="text-[var(--accent)]">{labelFilter.length}</span>
-                ) : (
-                  <span>{t('search.filterVertexLabel')}</span>
-                )}
-              </button>
+          {/* Label filter dropdown — always visible */}
+          <div className="relative">
+            <button
+              className="px-2.5 py-1.5 rounded-lg bg-[var(--bg-secondary)] text-[var(--text-primary)] text-xs font-medium hover:bg-[var(--bg-hover)] transition-all shadow-lg whitespace-nowrap flex items-center gap-1.5"
+              onClick={() => setLabelFilterOpen(!labelFilterOpen)}
+            >
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
+              </svg>
+              {labelFilter.length > 0 ? (
+                <span className="text-[var(--accent)]">{labelFilter.length}</span>
+              ) : (
+                <span>{t('search.filterVertexLabel')}</span>
+              )}
+            </button>
               {labelFilterOpen && (
                 <>
                   <div className="fixed inset-0 z-30" onClick={() => setLabelFilterOpen(false)} />
@@ -970,7 +971,6 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
                 </>
               )}
             </div>
-          )}
           <div className="w-48">
             <div className="relative">
               <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-[var(--text-tertiary)] pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
@@ -1085,10 +1085,19 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
                       const res = await addVertex(labels, props, graph, newVertexName.trim(), keywords);
                       if (res.id) {
                         const ns = nodesRef.current;
-                        if (ns) ns.add({ id: res.id, label: newVertexName.trim(), _original: { type: 'vertex', id: res.id, name: newVertexName.trim(), keywords, labels } });
-                        netRef.current?.fit({ animation: { duration: 300 } });
-                        setAddSuccess(t('graph.addSuccess'));
-                        onDataChange?.(collectUpdatedData());
+                        if (ns) {
+                          ns.add({ id: res.id, label: newVertexName.trim(), _original: { type: 'vertex', id: res.id, name: newVertexName.trim(), keywords, labels } });
+                          netRef.current?.fit({ animation: { duration: 300 } });
+                          setAddSuccess(t('graph.addSuccess'));
+                          onDataChange?.(collectUpdatedData());
+                        } else {
+                          // Network not yet initialized (empty state).
+                          // Pass the new vertex through onDataChange so the parent
+                          // re-renders with updated data, triggering the useEffect
+                          // to create the network.
+                          onDataChange?.([{ type: 'vertex', id: res.id, name: newVertexName.trim(), keywords, labels }]);
+                          setAddSuccess(t('graph.addSuccess'));
+                        }
                       }
                     } catch (e) { console.error('Add vertex failed:', e); }
                     setShowAddVertex(false);
@@ -1195,10 +1204,12 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
                         if (es) {
                           const exists = es.get({ filter: (e) => e.from === src && e.to === tgt });
                           if (exists.length === 0) es.add({ id: res.id, from: src, to: tgt, label: newEdgeLabel.trim(), _original: { type: 'edge', id: res.id, name: newEdgeLabel.trim(), source: src, target: tgt, labels, keywords, strength, properties: props } });
+                          netRef.current?.fit({ animation: { duration: 300 } });
                         }
-                        netRef.current?.fit({ animation: { duration: 300 } });
-                        setAddSuccess(t('graph.addSuccess'));
+                        // Pass ALL items from DataSets (vertices + new edge) so the
+                        // onDataChange handler has the complete picture, not just the edge.
                         onDataChange?.(collectUpdatedData());
+                        setAddSuccess(t('graph.addSuccess'));
                       }
                     } catch (e) { console.error('Add edge failed:', e); }
                     setShowAddEdge(false);
@@ -1210,7 +1221,11 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
           </div>
         )}
 
-        <div ref={containerRef} className="w-full h-full" />
+        <div ref={containerRef} className="w-full h-full relative">
+          {!data?.data?.length && (
+            <div className="absolute inset-0 flex items-center justify-center text-[var(--text-tertiary)] text-sm">{t('graphViewer.noData')}</div>
+          )}
+        </div>
       </div>
       {selected && (
         <InfoPanel
@@ -1219,6 +1234,7 @@ const GraphViewer = forwardRef(({ data, graph, className, theme, timeTravelEnabl
           graphName={graph}
           graphData={data}
           nodesRef={nodesRef}
+          edgesRef={edgesRef}
           onClose={() => setSelected(null)}
           onShowDocument={(docId) => setShowDoc(docId)}
           onSelectVertex={selectVertex}

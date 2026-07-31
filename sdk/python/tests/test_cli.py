@@ -56,7 +56,7 @@ def test_graph_delete(runner, mock):
 
 
 def test_graph_get_config(runner, mock):
-    mock.get("/graphs/g0/config").respond(json={"cache_capacity": 4096})
+    mock.get("/graphs/g0/config").respond(json={"lru_cache_size_mb": 4096})
     result = runner.invoke(main, ["--base-url", BASE_URL, "graph", "get-config", "g0"])
     assert result.exit_code == 0
     assert "4096" in result.output
@@ -78,7 +78,80 @@ def test_graph_update_meta(runner, mock):
 
 def test_graph_set_config(runner, mock):
     mock.put("/graphs/g0/config").respond(json={"status": "ok"})
-    result = runner.invoke(main, ["--base-url", BASE_URL, "graph", "set-config", "g0", "--config", '{"cache_capacity": 8192}'])
+    result = runner.invoke(main, ["--base-url", BASE_URL, "graph", "set-config", "g0", "--config", '{"lru_cache_size_mb": 8192}'])
+    assert result.exit_code == 0
+    assert "ok" in result.output
+
+
+# ── Property Index ────────────────────────────────────────────────
+
+
+def test_index_vp_create(runner, mock):
+    mock.post("/indices/vertex/properties").respond(json={"status": "ok", "key": "age", "created": True})
+    result = runner.invoke(main, ["--base-url", BASE_URL, "index", "vertex-property", "create", "--key", "age"])
+    assert result.exit_code == 0
+    assert "ok" in result.output
+
+
+def test_index_vp_list(runner, mock):
+    mock.get("/indices/vertex/properties").respond(json={"status": "ok", "indices": [{"key": "age", "total_entities": 3}]})
+    result = runner.invoke(main, ["--base-url", BASE_URL, "index", "vertex-property", "list"])
+    assert result.exit_code == 0
+    assert "age" in result.output
+
+
+def test_index_vp_show(runner, mock):
+    mock.get("/indices/vertex/properties/age").respond(json={"status": "ok", "key": "age", "total_entities": 3})
+    result = runner.invoke(main, ["--base-url", BASE_URL, "index", "vertex-property", "show", "age"])
+    assert result.exit_code == 0
+    assert "age" in result.output
+
+
+def test_index_vp_delete(runner, mock):
+    mock.delete("/indices/vertex/properties/age").respond(json={"status": "ok", "deleted": True})
+    result = runner.invoke(main, ["--base-url", BASE_URL, "index", "vertex-property", "delete", "age"])
+    assert result.exit_code == 0
+    assert "ok" in result.output
+
+
+def test_index_vp_delete_batch(runner, mock):
+    mock.delete("/indices/vertex/properties").respond(json={"status": "ok", "deleted": ["a", "b"]})
+    result = runner.invoke(main, ["--base-url", BASE_URL, "index", "vertex-property", "delete-batch", "--keys", '["a","b"]'])
+    assert result.exit_code == 0
+    assert "ok" in result.output
+
+
+def test_index_ep_create(runner, mock):
+    mock.post("/indices/edge/properties").respond(json={"status": "ok", "key": "weight", "created": True})
+    result = runner.invoke(main, ["--base-url", BASE_URL, "index", "edge-property", "create", "--key", "weight"])
+    assert result.exit_code == 0
+    assert "ok" in result.output
+
+
+def test_index_ep_list(runner, mock):
+    mock.get("/indices/edge/properties").respond(json={"status": "ok", "indices": [{"key": "weight", "total_entities": 2}]})
+    result = runner.invoke(main, ["--base-url", BASE_URL, "index", "edge-property", "list"])
+    assert result.exit_code == 0
+    assert "weight" in result.output
+
+
+def test_index_ep_show(runner, mock):
+    mock.get("/indices/edge/properties/weight").respond(json={"status": "ok", "key": "weight", "total_entities": 2})
+    result = runner.invoke(main, ["--base-url", BASE_URL, "index", "edge-property", "show", "weight"])
+    assert result.exit_code == 0
+    assert "weight" in result.output
+
+
+def test_index_ep_delete(runner, mock):
+    mock.delete("/indices/edge/properties/weight").respond(json={"status": "ok", "deleted": True})
+    result = runner.invoke(main, ["--base-url", BASE_URL, "index", "edge-property", "delete", "weight"])
+    assert result.exit_code == 0
+    assert "ok" in result.output
+
+
+def test_index_ep_delete_batch(runner, mock):
+    mock.delete("/indices/edge/properties").respond(json={"status": "ok", "deleted": ["x", "y"]})
+    result = runner.invoke(main, ["--base-url", BASE_URL, "index", "edge-property", "delete-batch", "--keys", '["x","y"]'])
     assert result.exit_code == 0
     assert "ok" in result.output
 
@@ -120,6 +193,13 @@ def test_vertex_update_meta(runner, mock):
     assert "ok" in result.output
 
 
+def test_vertex_update_meta_atime(runner, mock):
+    mock.put("/vertices/1/meta").respond(json={})
+    result = runner.invoke(main, ["--base-url", BASE_URL, "vertex", "update-meta", "1", "--rank", "5", "--atime", "999999"])
+    assert result.exit_code == 0
+    assert "ok" in result.output
+
+
 # ── Edge ───────────────────────────────────────────────────────────
 
 
@@ -152,6 +232,13 @@ def test_edge_get_meta(runner, mock):
 def test_edge_update_meta(runner, mock):
     mock.put("/edges/1/meta").respond(json={})
     result = runner.invoke(main, ["--base-url", BASE_URL, "edge", "update-meta", "1", "--rank", "8"])
+    assert result.exit_code == 0
+    assert "ok" in result.output
+
+
+def test_edge_update_meta_atime(runner, mock):
+    mock.put("/edges/1/meta").respond(json={})
+    result = runner.invoke(main, ["--base-url", BASE_URL, "edge", "update-meta", "1", "--atime", "888888"])
     assert result.exit_code == 0
     assert "ok" in result.output
 
@@ -266,13 +353,6 @@ def test_proxy_web_search(runner, mock):
     assert "results" in result.output
 
 
-def test_settings_get_tokenizer(runner, mock):
-    mock.get("/settings/tokenizer").respond(json={"custom_words": ["word1"]})
-    result = runner.invoke(main, ["--base-url", BASE_URL, "settings", "get-tokenizer"])
-    assert result.exit_code == 0
-    assert "word1" in result.output
-
-
 def test_settings_set_search(runner, mock):
     mock.put("/settings/graph/search").respond(json={"status": "ok"})
     result = runner.invoke(main, ["--base-url", BASE_URL, "settings", "set-search", "--config", '{"greedy": {}, "exact": {}}'])
@@ -318,20 +398,6 @@ def test_settings_get_web_search(runner, mock):
 def test_settings_set_web_search(runner, mock):
     mock.put("/settings/web-search").respond(json={"status": "ok"})
     result = runner.invoke(main, ["--base-url", BASE_URL, "settings", "set-web-search", "--config", '{"default_provider": "bing"}'])
-    assert result.exit_code == 0
-    assert "ok" in result.output
-
-
-def test_settings_add_tokenizer_words(runner, mock):
-    mock.post("/settings/tokenizer/words").respond(json={"status": "ok"})
-    result = runner.invoke(main, ["--base-url", BASE_URL, "settings", "add-tokenizer-words", "--words", '["word1","word2"]'])
-    assert result.exit_code == 0
-    assert "ok" in result.output
-
-
-def test_settings_remove_tokenizer_words(runner, mock):
-    mock.delete("/settings/tokenizer/words").respond(json={"status": "ok"})
-    result = runner.invoke(main, ["--base-url", BASE_URL, "settings", "remove-tokenizer-words", "--words", '["word1"]'])
     assert result.exit_code == 0
     assert "ok" in result.output
 

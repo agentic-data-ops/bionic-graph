@@ -182,7 +182,7 @@
   "knowledgeBase.docContent": "文档内容",
   "knowledgeBase.deleteDocTitle": "删除文档",
   "knowledgeBase.confirmDeleteDoc": "确定删除「{{title}}」？",
-  "knowledgeBase.cleanGraphData": "同时清理关联的图谱数据（顶点、边、神经元）",
+  "knowledgeBase.cleanGraphData": "同时清理关联的图谱数据（顶点和边）",
   "time.second": "秒",
   "time.minute": "分钟",
   "time.hour": "小时",

@@ -44,26 +44,43 @@ function isValidKeywords(text) {
   return true;
 }
 
-/** Extract and format graph search context from `search_progress` messages.
+/** Extract and format graph search context from `graph_search` messages.
  *  Output uses [Entity] / [Relation] labels in English. */
 function formatGraphContext(items) {
   if (!items?.length) return '';
+  // Build a name lookup for vertices so edges can reference names instead of IDs.
+  const nameMap = {};
+  for (const item of items) {
+    if (item.type === 'vertex' && item.id != null) {
+      nameMap[item.id] = item.name;
+    }
+  }
   return items
     .slice(0, 80)
     .map((item) => {
       if (item.type === 'vertex') {
-        let s = `[Entity] ${item.name}${item.labels?.length ? ' (' + item.labels.join(', ') + ')' : ''}`;
-        if (item.keywords?.length) {
-          s += ` — keywords: ${item.keywords.join(', ')}`;
+        let s = `[Entity#${item.id}] ${item.name}`;
+        if (item.labels?.length) s += ` | labels: ${item.labels.join(', ')}`;
+        if (item.keywords?.length) s += ` | keywords: ${item.keywords.join(', ')}`;
+        if (item.properties && Object.keys(item.properties).length) {
+          const props = Object.entries(item.properties)
+            .map(([k, v]) => `${k}=${v}`)
+            .join(', ');
+          s += ` | properties: {${props}}`;
         }
         return s;
       } else if (item.type === 'edge') {
-        let s = `[Relation] ${item.name}: ${item.source} → ${item.target}`;
-        if (item.strength !== undefined && item.strength !== 1.0) {
-          s += ` (strength: ${item.strength})`;
-        }
-        if (item.keywords?.length) {
-          s += ` — ${item.keywords.join(', ')}`;
+        const srcName = nameMap[item.source] || item.source;
+        const tgtName = nameMap[item.target] || item.target;
+        let s = `[Relation#${item.id}] ${item.name}: ${srcName}[${item.source}] → ${tgtName}[${item.target}]`;
+        s += ` | strength: ${item.strength ?? 1.0}`;
+        if (item.labels?.length) s += ` | labels: ${item.labels.join(', ')}`;
+        if (item.keywords?.length) s += ` | keywords: ${item.keywords.join(', ')}`;
+        if (item.properties && Object.keys(item.properties).length) {
+          const props = Object.entries(item.properties)
+            .map(([k, v]) => `${k}=${v}`)
+            .join(', ');
+          s += ` | properties: {${props}}`;
         }
         return s;
       }
@@ -76,10 +93,10 @@ function formatGraphContext(items) {
 /** Collect graph search data from conversation history + current search result. */
 function collectGraphContext(convMessages, currentSearchData) {
   const ctx = [];
-  // Historical: extract from search_progress messages
+  // Extract graph data from graph_search messages
   if (convMessages) {
     for (const msg of convMessages) {
-      if (msg.type === 'search_progress' && msg.graphData?.data?.length) {
+      if (msg.type === 'graph_search' && msg.graphData?.data?.length) {
         ctx.push(...msg.graphData.data);
       }
     }
@@ -172,7 +189,7 @@ export default function ChatArea({
           if (provider) {
             const wsSteps = [];
             const wsProgressId = uid();
-            const wsProgressMsg = { id: wsProgressId, type: 'web_search_progress', title: text, steps: wsSteps, graphName: defaultGraph };
+            const wsProgressMsg = { id: wsProgressId, type: 'web_search', title: text, steps: wsSteps, graphName: defaultGraph };
             setSearchStream(wsProgressMsg);
             setIsGenerating(true);
 
@@ -223,7 +240,7 @@ export default function ChatArea({
         } catch (e) {
           console.error('Web search error:', e);
           setSearchStream(null);
-          allSearchMsgs.push({ id: uid(), type: 'web_search_progress', title: text, steps: [{ icon: '❌', name: `Web search failed: ${e.message}`, status: 'failed' }], graphName: defaultGraph });
+          allSearchMsgs.push({ id: uid(), type: 'web_search', title: text, steps: [{ icon: '❌', name: `Web search failed: ${e.message}`, status: 'failed' }], graphName: defaultGraph });
         }
       }
 
@@ -234,7 +251,7 @@ export default function ChatArea({
         const ttMicros = timeTravel && timeTravelPoint ? localDatetimeToUTC(timeTravelPoint) : null;
         const progressMsgId = uid();
         const ttEnabled = (Array.isArray(graphMetas) ? graphMetas.find(g => g.name === defaultGraph)?.time_travel : false) || false;
-        const progressMsg = { id: progressMsgId, type: 'search_progress', title: text, steps, timeTravelEnabled: ttEnabled, timeTravelAt: ttMicros };
+        const progressMsg = { id: progressMsgId, type: 'graph_search', title: text, steps, timeTravelEnabled: ttEnabled, timeTravelAt: ttMicros };
         if (allSearchMsgs.length === 0) {
           setSearchStream(progressMsg);
         }
@@ -335,7 +352,6 @@ ${webSearchContext}`,
           content: `The following information was retrieved from the knowledge graph. Prioritize it when answering the user's question.
 If the graph data is sufficient, directly reference its entities and relationships. If not, supplement with your own knowledge.
 Do not mention entity or relationship ID numbers — use their names directly.
-Provide the answer first, then the reasoning process.
 
 ${graphCtx}`,
         });
@@ -418,21 +434,19 @@ ${graphCtx}`,
         <MessageList messages={messages} searchStream={searchStream} theme={theme}
           onEdit={(text) => { chatInputRef.current?.setText(text); requestAnimationFrame(() => chatInputRef.current?.focus()); }}
           onSaveToKB={onSaveToKB}
-          onDataChange={(items) => {
+          onDataChange={(items, msgId) => {
             const conv = activeConv;
-            if (!conv) return;
-            const itemIds = new Set(items.map(i => i.id));
-            const updatedMsgs = conv.messages.map((m) => {
-              const graphSrc = m.graphData || m.data;
-              if (graphSrc?.data?.length) {
-                const match = graphSrc.data.some(d => itemIds.has(d.id));
-                if (match) {
-                  if (m.graphData) return { ...m, graphData: { ...m.graphData, data: items } };
-                  return { ...m, data: { ...m.data, data: items } };
-                }
-              }
-              return m;
-            });
+            if (!conv || !items.length || !msgId) return;
+            // Direct message lookup by ID — no traversal, no merge logic.
+            const msgIdx = conv.messages.findIndex(m => m.id === msgId);
+            if (msgIdx === -1) return;
+            const msg = conv.messages[msgIdx];
+            const updatedMsgs = [...conv.messages];
+            if (msg.graphData) {
+              updatedMsgs[msgIdx] = { ...msg, graphData: { ...msg.graphData, data: items } };
+            } else {
+              updatedMsgs[msgIdx] = { ...msg, data: { ...msg.data, data: items } };
+            }
             onUpdateConv({ ...conv, messages: updatedMsgs });
           }}
         />

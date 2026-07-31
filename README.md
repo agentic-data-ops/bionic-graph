@@ -2,7 +2,7 @@
 
 > **A Graph build for AI Agent**
 >
-> Pure Rust | Gremlin API | Chat UI | Full-text Search | Bionic Neuronal Spreads Traverse | Time Travel | Self-update Ranking |
+> Pure Rust | Gremlin API | Chat UI | Full-text Search | Bionic Neuronal Spreads Traverse | Time Travel | Self-update Ranking | Custom Property Index |
 
 ---
 
@@ -55,10 +55,10 @@ Bionic-Graph is built from the ground up with Rust, organized in five layers fro
 | Layer | Module | Key Features |
 |-------|--------|-------------|
 | **Frontend** | `src/ui/` | React 19 + vis-network. Chat UI, graph visualization, knowledge base management. All LLM calls proxied through backend. |
-| **REST API** | `src/gremlin/` | 45+ axum routes: graph CRUD, Gremlin queries, settings, document extraction, OpenAI-compatible proxy, web search proxy, async task tracking. |
-| **Graph Engine** | `src/graph/` | Gremlin pipeline (23 steps), jieba-rs tokenizer, lock-safe CRUD with WAL, rank/atime tracking, time travel. |
-| **In-Memory Index** | `src/storage/` | BTreeMap (by ID), TokenMap (prefix+word), RankIndex, AdjacencyIndex. Rebuilt from disk at startup. |
-| **Storage Engine** | `src/storage/` | 16KB block-based, 64B fixed records, LRU BlockCache (64MB), WAL redo log with crash recovery, deadlock-free RwLock pools. |
+| **REST API** | `src/gremlin/` | 55+ axum routes: graph CRUD, Gremlin queries, settings, document extraction, custom property indices, OpenAI-compatible proxy, web search proxy, async task tracking. All forwarding/broadcasting unified via `ClusterGateway`. |
+| **Graph Engine** | `src/graph/` | Gremlin pipeline (24 steps), jieba-rs tokenizer, lock-safe CRUD with WAL, rank/atime tracking, time travel, custom property indices. |
+| **In-Memory Index** | `src/storage/` | BTreeMap (by ID), TokenMap (prefix+word), RankIndex, AdjacencyIndex, opt-in property key index. Rebuilt from disk at startup. |
+| **Storage Engine** | `src/storage/` | 16KB block-based, 64B fixed records, LRU BlockCache (64MB), WAL redo log with size/time rotation + async background dirty-block flush on rotation, deadlock-free RwLock pools. |
 | **Python SDK** | `sdk/python/` | Full REST API client. CLI tool `bgcli` with 12 topics, interactive chat with web + graph search. |
 
 ### How it works — a search flow
@@ -122,18 +122,27 @@ Once the server is running:
 
 ### Quick start (cluster mode)
 
-Bionic-Graph supports a **master-worker cluster** architecture for horizontal read scaling. The master handles both reads and writes; workers serve reads locally and forward write requests to the master. Redo-log entries are replicated from master to workers after each write.
+Bionic-Graph supports a **master-worker cluster** architecture for horizontal read scaling. The master handles both reads and writes; workers serve reads locally and forward write requests to the master.
 
 ```
 ┌─────────┐     ┌─────────┐     ┌─────────┐
 │ Worker 1│     │ Master  │     │ Worker 2│
-│ (read)  │◄────│(R+W)    │────►│ (read)  │
+│ (R)     │◄────│(R+W)    │────►│ (R)     │
 └────┬────┘     └─────────┘     └────┬────┘
-     │               │               │
-     └─── writes ────┘               │
-          forwarded                  │
-                                     │
-        Redo log replication ────────┘
+     │ ① writes forwarded           │
+     └─────────── to master ─────────┘
+                 │
+     ┌───────────┴───────────┐
+     │ ② master broadcasts   │
+     │    entries via HTTP    │
+     │    to ALL workers      │
+     └───────────────────────┘
+
+Touch（rank/atime 读取同步）：
+┌─────────┐   POST /cluster/touch   ┌─────────┐   relay   ┌─────────┐
+│ Worker  │ ─────────────────────►  │ Master  │ ────────► │ Worker 2│
+│ (读 V)  │     worker→master       │ apply+  │           │ apply   │
+└─────────┘                         └─────────┘           └─────────┘
 ```
 
 **Step 1 — Configure the master** (`~/.config/bionic-graph/settings.json`):
@@ -196,10 +205,11 @@ Bionic-Graph supports a **master-worker cluster** architecture for horizontal re
 |--------|----------|
 | **Reads** | Any node (master or worker) can serve read requests (Gremlin, search, vertex/edge queries) |
 | **Writes** | Workers forward write requests to the master automatically via HTTP |
-| **Replication** | After each write, the master pushes the redo-log entry to all connected workers |
-| **Heartbeat** | Workers send periodic heartbeats to the master (every 5s by default) |
-| **Data isolation** | Each node has its own `data/` directory — workers sync via replication, not shared storage |
-| **Rank/Atime sync** | Read access on workers is reported back to the master via `touch` for rank/atime tracking |
+| **Write broadcast** | After each write, the master broadcasts the entry to ALL known workers (including offline ones) via `ClusterGateway::broadcast()` → **persistent FIFO queue** (plan 6.3). The request is durably written to `<data_dir>/cluster/broadcast-<node>-<ts>.bin` before any HTTP attempt; an async consumer thread delivers the oldest undelivered entry in order (POST `/cluster/execute`, with `X-Request-Id` header to prevent recursion), retrying forever on failure. Workers detect the header via middleware, set `IS_BROADCAST_REPLAY` (task-local), and skip forwarding/broadcasting. Workers replay the entry into their local WAL and graph. Queue files roll at 1000 entries (write-side); each file is deleted once fully delivered. On master restart, leftover files are re-queued and drained automatically (at-least-once). Query parameters (`?force`, `?clean`) are faithfully passed through — no default value inference. All original request headers (`X-Graph-Name`, `X-Time-Travel`, etc.) are passed through via `ForwardedRequest.headers`. Broadcast ID consistency is guaranteed by `create_vertex_with_id()`/`create_edge_with_id()`. |
+| **Heartbeat** | Workers send periodic heartbeats to the master (every 5s by default) carrying their local graph list; the master detects missing/inconsistent graphs and issues sync commands (CreateGraph/UpdateGraphMeta/UpdateGraphConfig/DeleteGraph/SetDefaultGraph). Worker `node_id` must be unique — two workers with the same ID will overwrite each other in master's registry. |
+| **Node persistence** | The master persists the cluster topology to `<data_dir>/cluster/nodes.json` on every heartbeat; on startup it loads known workers and waits for them to register (timeout, then degrades to available nodes). |
+| **Data isolation** | Each node has its own `data/` directory — workers sync via write broadcast, not shared storage |
+| **Rank/Atime sync** | Read access triggers touch: worker→master reports the read via HTTP POST `/cluster/touch`, then master applies locally + **relay-broadcasts** to all workers. Each node updates its own DataHeader in-place (no WAL). |
 
 > **Note:** The cluster module is functional but not yet optimized for production. Leader election, automatic worker discovery, and cluster-aware routing are planned enhancements. For development and evaluation, start with a single-node setup (`"enabled": false`).
 
@@ -223,6 +233,8 @@ cargo run --release
 
 After frontend changes, `touch src/ui_serve.rs` is required to force Rust recompilation (rust-embed doesn't auto-detect `dist/` changes).
 
+> **Frontend polling resiliency**: The Knowledge Base extraction task polling now includes `try-catch` around each poll iteration. If a single poll request fails (e.g., network glitch or cluster broadcast collision), the error is logged and polling continues — the import no longer gets stuck permanently.
+
 ### Commands
 
 | Command | Description |
@@ -241,7 +253,7 @@ After frontend changes, `touch src/ui_serve.rs` is required to force Rust recomp
 | `-H, --host` | from settings | HTTP bind address |
 | `-P, --port` | from settings | HTTP port |
 | `--config` | `~/.config/bionic-graph/settings.json` | Config file path |
-| `--tokenizer-config` | `~/.config/bionic-graph/tokenizer.json` | Tokenizer custom dictionary config path |
+
 
 ### Settings
 
@@ -290,7 +302,7 @@ Auto-created at `~/.config/bionic-graph/settings.json` if not present. Full refe
       "params": {},
       "headers": {
         "Content-Type": "application/json",
-        "Authorization": "Bearer <your-bce-token>"
+        "Authorization": "Bearer <your-api-key>"
       }
     }]
   },
@@ -502,8 +514,8 @@ curl localhost:8080/settings/llm
 # Web search providers
 curl localhost:8080/settings/web-search
 
-# Tokenizer custom dictionary
-curl localhost:8080/settings/tokenizer
+# Tokenizer custom dictionary (list words)
+curl localhost:8080/settings/tokenizer/words
 
 # Add custom tokenizer word
 curl -X POST localhost:8080/settings/tokenizer/words \
@@ -535,8 +547,11 @@ curl -X PUT localhost:8080/documents/<id> \
   -H 'Content-Type: application/json' \
   -d '{"title":"new-title","tags":["updated"]}'
 
-# Delete document
-curl -X DELETE localhost:8080/documents/<id>
+# Delete document (clean=true also removes associated graph vertices/edges)
+curl -X DELETE 'localhost:8080/documents/<id>?clean=true'
+
+# In cluster mode, documents are automatically synced to all workers with the
+# same UUID. Extraction tags and graph association are also broadcast.
 
 # Get document content
 curl localhost:8080/documents/<id>/content
@@ -588,7 +603,7 @@ curl localhost:8080/tasks/<task_id>
 | `PUT` | `/graphs` | Set default graph |
 | `DELETE` | `/graphs/:name` | Delete a graph |
 | `PUT` | `/graphs/:name` | Update graph metadata |
-| `GET/PUT` | `/graphs/:name/config` | Per-graph storage config |
+| `GET/PUT` | `/graphs/:name/config` | Per-graph storage, lock & indices config |
 | `POST` | `/gremlin` | Gremlin pipeline query |
 | `GET` | `/search` | Token search shortcut (`?text=&mode=&limit=`) |
 | `POST` | `/vertices` | Create a vertex |
@@ -604,8 +619,11 @@ curl localhost:8080/tasks/<task_id>
 | `GET/PUT` | `/settings/llm` | LLM provider config |
 | `GET/PUT` | `/settings/web-search` | Web search provider config |
 | `POST` | `/proxy/web-search` | Web search proxy |
-| `GET` | `/settings/tokenizer` | Tokenizer custom dictionary config |
-| `POST/DELETE` | `/settings/tokenizer/words` | Add / remove custom tokenizer words |
+| `GET/POST/DELETE` | `/settings/tokenizer/words` | List / add / remove custom tokenizer words |
+| `POST/GET/DELETE` | `/indices/vertex/properties` | Register / list / unregister vertex property index keys |
+| `GET/DELETE` | `/indices/vertex/properties/:key` | Show stats / unregister a specific vertex property key |
+| `POST/GET/DELETE` | `/indices/edge/properties` | Register / list / unregister edge property index keys |
+| `GET/DELETE` | `/indices/edge/properties/:key` | Show stats / unregister a specific edge property key |
 | `GET` | `/documents` | List documents |
 | `POST` | `/documents` | Create a document |
 | `GET/PUT/DELETE` | `/documents/:id` | Get/update/delete document metadata |
@@ -669,7 +687,7 @@ src/
 │   ├── bitmap_file.rs         # Block-level free space tracking
 │   ├── block_allocator.rs     # Chunk-level allocator
 │   ├── block_cache.rs         # LRU cache with dirty tracking
-│   ├── redo_log.rs            # WAL: FIFO queue + batch writer, rotation, CRC32, replay
+│   ├── redo_log.rs            # WAL: FIFO queue + batch writer, rotation, background flush, CRC32, replay
 │   ├── memory_index.rs        # In-memory BTreeMap/HashMap indexes
 │   └── memory_index_builder.rs # Index rebuild by scanning data file at startup
 ├── lock/                      # Concurrency lock manager
@@ -684,16 +702,24 @@ src/
 │   ├── tokenizer.rs           # jieba-rs tokenizer
 │   └── tests.rs               # Integration tests
 ├── gremlin/                   # REST API (axum)
-│   ├── mod.rs                 # 45+ route handlers
+│   ├── mod.rs                 # 55+ route handlers
 │   ├── settings.rs            # /settings/graph/search, /settings/llm, /settings/graph/rank, /settings/web-search, /web-search/proxy
-│   └── tokenizer_settings.rs  # /settings/tokenizer + /settings/tokenizer/words
+│   ├── tokenizer_settings.rs  # /settings/tokenizer/words (GET/POST/DELETE)
+│   └── indices.rs             # /indices/vertex|edge/properties (POST/GET/DELETE)
 ├── extract/                   # Document extraction pipeline
 │   ├── config.rs, document.rs, extraction.rs
 │   ├── llm_client.rs, task_manager.rs
 ├── documents.rs               # Document CRUD manager
 ├── graph_manager.rs           # Multi-graph lifecycle
 ├── maas/                      # MaaS OpenAI-compatible proxy
-├── cluster/                   # Master-worker cluster
+├── cluster/                   # Master-worker cluster (server, registry, gateway, queue, replication)
+│   ├── server.rs              # Heartbeat, forward, replicate, touch
+│   ├── node.rs                # NodeRegistry + nodes.json persistence + graph sync
+│   ├── forward.rs             # Write forwarding
+│   ├── request.rs             # Unified ClusterRequest model
+│   ├── gateway.rs             # ClusterGateway — unified forward/broadcast
+│   ├── broadcast_queue.rs     # Persistent FIFO broadcast queue (plan 6.3)
+│   └── replication.rs         # Redo-log replication
 ├── ui_serve.rs                # Embedded frontend serving
 ├── ui/                        # React frontend
 │   ├── src/
@@ -729,6 +755,7 @@ src/
 9. **Multi-graph** — multiple named graphs, isolated `data/graphs/<name>/` directories
 10. **Fine-grained concurrency** — striped RwLock pools with deadlock-free ordering
 11. **Web Search** — backend proxy for web search, configurable providers (Bing, Baidu API). LLM extracts keywords before searching for better results.
+12. **Custom Property Indices** — opt-in per-key property index on vertices/edges, persisted in per-graph `config.json`. Crash-proof: auto-rebuilt from data file on restart.
 12. **Python SDK** — `pip install git+https://github.com/agentic-data-ops/bionic-graph.git#subdirectory=sdk/python`, full REST API client with CLI tool `bgcli` and interactive chat mode.
 13. **Batch operations** — `/batch/load` and `/batch/delete` for bulk upsert/delete by vertex name.
 14. **Examples** — self-awareness KG (`examples/self_awareness/`) and social activities KG (`examples/social_activities/`) with LLM-driven load/plan/act pipelines.
@@ -789,14 +816,11 @@ bgcli task wait --task-id t1
 bgcli settings get-search
 bgcli settings set-search --config '{"greedy":{"match_mode":"prefix"},"exact":{"match_mode":"word"}}'
 bgcli settings get-llm
-bgcli settings set-llm --providers '[{"name":"DeepSeek","api_base_url":"https://api.deepseek.com/v1","api_key":"sk-...","models":["deepseek-v4-flash"]}]'
+bgcli settings set-llm --providers '[{"name":"DeepSeek","api_base_url":"https://api.deepseek.com/v1","api_key":"<your-api-key>","models":["deepseek-v4-flash"]}]'
 bgcli settings get-rank
 bgcli settings set-rank --config '{"auto_inc_rank_when_read":false}'
 bgcli settings get-web-search
 bgcli settings set-web-search --config '{"default_provider":"Baidu","providers":[{"name":"Baidu","search_url":"..."}]}'
-bgcli settings get-tokenizer
-bgcli settings add-tokenizer-words --words '["knowledge-graph"]'
-bgcli settings remove-tokenizer-words --words '["knowledge-graph"]'
 
 # Proxy services
 bgcli proxy web-search --query "Game of Thrones" --provider Baidu

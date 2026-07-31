@@ -29,6 +29,21 @@ pub fn create_vertex_locked(
     vid
 }
 
+/// Create a vertex with a specific ID (locked). Used during cluster replay.
+pub fn create_vertex_with_id_locked(
+    graph: &Arc<Graph>,
+    vid: u32,
+    name: &str,
+    labels: &[String],
+    keywords: &[String],
+    properties: &HashMap<String, PropertyValue>,
+) -> StorageResult<VertexId> {
+    let _meta = graph.locks.read_metadata();
+    let result = crud::create_vertex_with_id(graph, vid, name, labels, keywords, properties);
+    drop(_meta);
+    result
+}
+
 pub fn get_vertex_locked(
     graph: &Arc<Graph>,
     vertex_id: VertexId,
@@ -98,6 +113,24 @@ pub fn create_edge_locked(
     result
 }
 
+/// Create an edge with a specific ID (locked). Used during cluster replay.
+pub fn create_edge_with_id_locked(
+    graph: &Arc<Graph>,
+    eid: u32,
+    source: VertexId,
+    target: VertexId,
+    name: &str,
+    labels: &[String],
+    keywords: &[String],
+    strength: f32,
+    properties: &HashMap<String, PropertyValue>,
+) -> StorageResult<EdgeId> {
+    let _meta = graph.locks.read_metadata();
+    let result = crud::create_edge_with_id(graph, eid, source, target, name, labels, keywords, strength, properties);
+    drop(_meta);
+    result
+}
+
 pub fn get_edge_locked(
     graph: &Arc<Graph>,
     edge_id: EdgeId,
@@ -148,4 +181,68 @@ pub fn hard_delete_edge_locked(
     drop(_elock);
     drop(_meta);
     result
+}
+
+// ── Direct &Graph variants (WAL replay — no Arc needed) ─────────────────
+
+pub fn create_vertex_locked_direct(
+    graph: &Graph,
+    name: &str,
+    labels: &[String],
+    keywords: &[String],
+    properties: &HashMap<String, PropertyValue>,
+) -> StorageResult<VertexId> {
+    crud::create_vertex(graph, name, labels, keywords, properties)
+}
+
+pub fn update_vertex_locked_direct(
+    graph: &Graph,
+    vertex_id: VertexId,
+    name: Option<&str>,
+    labels: Option<&[String]>,
+    keywords: Option<&[String]>,
+    properties: Option<&HashMap<String, PropertyValue>>,
+    append_history: bool,
+) -> StorageResult<()> {
+    crud::update_vertex(graph, vertex_id, name, labels, keywords, properties, append_history)
+}
+
+pub fn hard_delete_vertex_locked_direct(
+    graph: &Graph,
+    vertex_id: VertexId,
+) -> StorageResult<()> {
+    crud::hard_delete_vertex(graph, vertex_id)
+}
+
+pub fn create_edge_locked_direct(
+    graph: &Graph,
+    source: u32,
+    target: u32,
+    name: &str,
+    labels: &[String],
+    keywords: &[String],
+    strength: f32,
+    properties: &HashMap<String, PropertyValue>,
+) -> StorageResult<EdgeId> {
+    crud::create_edge(graph, source, target, name, labels, keywords, strength, properties)
+}
+
+pub fn update_edge_locked_direct(
+    graph: &Graph,
+    edge_id: EdgeId,
+    name: Option<&str>,
+    labels: Option<&[String]>,
+    keywords: Option<&[String]>,
+    strength: Option<f32>,
+    properties: Option<&HashMap<String, PropertyValue>>,
+    append_history: bool,
+) -> StorageResult<()> {
+    crud::update_edge(graph, edge_id, name, labels, keywords, strength, properties, append_history)
+}
+
+pub fn hard_delete_edge_locked_direct(
+    graph: &Graph,
+    edge_id: EdgeId,
+) -> StorageResult<()> {
+    crud::hard_delete_edge(graph, edge_id)
 }

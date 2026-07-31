@@ -168,7 +168,7 @@ def graph_get_config(ctx, name):
 @graph.command("set-config")
 @click.argument("name")
 @click.option("--config", required=True, callback=_parse_json_arg,
-              help='JSON: storage config. Fields: cache_capacity (int), rotation_size_mb (int), rotation_interval_min (int). Example: \'{"cache_capacity": 8192, "rotation_size_mb": 64}\'')
+              help='JSON: storage config. Fields: lru_cache_size_mb (int, default 64), log_rotation_size_mb (int), log_rotation_age_secs (int). Example: \'{"lru_cache_size_mb": 64, "log_rotation_size_mb": 64}\'')
 @click.pass_context
 def graph_set_config(ctx, name, config):
     c = _client(ctx)
@@ -296,12 +296,19 @@ def vertex_get_meta(ctx, vid, graph):
 @vertex.command("update-meta")
 @click.argument("vid", type=int)
 @click.option("--rank", type=int, help="New rank value")
+@click.option("--atime", type=int, help="New atime value (microsecond timestamp)")
 @click.option("--graph", help="Target graph (default: graph0)")
 @click.pass_context
-def vertex_update_meta(ctx, vid, rank, graph):
-    """Update vertex metadata (rank)."""
+def vertex_update_meta(ctx, vid, rank, atime, graph):
+    """Update vertex metadata (rank, atime)."""
     c = _client(ctx)
-    c.update_vertex_meta(vid, {"rank": rank} if rank else {})
+    meta = {}
+    if rank is not None:
+        meta["rank"] = rank
+    if atime is not None:
+        meta["atime"] = atime
+    if meta:
+        c.update_vertex_meta(vid, meta, graph)
     _output({"status": "ok"}, _fmt(ctx))
 
 
@@ -375,12 +382,19 @@ def edge_get_meta(ctx, eid, graph):
 @edge.command("update-meta")
 @click.argument("eid", type=int)
 @click.option("--rank", type=int, help="New rank value")
+@click.option("--atime", type=int, help="New atime value (microsecond timestamp)")
 @click.option("--graph", help="Target graph (default: graph0)")
 @click.pass_context
-def edge_update_meta(ctx, eid, rank, graph):
-    """Update edge metadata (rank)."""
+def edge_update_meta(ctx, eid, rank, atime, graph):
+    """Update edge metadata (rank, atime)."""
     c = _client(ctx)
-    c.update_edge_meta(eid, {"rank": rank} if rank else {})
+    meta = {}
+    if rank is not None:
+        meta["rank"] = rank
+    if atime is not None:
+        meta["atime"] = atime
+    if meta:
+        c.update_edge_meta(eid, meta, graph)
     _output({"status": "ok"}, _fmt(ctx))
 
 
@@ -393,7 +407,7 @@ def gremlin():
 
 @gremlin.command("execute")
 @click.option("--steps", required=True, callback=_parse_json_arg,
-              help='JSON array of pipeline step objects. Steps: V, E, has, hasNot, hasLabel, hasText, hasKey, hasValue, out, in, both, outE, inE, bothE, search, traverse, repeat, expand, limit, count, dedup, values, timeTravel, rank. Example: \'[{"step":"V","ids":[1]},{"step":"out","labels":["married_to"]}]\'')
+              help='JSON array of pipeline step objects. Steps: V, E, has, hasNot, hasKey, hasLabel, hasName, search, traverse, repeat, expand, out, in, both, outE, inE, bothE, limit, count, dedup, values, rank. Example: \'[{"step":"hasName","name":"Wang Wei"}]\'')
 @click.option("--graph", help="Target graph (default: graph0)")
 @click.option("--time-travel", type=int, default=None,
               help="Microsecond timestamp for point-in-time queries (X-Time-Travel header)")
@@ -579,7 +593,7 @@ def settings_get_llm(ctx):
 
 @settings.command("set-llm")
 @click.option("--providers", callback=_parse_json_arg,
-              help='JSON array of LLM provider configs. Each: {name, api_base_url, api_key, models: [...], default_model, id}. Example: \'[{"name":"openai","api_base_url":"https://api.openai.com/v1","api_key":"sk-...","models":["gpt-4"]}]\'')
+              help='JSON array of LLM provider configs. Each: {name, api_base_url, api_key, models: [...], default_model, id}. Example: \'[{"name":"openai","api_base_url":"https://api.openai.com/v1","api_key":"<your-api-key>","models":["gpt-4"]}]\'')
 @click.option("--default-model", help="Default model key (Provider/Model)")
 @click.pass_context
 def settings_set_llm(ctx, providers, default_model):
@@ -624,32 +638,96 @@ def settings_set_web_search(ctx, config):
     _output(c.set_web_search_settings(config).model_dump(), _fmt(ctx))
 
 
-@settings.command("get-tokenizer")
+# ── index ──────────────────────────────────────────────────────────
+@main.group()
+def index():
+    """Property index management."""
+
+@index.group(name="vertex-property")
+def vertex_property():
+    """Vertex property index."""
+
+@vertex_property.command("create")
+@click.option("--key", required=True, help="Property key to index")
+@click.option("--graph", default=None, help="Graph name")
 @click.pass_context
-def settings_get_tokenizer(ctx):
-    """Get custom tokenizer dictionary words."""
+def vp_create(ctx, key, graph):
     c = _client(ctx)
-    _output(c.get_tokenizer_words().model_dump(), _fmt(ctx))
+    _output(c.create_vertex_property_index(key, graph), _fmt(ctx))
 
-
-@settings.command("add-tokenizer-words")
-@click.option("--words", required=True, callback=_parse_json_arg,
-              help='JSON array of custom words to add. Example: \'["deep learning", "knowledge graph"]\'')
+@vertex_property.command("show")
+@click.argument("key")
+@click.option("--graph", default=None, help="Graph name")
 @click.pass_context
-def settings_add_tokenizer_words(ctx, words):
-    """Add custom words to the tokenizer dictionary."""
+def vp_show(ctx, key, graph):
     c = _client(ctx)
-    _output(c.add_tokenizer_words(words).model_dump(), _fmt(ctx))
+    _output(c.show_vertex_property_index(key, graph), _fmt(ctx))
 
-
-@settings.command("remove-tokenizer-words")
-@click.option("--words", required=True, callback=_parse_json_arg,
-              help='JSON array of custom words to remove. Example: \'["deep learning"]\'')
+@vertex_property.command("list")
+@click.option("--graph", default=None, help="Graph name")
 @click.pass_context
-def settings_remove_tokenizer_words(ctx, words):
-    """Remove custom words from the tokenizer dictionary."""
+def vp_list(ctx, graph):
     c = _client(ctx)
-    _output(c.remove_tokenizer_words(words).model_dump(), _fmt(ctx))
+    _output(c.list_vertex_property_indices(graph), _fmt(ctx))
+
+@vertex_property.command("delete")
+@click.argument("key")
+@click.option("--graph", default=None, help="Graph name")
+@click.pass_context
+def vp_delete(ctx, key, graph):
+    c = _client(ctx)
+    _output(c.delete_vertex_property_index(key, graph), _fmt(ctx))
+
+@vertex_property.command("delete-batch")
+@click.option("--keys", required=True, callback=_parse_json_arg, help='JSON array of keys')
+@click.option("--graph", default=None, help="Graph name")
+@click.pass_context
+def vp_delete_batch(ctx, keys, graph):
+    c = _client(ctx)
+    _output(c.delete_vertex_property_indices(keys, graph), _fmt(ctx))
+
+@index.group(name="edge-property")
+def edge_property():
+    """Edge property index."""
+
+@edge_property.command("create")
+@click.option("--key", required=True, help="Property key to index")
+@click.option("--graph", default=None, help="Graph name")
+@click.pass_context
+def ep_create(ctx, key, graph):
+    c = _client(ctx)
+    _output(c.create_edge_property_index(key, graph), _fmt(ctx))
+
+@edge_property.command("show")
+@click.argument("key")
+@click.option("--graph", default=None, help="Graph name")
+@click.pass_context
+def ep_show(ctx, key, graph):
+    c = _client(ctx)
+    _output(c.show_edge_property_index(key, graph), _fmt(ctx))
+
+@edge_property.command("list")
+@click.option("--graph", default=None, help="Graph name")
+@click.pass_context
+def ep_list(ctx, graph):
+    c = _client(ctx)
+    _output(c.list_edge_property_indices(graph), _fmt(ctx))
+
+@edge_property.command("delete")
+@click.argument("key")
+@click.option("--graph", default=None, help="Graph name")
+@click.pass_context
+def ep_delete(ctx, key, graph):
+    c = _client(ctx)
+    _output(c.delete_edge_property_index(key, graph), _fmt(ctx))
+
+@edge_property.command("delete-batch")
+@click.option("--keys", required=True, callback=_parse_json_arg, help='JSON array of keys')
+@click.option("--graph", default=None, help="Graph name")
+@click.pass_context
+def ep_delete_batch(ctx, keys, graph):
+    c = _client(ctx)
+    _output(c.delete_edge_property_indices(keys, graph), _fmt(ctx))
 
 
 # ── proxy ──────────────────────────────────────────────────────────

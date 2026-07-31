@@ -191,7 +191,7 @@
   "knowledgeBase.docContent": "Document content",
   "knowledgeBase.deleteDocTitle": "Delete Document",
   "knowledgeBase.confirmDeleteDoc": "Are you sure you want to delete \"{{title}}\"?",
-  "knowledgeBase.cleanGraphData": "Also clean associated graph data (vertices, edges, neurons)",
+  "knowledgeBase.cleanGraphData": "Also clean associated graph data (vertices and edges)",
   "time.second": "sec",
   "time.minute": "min",
   "time.hour": "hour",

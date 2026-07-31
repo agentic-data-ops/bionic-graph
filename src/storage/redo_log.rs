@@ -31,7 +31,8 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
-        mpsc::{self, Receiver, Sender, TryRecvError},
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
         Arc, Condvar, Mutex,
     },
     thread::{self, JoinHandle},
@@ -46,8 +47,6 @@ use crate::storage::types::{OpType, StorageError, StorageResult};
 pub const ROTATION_THRESHOLD: u64 = 64 * 1024 * 1024;
 /// Default batch size: accumulate up to 128 entries before writing.
 pub const DEFAULT_BATCH_SIZE: usize = 128;
-/// Maximum time the writer waits for more entries before flushing a partial batch.
-const BATCH_FLUSH_INTERVAL: Duration = Duration::from_millis(10);
 /// CRC32 of an entry covers: op_type (1) + op_id (8) + data_len (4) + data.
 const CRC_HEADER_LEN: usize = 1 + 8 + 4;
 
@@ -69,10 +68,19 @@ struct WriteState {
     error: Option<StorageError>,
 }
 
+struct BatchBuffer {
+    entries: Vec<Vec<u8>>,
+    start_time: Instant,
+    /// 最大缓存时长（微秒）。Some(0) 或 None 表示禁用时间触发。
+    max_age_us: Option<u64>,
+}
+
 /// Messages sent from the API to the background writer.
 enum WriterMessage {
     /// A data entry to be written (pre-encoded binary bytes).
     Entry(Vec<u8>),
+    /// Multiple entries at once.
+    BatchEntries(Vec<Vec<u8>>),
     /// Flush any pending batch and ensure all prior entries are durable.
     Flush {
         done: Arc<(Mutex<bool>, Condvar)>,
@@ -106,6 +114,16 @@ pub struct RedoLog {
     /// File size threshold for rotation (bytes).
     #[allow(dead_code)]
     rotation_threshold: u64,
+    /// In-memory batch buffer (shared with the flush checker thread).
+    batch_buffer: Arc<Mutex<Option<BatchBuffer>>>,
+    /// Periodic flush checker thread handle (Mutex for interior mutability with &self).
+    flush_checker: Mutex<Option<JoinHandle<()>>>,
+    /// Stop signal for the flush checker thread.
+    flush_checker_stop: Arc<AtomicBool>,
+    /// Callback to flush dirty data blocks before log rotation.
+    /// Set after Graph creates its block_cache, allowing the WAL writer
+    /// to ensure all dirty blocks are on disk before deleting old WAL files.
+    flush_dirty: Arc<Mutex<Option<Box<dyn Fn() -> StorageResult<()> + Send>>>>,
 }
 
 impl RedoLog {
@@ -121,7 +139,7 @@ impl RedoLog {
     pub fn open_with_config(
         dir: &Path,
         rotation_threshold: u64,
-        rotation_max_age_secs: Option<u64>,
+        log_rotation_age_secs: Option<u64>,
     ) -> StorageResult<Self> {
         fs::create_dir_all(dir)?;
 
@@ -148,11 +166,13 @@ impl RedoLog {
 
         let dir_buf = dir.to_path_buf();
         let state_clone = state.clone();
+        let flush_dirty: Arc<Mutex<Option<Box<dyn Fn() -> StorageResult<()> + Send>>>> = Arc::new(Mutex::new(None));
+        let flush_dirty_writer = flush_dirty.clone();
 
         let handle = thread::Builder::new()
             .name("bgraph-wal-writer".into())
             .spawn(move || {
-                writer_main_loop(rx, state_clone, dir_buf, rotation_threshold, rotation_max_age_secs, writer);
+                writer_main_loop(rx, state_clone, dir_buf, rotation_threshold, log_rotation_age_secs, flush_dirty_writer, writer);
             })
             .map_err(|e| StorageError::Other(format!("failed to spawn WAL writer thread: {e}")))?;
 
@@ -162,6 +182,10 @@ impl RedoLog {
             state,
             handle: Some(handle),
             rotation_threshold,
+            batch_buffer: Arc::new(Mutex::new(None)),
+            flush_checker: Mutex::new(None),
+            flush_checker_stop: Arc::new(AtomicBool::new(false)),
+            flush_dirty,
         })
     }
 
@@ -191,7 +215,34 @@ impl RedoLog {
     /// This call blocks until the writer commits the batch containing this
     /// entry to disk.
     pub fn append(&self, op_type: OpType, op_id: u64, data: &[u8]) -> StorageResult<()> {
+        // During WAL replay, skip appending to avoid recursive WAL writes.
+        use crate::graph::graph::WAL_REPLAYING;
+        if WAL_REPLAYING.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+
         let bytes = self.encode_entry(op_type, op_id, data);
+
+        // Check if batch mode is active.
+        {
+            let mut guard = self.batch_buffer.lock().unwrap();
+            if let Some(ref mut buf) = *guard {
+                // Time-based auto-flush: if buffer exceeds max age, flush first
+                if let Some(max_age) = buf.max_age_us {
+                    if max_age > 0 && buf.start_time.elapsed() > Duration::from_micros(max_age) {
+                        drop(guard);
+                        self.flush_batch()?;
+                        let mut guard = self.batch_buffer.lock().unwrap();
+                        if let Some(ref mut buf) = *guard {
+                            buf.entries.push(bytes);
+                        }
+                        return Ok(());
+                    }
+                }
+                buf.entries.push(bytes);
+                return Ok(());
+            }
+        }
 
         // Read the current epoch so we can detect when our batch commits.
         let epoch = self.state.0.lock().unwrap().committed_epoch;
@@ -212,6 +263,133 @@ impl RedoLog {
         }
 
         Ok(())
+    }
+
+    pub fn start_batch(&self) {
+        self.stop_flush_checker();
+        let mut guard = self.batch_buffer.lock().unwrap();
+        if guard.is_none() {
+            *guard = Some(BatchBuffer { entries: Vec::with_capacity(128), start_time: Instant::now(), max_age_us: None });
+        }
+    }
+
+    /// Start a batch with a max age timeout (microseconds).
+    /// When `max_age_us > 0`, the batch will auto-flush after this duration.
+    /// Spawns a background checker thread that periodically checks the buffer age.
+    pub fn start_batch_with_max_age(&self, max_age_us: u64) {
+        self.stop_flush_checker();
+        let mut guard = self.batch_buffer.lock().unwrap();
+        if guard.is_none() {
+            *guard = Some(BatchBuffer { entries: Vec::with_capacity(128), start_time: Instant::now(), max_age_us: Some(max_age_us) });
+        }
+        drop(guard);
+
+        if max_age_us > 0 {
+            self.flush_checker_stop.store(false, Ordering::Relaxed);
+            let stop = self.flush_checker_stop.clone();
+            let buf = self.batch_buffer.clone();
+            let tx = self.writer_tx.clone();
+
+            // 检查间隔 = max_age / 2
+            let interval = Duration::from_micros(max_age_us / 2);
+            let max_age = Duration::from_micros(max_age_us);
+
+            *self.flush_checker.lock().unwrap() = Some(thread::Builder::new()
+                .name("bg-wal-flush-check".into())
+                .spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        thread::sleep(interval);
+
+                        let should_flush = {
+                            let guard = buf.lock().unwrap();
+                            guard.as_ref().map_or(false, |b| {
+                                !b.entries.is_empty() && b.start_time.elapsed() >= max_age
+                            })
+                        };
+
+                        if should_flush {
+                            // Take entries and flush them
+                            let entries = {
+                                let mut g = buf.lock().unwrap();
+                                g.as_mut().map(|b| std::mem::take(&mut b.entries))
+                            };
+
+                            if let Some(entries) = entries {
+                                if !entries.is_empty() {
+                                    // Send to writer and wait for flush
+                                    let _ = tx.send(WriterMessage::BatchEntries(entries));
+                                    let done = Arc::new((Mutex::new(false), Condvar::new()));
+                                    let done2 = done.clone();
+                                    let _ = tx.send(WriterMessage::Flush { done });
+                                    let mut g = done2.0.lock().unwrap();
+                                    while !*g {
+                                        g = done2.1.wait(g).unwrap();
+                                    }
+                                    // Reset start_time after flush
+                                    if let Ok(mut g) = buf.lock() {
+                                        if let Some(ref mut b) = *g {
+                                            b.start_time = Instant::now();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                })
+                .expect("failed to spawn flush checker thread"));
+        }
+    }
+
+    fn stop_flush_checker(&self) {
+        self.flush_checker_stop.store(true, Ordering::Relaxed);
+        if let Ok(mut guard) = self.flush_checker.lock() {
+            if let Some(h) = guard.take() {
+                let _ = h.join();
+            }
+        }
+    }
+
+    pub fn maybe_flush_batch(&self, max_count: usize, max_age: Duration) -> StorageResult<bool> {
+        let should_flush = {
+            let guard = self.batch_buffer.lock().unwrap();
+            guard.as_ref().map_or(false, |b| b.entries.len() >= max_count || b.start_time.elapsed() >= max_age)
+        };
+        if should_flush { self.flush_batch()?; Ok(true) } else { Ok(false) }
+    }
+
+    /// Set a callback to flush dirty data blocks before log rotation.
+    ///
+    /// Called after Graph creates its block_cache, so the WAL writer can
+    /// ensure all dirty blocks are on disk before deleting old WAL files.
+    pub fn set_flush_handler<F>(&self, handler: F)
+    where
+        F: Fn() -> StorageResult<()> + Send + 'static,
+    {
+        if let Ok(mut guard) = self.flush_dirty.lock() {
+            *guard = Some(Box::new(handler));
+        }
+    }
+
+    pub fn flush_batch(&self) -> StorageResult<()> {
+        let entries = { let mut g = self.batch_buffer.lock().unwrap(); g.as_mut().map(|b| std::mem::take(&mut b.entries)) };
+        let Some(entries) = entries else { return Ok(()) };
+        if entries.is_empty() { return Ok(()); }
+        self.writer_tx.send(WriterMessage::BatchEntries(entries)).map_err(|_| StorageError::Other("WAL writer channel closed".into()))?;
+        let done = Arc::new((Mutex::new(false), Condvar::new()));
+        let done2 = done.clone();
+        self.writer_tx.send(WriterMessage::Flush { done }).map_err(|_| StorageError::Other("WAL writer channel closed".into()))?;
+        let mut guard = done2.0.lock().unwrap();
+        while !*guard { guard = done2.1.wait(guard).unwrap(); }
+        { let s = self.state.0.lock().unwrap(); if let Some(ref err) = s.error { return Err(err.to_error()); } }
+        if let Some(ref mut buf) = *self.batch_buffer.lock().unwrap() { buf.start_time = Instant::now(); }
+        Ok(())
+    }
+
+    pub fn end_batch(&self) -> StorageResult<()> {
+        let r = self.flush_batch();
+        self.stop_flush_checker();
+        *self.batch_buffer.lock().unwrap() = None;
+        r
     }
 
     /// Flush any pending batch and ensure all prior entries are durable
@@ -308,6 +486,7 @@ impl RedoLog {
     /// This is called during graph shutdown to ensure all pending entries
     /// are flushed before the process exits.
     pub fn stop(&mut self) {
+        self.stop_flush_checker();
         // Signal shutdown.
         let _ = self.writer_tx.send(WriterMessage::Shutdown);
         // Drop the sender so the writer sees channel disconnection.
@@ -350,13 +529,35 @@ impl RedoLog {
                 let op_id = u64::from_le_bytes(header[1..9].try_into().unwrap());
                 let data_len = u32::from_le_bytes(header[9..13].try_into().unwrap()) as usize;
 
-                // Read data.
-                let mut data = vec![0u8; data_len];
-                file.read_exact(&mut data)?;
+                // 防御：data_len 超过合理上限 → 视为截断，停止回放
+                // 单个 entry 最大有效数据约为 16KB（MAX_STORABLE_DATA）
+                const MAX_WAL_DATA_LEN: usize = 1024 * 1024;
+                if data_len > MAX_WAL_DATA_LEN {
+                    log::warn!("WAL replay: entry {} has invalid data_len={} (> {}), truncated", seq, data_len, MAX_WAL_DATA_LEN);
+                    break;
+                }
 
-                // Read CRC32.
+                // 读数据体：捕获 UnexpectedEof → 截断
+                let mut data = vec![0u8; data_len];
+                match file.read_exact(&mut data) {
+                    Ok(_) => {}
+                    Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                        log::warn!("WAL replay: entry {} data truncated at {} bytes, stopping replay", seq, data.len());
+                        break;
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+
+                // 读 CRC32：捕获 UnexpectedEof → 截断
                 let mut crc_bytes = [0u8; 4];
-                file.read_exact(&mut crc_bytes)?;
+                match file.read_exact(&mut crc_bytes) {
+                    Ok(_) => {}
+                    Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                        log::warn!("WAL replay: entry {} CRC truncated, stopping replay", seq);
+                        break;
+                    }
+                    Err(e) => return Err(e.into()),
+                }
                 let stored_crc = u32::from_le_bytes(crc_bytes);
 
                 // Verify CRC32.
@@ -368,13 +569,8 @@ impl RedoLog {
                 let computed_crc = crc32fast::hash(&crc_buf);
 
                 if stored_crc != computed_crc {
-                    return Err(StorageError::RedoLogReplay {
-                        seq,
-                        message: format!(
-                            "CRC mismatch: stored={:#x}, computed={:#x}",
-                            stored_crc, computed_crc
-                        ),
-                    });
+                    log::warn!("WAL replay: entry {} CRC mismatch — truncated entry, stopping replay", seq);
+                    break;
                 }
 
                 let op_type = OpType::try_from(op_type_byte).map_err(|_| {
@@ -438,7 +634,8 @@ fn writer_main_loop(
     state: Arc<(Mutex<WriteState>, Condvar)>,
     dir: PathBuf,
     rotation_threshold: u64,
-    rotation_max_age_secs: Option<u64>,
+    log_rotation_age_secs: Option<u64>,
+    flush_dirty: Arc<Mutex<Option<Box<dyn Fn() -> StorageResult<()> + Send>>>>,
     mut writer: RedoLogWriter,
 ) {
     let mut batch: Vec<Vec<u8>> = Vec::with_capacity(DEFAULT_BATCH_SIZE);
@@ -455,42 +652,29 @@ fn writer_main_loop(
         match msg {
             WriterMessage::Entry(bytes) => {
                 batch.push(bytes);
-
-                // Try to collect more entries up to batch size.
-                let deadline = Instant::now() + BATCH_FLUSH_INTERVAL;
-                while batch.len() < DEFAULT_BATCH_SIZE && Instant::now() < deadline {
-                    match rx.try_recv() {
-                        Ok(WriterMessage::Entry(b)) => batch.push(b),
-                        Ok(other) => {
-                            // Control message arrived mid-batch.
-                            // Flush the partial batch, then handle control.
-                            writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, rotation_max_age_secs, &mut checkpoint_seq, &state);
-                            handle_control_msg(other, &mut writer, &dir, &mut checkpoint_seq, &state);
-                            continue;
-                        }
-                        Err(TryRecvError::Empty) => break,
-                        Err(TryRecvError::Disconnected) => {
-                            flush_entries(writer, &mut batch, &dir, rotation_threshold, rotation_max_age_secs, &mut checkpoint_seq, &state);
-                            return;
-                        }
-                    }
+                // 非 batch 模式：逐条写入并 fsync，不累积等待
+                // 确保每条 append() 在返回前数据已耐久
+                writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, log_rotation_age_secs, &mut checkpoint_seq, &state, &flush_dirty);
+            }
+            WriterMessage::BatchEntries(mut entries) => {
+                batch.append(&mut entries);
+                // Flush immediately if batch is large enough.
+                if batch.len() >= DEFAULT_BATCH_SIZE {
+                    writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, log_rotation_age_secs, &mut checkpoint_seq, &state, &flush_dirty);
                 }
-
-                // Flush accumulated batch.
-                writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, rotation_max_age_secs, &mut checkpoint_seq, &state);
             }
             WriterMessage::Shutdown => {
-                flush_entries(writer, &mut batch, &dir, rotation_threshold, rotation_max_age_secs, &mut checkpoint_seq, &state);
+                flush_entries(writer, &mut batch, &dir, rotation_threshold, log_rotation_age_secs, &mut checkpoint_seq, &state, &flush_dirty);
                 return;
             }
             WriterMessage::Flush { done } => {
-                writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, rotation_max_age_secs, &mut checkpoint_seq, &state);
+                writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, log_rotation_age_secs, &mut checkpoint_seq, &state, &flush_dirty);
                 let mut guard = done.0.lock().unwrap();
                 *guard = true;
                 done.1.notify_all();
             }
             WriterMessage::Renew { done } => {
-                writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, rotation_max_age_secs, &mut checkpoint_seq, &state);
+                writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, log_rotation_age_secs, &mut checkpoint_seq, &state, &flush_dirty);
                 let _ = writer.file.sync_all();
                 let files = list_redo_files(&dir);
                 for fname in &files {
@@ -509,7 +693,7 @@ fn writer_main_loop(
                 done.1.notify_all();
             }
             WriterMessage::Checkpoint { flush_fn, done } => {
-                writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, rotation_max_age_secs, &mut checkpoint_seq, &state);
+                writer = flush_entries(writer, &mut batch, &dir, rotation_threshold, log_rotation_age_secs, &mut checkpoint_seq, &state, &flush_dirty);
                 if let Err(e) = flush_fn() {
                     advance_epoch(&state, Some(e));
                     let mut guard = done.0.lock().unwrap();
@@ -544,11 +728,12 @@ fn flush_entries(
     batch: &mut Vec<Vec<u8>>,
     dir: &Path,
     rotation_threshold: u64,
-    rotation_max_age_secs: Option<u64>,
+    log_rotation_age_secs: Option<u64>,
     checkpoint_seq: &mut u64,
     state: &Arc<(Mutex<WriteState>, Condvar)>,
+    flush_dirty: &Arc<Mutex<Option<Box<dyn Fn() -> StorageResult<()> + Send>>>>,
 ) -> RedoLogWriter {
-    let result = try_flush_entries(&mut writer, batch, dir, rotation_threshold, rotation_max_age_secs, checkpoint_seq);
+    let result = try_flush_entries(&mut writer, batch, dir, rotation_threshold, log_rotation_age_secs, checkpoint_seq, flush_dirty);
     match result {
         Ok(()) => {
             advance_epoch(state, None);
@@ -567,21 +752,40 @@ fn try_flush_entries(
     batch: &[Vec<u8>],
     dir: &Path,
     rotation_threshold: u64,
-    rotation_max_age_secs: Option<u64>,
+    log_rotation_age_secs: Option<u64>,
     checkpoint_seq: &mut u64,
+    flush_dirty: &Arc<Mutex<Option<Box<dyn Fn() -> StorageResult<()> + Send>>>>,
 ) -> Result<(), StorageError> {
     if batch.is_empty() {
         return Ok(());
     }
 
+    // ── helpers ─────────────────────────────────────────────────────────────
+    // Rotate WAL: flush dirty blocks to the data file, THEN delete the old
+    // file — done synchronously in the writer thread so a crash (kill -9)
+    // cannot land between the flush and the delete and lose data that only
+    // existed in the old WAL.
+    let flush_and_remove = |old_path: PathBuf, fd: Arc<Mutex<Option<Box<dyn Fn() -> StorageResult<()> + Send>>>>| -> StorageResult<()> {
+        log::info!("WAL rotation: flushing dirty blocks before deleting {}", old_path.display());
+        if let Ok(guard) = fd.lock() {
+            if let Some(ref f) = *guard {
+                f()?;
+            }
+        }
+        log::info!("WAL rotation: deleting old WAL {}", old_path.display());
+        fs::remove_file(&old_path)?;
+        log::info!("WAL rotation: complete for {}", old_path.display());
+        Ok(())
+    };
+
     // Check time-based rotation.
-    if let Some(max_age) = rotation_max_age_secs {
+    if let Some(max_age) = log_rotation_age_secs {
         if writer.created_at.elapsed() > Duration::from_secs(max_age) {
             let old_path = writer.path.clone();
             let new_writer = create_new_file(dir, *checkpoint_seq)?;
             *checkpoint_seq += 1;
             writer.file.sync_all()?;
-            let _ = fs::remove_file(&old_path);
+            flush_and_remove(old_path, flush_dirty.clone())?;
             *writer = new_writer;
         }
     }
@@ -593,7 +797,7 @@ fn try_flush_entries(
         let new_writer = create_new_file(dir, *checkpoint_seq)?;
         *checkpoint_seq += 1;
         writer.file.sync_all()?;
-        let _ = fs::remove_file(&old_path);
+        flush_and_remove(old_path, flush_dirty.clone())?;
         *writer = new_writer;
     }
 
@@ -605,45 +809,6 @@ fn try_flush_entries(
     writer.size += batch_size;
 
     Ok(())
-}
-
-/// Handle control messages (Flush, Renew) that arrive mid-batch.
-fn handle_control_msg(
-    msg: WriterMessage,
-    writer: &mut RedoLogWriter,
-    dir: &Path,
-    checkpoint_seq: &mut u64,
-    state: &Arc<(Mutex<WriteState>, Condvar)>,
-) {
-    match msg {
-        WriterMessage::Renew { done } => {
-            let _ = writer.file.sync_all();
-            let files = list_redo_files(dir);
-            for fname in &files {
-                let _ = fs::remove_file(dir.join(fname));
-            }
-            match create_new_file(dir, *checkpoint_seq) {
-                Ok(new_writer) => {
-                    *checkpoint_seq += 1;
-                    *writer = new_writer;
-                    advance_epoch(state, None);
-                }
-                Err(e) => advance_epoch(state, Some(e)),
-            }
-            let mut guard = done.0.lock().unwrap();
-            *guard = true;
-            done.1.notify_all();
-        }
-        _ => {
-            // Other control messages: just advance epoch and signal done.
-            advance_epoch(state, None);
-            if let WriterMessage::Flush { done } = msg {
-                let mut guard = done.0.lock().unwrap();
-                *guard = true;
-                done.1.notify_all();
-            }
-        }
-    }
 }
 
 fn advance_epoch(state: &Arc<(Mutex<WriteState>, Condvar)>, err: Option<StorageError>) {

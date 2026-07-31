@@ -67,8 +67,9 @@ bgcli [global options] <topic> <action> [arguments]
 | `gremlin` | `execute`, `search` | Gremlin queries & search |
 | `document` | `list`, `create`, `get`, `update`, `delete`, `get-content` | Document management |
 | `extract` | `submit`, `get-task`, `list-tasks`, `wait` | Knowledge extraction |
-| `settings` | `get-search`, `set-search`, `get-llm`, `set-llm`, `get-rank`, `set-rank`, `get-web-search`, `set-web-search`, `proxy`, `get-tokenizer`, `add-tokenizer-words`, `remove-tokenizer-words` | All settings |
-| `maas` | `list-models`, `chat` | MaaS proxy |
+| `settings` | `get-search`, `set-search`, `get-llm`, `set-llm`, `get-rank`, `set-rank`, `get-web-search`, `set-web-search` | All settings |
+| `index` | `vertex-property create/list/show/delete/delete-batch`, `edge-property create/list/show/delete/delete-batch` | Custom property index management |
+| `proxy` | `web-search`, `openai-models`, `openai-chat` | Proxy services (web search, LLM) |
 | **`chat`** | — | **Interactive chat session** |
 
 ## Interactive Chat
@@ -102,6 +103,46 @@ Chat session internal commands:
 User input → LLM extracts keywords (optional) → Web search (optional)
 → Graph search (optional) → Merge context → LLM responds
 ```
+
+## Property Index Management
+
+Create, list, inspect, and remove custom property indices on vertices and edges. Indices are persisted in the graph's `config.json` and survive restarts.
+
+```bash
+# Create a vertex property index on "age" (scans existing vertices)
+bgcli index vertex-property create --key age
+
+# Create a vertex property index on "email"
+bgcli index vertex-property create --key email
+
+# List all vertex property indices
+bgcli index vertex-property list
+
+# Show statistics for a specific vertex property index
+bgcli index vertex-property show age
+
+# Delete a vertex property index
+bgcli index vertex-property delete email
+
+# Batch delete vertex property indices
+bgcli index vertex-property delete-batch --keys '["old_key1","old_key2"]'
+
+# Same operations for edge property indices
+bgcli index edge-property create --key weight
+bgcli index edge-property list
+bgcli index edge-property show weight
+bgcli index edge-property delete weight
+
+# Specify a non-default graph
+bgcli index vertex-property create --key city --graph mygraph
+```
+
+The index can also be set via the per-graph config API:
+```bash
+bgcli graph set-config graph0 --config '{"indices":{"vertex_properties":["age","city"],"edge_properties":[]}}'
+```
+
+> **Crash safety**: If the server crashes (`kill -9`), indices are automatically rebuilt from the data file on restart — no manual re-registration needed. Verified by end-to-end testing.
 
 ## Output Format
 

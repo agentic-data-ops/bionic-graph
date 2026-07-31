@@ -70,7 +70,7 @@ run "graph list" 0 graph list
 run "graph create" 0 graph create "${TEST_GRAPH}" --description "CLI test graph"
 run "graph get-config" 0 graph get-config "${TEST_GRAPH}"
 run "graph update-meta" 0 graph update-meta "${TEST_GRAPH}" --description "Updated desc"
-run "graph set-config" 0 graph set-config "${TEST_GRAPH}" --config '{"cache_capacity": 8192}'
+run "graph set-config" 0 graph set-config "${TEST_GRAPH}" --config '{"lru_cache_size_mb": 64}'
 run "graph set-default" 0 graph set-default "${TEST_GRAPH}"
 run "graph set-default (restore)" 0 graph set-default graph0
 run "graph delete (force)" 0 graph delete "${TEST_GRAPH}" --force
@@ -176,9 +176,6 @@ run "settings set-llm (default-model)" 0 settings set-llm --default-model "DeepS
 run "settings get-rank" 0 settings get-rank
 run "settings set-rank" 0 settings set-rank --config '{"auto_inc_rank_when_update": true}'
 run "settings get-web-search" 0 settings get-web-search
-run "settings get-tokenizer" 0 settings get-tokenizer
-run "settings add-tokenizer-words" 0 settings add-tokenizer-words --words '["test_cli_word"]'
-run "settings remove-tokenizer-words" 0 settings remove-tokenizer-words --words '["test_cli_word"]'
 
 # ====================================================================
 # 9. MAAS

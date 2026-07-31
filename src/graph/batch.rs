@@ -6,15 +6,17 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::graph::crud;
 use crate::graph::graph::Graph;
 use crate::graph::locked;
+use crate::graph::profile;
 use crate::storage::types::PropertyValue;
 use crate::storage::types::StorageResult;
 
 /// A batch import item describing a vertex.
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct BatchEntity {
     pub name: String,
@@ -35,7 +37,7 @@ impl Default for BatchEntity {
 }
 
 /// A batch import item describing an edge, with source/target as vertex names.
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct BatchRelation {
     pub source: String,
     pub target: String,
@@ -53,7 +55,7 @@ pub struct BatchRelation {
 fn default_strength() -> f32 { 1.0 }
 
 /// A batch delete item for an edge, identified by source/target names and edge name.
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct BatchDeleteEdge {
     pub source: String,
     pub target: String,
@@ -61,12 +63,12 @@ pub struct BatchDeleteEdge {
 }
 
 /// Result of a batch delete operation.
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct BatchDeleteResult {
     pub vertices_deleted: usize,
     pub edges_deleted: usize,
 }
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct BatchImportResult {
     pub vertices_created: usize,
     pub vertices_updated: usize,
@@ -148,7 +150,7 @@ fn upsert_edge(
 /// to avoid reading the full vertex data payload for each vertex.
 pub fn build_name_to_vid(graph: &Arc<Graph>) -> HashMap<String, u32> {
     let mem = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-    mem.vertex_names.iter().map(|(k, v)| (k.clone(), *v)).collect()
+    mem.vertex_name.iter().map(|(k, v)| (k.clone(), *v)).collect()
 }
 
 /// Build an edge lookup keyed by (src_name, tgt_name, edge_name).
@@ -159,7 +161,7 @@ pub fn build_edge_lookup(
     let mut map = HashMap::new();
     let eids: Vec<u32> = {
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-        mi.edges.keys().copied().collect()
+        mi.edge_id.keys().copied().collect()
     };
     // Build reverse vid→name map for efficient lookup
     let vid_to_name: HashMap<u32, &str> = name_to_vid.iter().map(|(n, &v)| (v, n.as_str())).collect();
@@ -216,8 +218,23 @@ pub fn batch_import(
         edges_skipped: 0,
     };
 
+    // Start profiling
+    profile::begin_batch(format!("batch_import {}v+{}e update={}", entities.len(), relations.len(), update_existing));
+
+    // Enable WAL batch mode when configured
+    let wal_batch_enabled = graph.config.storage.log_flush_batch_enable;
+    if wal_batch_enabled {
+        let max_age = graph.config.storage.log_flush_max_age_us;
+        if max_age > 0 {
+            graph.redo_log.start_batch_with_max_age(max_age);
+        } else {
+            graph.redo_log.start_batch();
+        }
+    }
+
     // Import vertices
     for entity in entities {
+        let t0 = std::time::Instant::now();
         if update_existing {
             let existed = name_to_vid.contains_key(&entity.name);
             if existed {
@@ -249,10 +266,12 @@ pub fn batch_import(
                 Err(e) => log::warn!("Failed to create vertex '{}': {}", entity.name, e),
             }
         }
+        profile::record(if update_existing { "vertex_update" } else { "vertex_create" }, t0.elapsed());
     }
 
     // Import edges
     for rel in relations {
+        let t0 = std::time::Instant::now();
         if update_existing {
             let key = (rel.source.clone(), rel.target.clone(), rel.name.clone());
             let existed = edge_key_to_eid.contains_key(&key);
@@ -298,7 +317,18 @@ pub fn batch_import(
                     rel.name, rel.source, rel.target);
             }
         }
+        profile::record(if update_existing { "edge_update" } else { "edge_create" }, t0.elapsed());
     }
+
+    // End WAL batch mode
+    if wal_batch_enabled {
+        if let Err(e) = graph.redo_log.end_batch() {
+            log::warn!("WAL end_batch error: {}", e);
+        }
+    }
+
+    // Log profiling summary
+    profile::end_batch();
 
     result
 }
@@ -329,7 +359,7 @@ pub fn batch_delete(
         // Find the edge in the adjacency index
         let eid = {
             let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-            mi.adjacency.out_edges(src_vid).iter()
+            mi.vertex_adjacency.out_edges(src_vid).iter()
                 .find(|(_, t, _)| *t == tgt_vid)
                 .map(|(e, _, _)| *e)
         };
@@ -348,10 +378,10 @@ pub fn batch_delete(
             vids_to_delete.push(vid);
             // Collect all edges from adjacency index (both outgoing and incoming)
             let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-            for (eid, _, _) in mi.adjacency.out_edges(vid) {
+            for (eid, _, _) in mi.vertex_adjacency.out_edges(vid) {
                 edge_ids_to_delete.push(*eid);
             }
-            for (eid, _, _) in mi.adjacency.in_edges(vid) {
+            for (eid, _, _) in mi.vertex_adjacency.in_edges(vid) {
                 edge_ids_to_delete.push(*eid);
             }
         }

@@ -14,18 +14,26 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use std::sync::Mutex;
+use tokio::task::spawn_blocking;
+
+use crate::cluster::broadcast_queue::BroadcastQueue;
+use crate::cluster::node::NodeRegistry;
 
 use crate::config::Settings;
 use crate::documents::DocumentManager;
 use crate::graph::graph::Graph;
 use crate::graph::gremlin::{execute_gremlin, GremlinQuery, GremlinResponse, GremlinResult};
 use crate::graph_manager::GraphManager;
-use crate::cluster::node::NodeRegistry;
 use crate::task::{TaskManager, TaskResponse, TaskStatus, default_extraction_steps, update_step, compute_overall_pct};
 
 pub mod settings;
 pub mod tokenizer_settings;
+pub mod indices;
 use crate::storage::types::{PropertyValue, StorageResult};
+use crate::config::NodeRole;
+
+
+
 
 /// Shared application state for all graph routes.
 #[derive(Clone)]
@@ -36,9 +44,37 @@ pub struct AppState {
     pub task_mgr: TaskManager,
     /// NodeRegistry for cluster-mode broadcasts (None in standalone).
     pub cluster_registry: Option<Arc<NodeRegistry>>,
+    /// Persistent FIFO broadcast queue for cluster-mode broadcasts
+    /// (None in standalone / worker).
+    pub broadcast_queue: Option<Arc<BroadcastQueue>>,
     /// Master's API address for worker→master forwarding (None on master / standalone).
     pub master_api_addr: Option<String>,
 }
+
+impl AppState {
+    /// Build a ClusterGateway from this state's cluster configuration.
+    pub fn cluster_gateway(&self) -> crate::cluster::gateway::ClusterGateway {
+        let (is_worker, master_addr) = {
+            if let Ok(settings) = self.settings.lock() {
+                let is_worker = settings.cluster.enabled
+                    && settings.cluster.role == crate::config::NodeRole::Worker;
+                (is_worker, self.master_api_addr.clone())
+            } else {
+                (false, self.master_api_addr.clone())
+            }
+        };
+        crate::cluster::gateway::ClusterGateway::new(
+            is_worker,
+            master_addr,
+            self.cluster_registry.clone(),
+            self.broadcast_queue.clone(),
+        )
+    }
+}
+
+
+/// Broadcast a write result from the master to all workers.
+/// Called by write handlers after a successful mutation on the master.
 
 /// Build the axum router for all block-engine graph routes.
 pub fn build_router(
@@ -46,6 +82,7 @@ pub fn build_router(
     settings: Settings,
     cluster_registry: Option<Arc<NodeRegistry>>,
     master_api_addr: Option<String>,
+    broadcast_queue: Option<Arc<BroadcastQueue>>,
 ) -> axum::Router {
     let doc_mgr = DocumentManager::new(&settings.graph.storage.data_dir);
     let state = AppState {
@@ -55,6 +92,7 @@ pub fn build_router(
         task_mgr: TaskManager::new(),
         cluster_registry,
         master_api_addr,
+        broadcast_queue,
     };
 
     use axum::routing::{delete, get, post, put};
@@ -97,7 +135,7 @@ pub fn build_router(
         .route("/settings/web-search", get(settings::get_web_search_settings))
         .route("/settings/web-search", put(settings::update_web_search_settings))
         .route("/proxy/web-search", post(settings::web_search_proxy))
-        .route("/settings/tokenizer", get(tokenizer_settings::get_tokenizer_settings))
+        .route("/settings/tokenizer/words", get(tokenizer_settings::get_tokenizer_words))
         .route("/settings/tokenizer/words", post(tokenizer_settings::add_tokenizer_words))
         .route("/settings/tokenizer/words", delete(tokenizer_settings::remove_tokenizer_words))
         // Data import
@@ -122,8 +160,34 @@ pub fn build_router(
         // Tasks (generic async task tracking)
         .route("/tasks/:task_id", get(get_task_handler))
         .route("/tasks", get(list_tasks_handler))
+        // Custom property indices
+        .route("/indices/vertex/properties", post(indices::create_vertex_property_index))
+        .route("/indices/vertex/properties", get(indices::list_vertex_property_indices))
+        .route("/indices/vertex/properties/:key", get(indices::show_vertex_property_index))
+        .route("/indices/vertex/properties/:key", delete(indices::delete_vertex_property_index))
+        .route("/indices/vertex/properties", delete(indices::delete_vertex_property_indices))
+        .route("/indices/edge/properties", post(indices::create_edge_property_index))
+        .route("/indices/edge/properties", get(indices::list_edge_property_indices))
+        .route("/indices/edge/properties/:key", get(indices::show_edge_property_index))
+        .route("/indices/edge/properties/:key", delete(indices::delete_edge_property_index))
+        .route("/indices/edge/properties", delete(indices::delete_edge_property_indices))
         // Shared state
         .with_state(state)
+        // Middleware: detect cluster replay requests via X-Request-Id header
+        // and set per-task IS_BROADCAST_REPLAY so ClusterGateway::forward skips
+        // forwarding for the replayed request without blocking concurrent requests.
+        .layer(axum::middleware::from_fn(
+            |request: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| async move {
+                let is_replay = request.headers().get("X-Request-Id")
+                    .and_then(|v| v.to_str().ok())
+                    .map_or(false, |id| crate::graph::graph::INFLIGHT_REQUESTS.lock().unwrap().contains(id));
+                if is_replay {
+                    crate::graph::graph::IS_BROADCAST_REPLAY.scope(true, async { next.run(request).await }).await
+                } else {
+                    next.run(request).await
+                }
+            },
+        ))
 }
 
 // ── Health ──────────────────────────────────────────────────────────────────
@@ -267,8 +331,9 @@ pub async fn handle_gremlin(
         }
     }
 
-    // On the master (standalone or cluster), call process_touch directly
-    // to persist metadata to the redo log and optionally broadcast.
+    // On the master (standalone or cluster), update rank/atime in-place
+    // via DataHeader for read vertices/edges. In cluster mode, the master
+    // also broadcasts the touch to all workers (direct HTTP, no WAL).
     if response.success && !response.data.is_empty() {
         let settings = state.settings.lock().unwrap();
         if !settings.cluster.enabled || settings.cluster.role == crate::config::NodeRole::Master {
@@ -350,16 +415,19 @@ pub async fn handle_search(
 
 // ── POST /vertices ─────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct CreateVertexBody {
     pub name: String,
     pub labels: Option<Vec<String>>,
     pub keywords: Option<Vec<String>>,
     #[serde(default)]
     pub properties: std::collections::HashMap<String, crate::storage::types::PropertyValue>,
+    /// Optional ID for replication (used during cluster replay to keep IDs in sync).
+    #[serde(default)]
+    pub id: Option<u32>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct CreateVertexResponse {
     pub id: u32,
 }
@@ -369,22 +437,55 @@ pub async fn create_vertex(
     headers: axum::http::HeaderMap,
     Json(body): Json<CreateVertexBody>,
 ) -> Result<Json<CreateVertexResponse>, StatusCode> {
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let body_str = serde_json::to_string(&body).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let req = crate::cluster::request::ClusterRequest::new("POST", "/vertices")
+        .with_body(&body_str)
+        .with_opt_graph(graph_name);
+    if let Some(resp) = gateway.forward::<CreateVertexResponse>(&req).await? {
+        return Ok(Json(resp));
+    }
+
     let graph = resolve_graph_from_request(&state, &headers)
         .map_err(|_| StatusCode::NOT_FOUND)?;
-    let vid = crate::graph::locked::create_vertex_locked(
-        &graph,
-        &body.name,
-        &body.labels.unwrap_or_default(),
-        &body.keywords.unwrap_or_default(),
-        &body.properties,
-    )
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let labels = body.labels.clone().unwrap_or_default();
+    let keywords = body.keywords.clone().unwrap_or_default();
+
+    // During cluster replay, use master-assigned ID to ensure consistency
+    let vid = if crate::graph::graph::is_broadcast_replay() {
+        let replica_id = body.id.ok_or(StatusCode::BAD_REQUEST)?;
+        crate::graph::locked::create_vertex_with_id_locked(
+            &graph, replica_id, &body.name, &labels, &keywords, &body.properties,
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    } else {
+        crate::graph::locked::create_vertex_locked(
+            &graph, &body.name, &labels, &keywords, &body.properties,
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    };
+
+    // Broadcast to workers via ClusterGateway with master-assigned ID
+    let broadcast_req = crate::cluster::request::ClusterRequest::new("POST", "/vertices")
+        .with_body(&serde_json::json!({
+            "name": &body.name,
+            "labels": &body.labels,
+            "keywords": &body.keywords,
+            "properties": &body.properties,
+            "id": vid,
+        }).to_string())
+        .with_graph(&graph.name);
+    gateway.broadcast(&broadcast_req);
+
     Ok(Json(CreateVertexResponse { id: vid }))
 }
 
 // ── PUT /vertices2/:id ──────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct UpdateVertexBody {
     pub name: Option<String>,
     pub labels: Option<Vec<String>>,
@@ -398,21 +499,41 @@ pub async fn update_vertex(
     headers: axum::http::HeaderMap,
     Json(body): Json<UpdateVertexBody>,
 ) -> StatusCode {
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let req = crate::cluster::request::ClusterRequest::new("PUT", &format!("/vertices/{}", id))
+        .with_body(&body_str)
+        .with_opt_graph(graph_name);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(_)) => return StatusCode::OK,
+        Ok(None) => {}
+        Err(status) => return status,
+    }
+
     let graph = match resolve_graph_from_request(&state, &headers) {
         Ok(g) => g,
         Err(_) => return StatusCode::NOT_FOUND,
     };
 
     match crate::graph::locked::update_vertex_locked(
-        &graph,
-        id,
+        &graph, id,
         body.name.as_deref(),
         body.labels.as_deref(),
         body.keywords.as_deref(),
         body.properties.as_ref(),
         true,
     ) {
-        Ok(_) => StatusCode::OK,
+        Ok(_) => {
+            // Broadcast via ClusterGateway
+            let broadcast_req = crate::cluster::request::ClusterRequest::new("PUT", &format!("/vertices/{}", id))
+                .with_body(&body_str)
+                .with_graph(&graph.name);
+            gateway.broadcast(&broadcast_req);
+            StatusCode::OK
+        }
         Err(_) => StatusCode::NOT_FOUND,
     }
 }
@@ -430,6 +551,21 @@ pub async fn delete_vertex(
     Query(params): Query<DeleteVertexParams>,
     headers: axum::http::HeaderMap,
 ) -> StatusCode {
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    let query_str = params.force.map(|f| format!("force={}", f));
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let path = format!("/vertices/{}", id);
+    let req = crate::cluster::request::ClusterRequest::new("DELETE", &path)
+        .with_query_str(query_str.as_deref())
+        .with_opt_graph(graph_name);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(_)) => return StatusCode::OK,
+        Ok(None) => {} // proceed locally
+        Err(status) => return status,
+    }
+
     let graph = match resolve_graph_from_request(&state, &headers) {
         Ok(g) => g,
         Err(_) => return StatusCode::NOT_FOUND,
@@ -448,7 +584,14 @@ pub async fn delete_vertex(
     };
 
     match result {
-        Ok(_) => StatusCode::OK,
+        Ok(_) => {
+            // Broadcast via ClusterGateway with faithful query parameter
+            let broadcast_req = crate::cluster::request::ClusterRequest::new("DELETE", &path)
+                .with_query_str(query_str.as_deref())
+                .with_graph(&graph.name);
+            gateway.broadcast(&broadcast_req);
+            StatusCode::OK
+        }
         Err(_) => StatusCode::NOT_FOUND,
     }
 }
@@ -467,7 +610,7 @@ pub async fn handle_get_vertex_meta(
         Err(e) => return Json(serde_json::json!({"error": e.to_string()})),
     };
     let _vlock = graph.locks.read_vertex(id);
-    let ptr = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).vertices.get(id).copied();
+    let ptr = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).vertex_id.get(id).copied();
     let result = ptr.and_then(|p| crate::graph::crud::read_header_by_ptr(&graph, &p).ok());
     drop(_vlock);
     match result {
@@ -488,6 +631,7 @@ pub async fn handle_get_vertex_meta(
 
 /// Update a vertex's rank and/or atime. Body: `{"rank": u32, "atime": u64}`.
 /// Either field is optional — only provided fields are updated.
+/// Note: name changes must use PUT /vertices/:id instead.
 pub async fn handle_update_vertex_meta(
     State(state): State<AppState>,
     Path(id): Path<u32>,
@@ -496,10 +640,24 @@ pub async fn handle_update_vertex_meta(
 ) -> StatusCode {
     let new_rank = body.get("rank").and_then(|v| v.as_u64()).map(|v| v as u32);
     let new_atime = body.get("atime").and_then(|v| v.as_u64());
-    let new_name = body.get("name").and_then(|v| v.as_str());
-    if new_rank.is_none() && new_atime.is_none() && new_name.is_none() {
+    if new_rank.is_none() && new_atime.is_none() {
         return StatusCode::BAD_REQUEST;
     }
+
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let req = crate::cluster::request::ClusterRequest::new("PUT", &format!("/vertices/{}/meta", id))
+        .with_body(&body_str)
+        .with_opt_graph(graph_name);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(_)) => return StatusCode::OK,
+        Ok(None) => {}
+        Err(status) => return status,
+    }
+
     let graph = match resolve_graph_from_request(&state, &headers) {
         Ok(g) => g,
         Err(_) => return StatusCode::NOT_FOUND,
@@ -507,33 +665,26 @@ pub async fn handle_update_vertex_meta(
     let _meta = graph.locks.read_metadata();
     let _vlock = graph.locks.write_vertex(id);
 
-    // If name is being changed, it requires a full payload update.
-    // For rank/atime only, use the lightweight meta update.
-    let result = if new_name.is_some() {
-        // Delegate to update_vertex for full payload rewrite.
-        crate::graph::crud::update_vertex(&graph, id, new_name, None, None, None, false)
-            .and_then(|_| {
-                if new_rank.is_some() || new_atime.is_some() {
-                    crate::graph::crud::update_vertex_meta(&graph, id, new_rank, new_atime)
-                } else {
-                    Ok(())
-                }
-            })
-    } else {
-        crate::graph::crud::update_vertex_meta(&graph, id, new_rank, new_atime)
-    };
+    let result = crate::graph::crud::update_vertex_meta(&graph, id, new_rank, new_atime);
 
     drop(_vlock);
     drop(_meta);
     match result {
-        Ok(()) => StatusCode::OK,
+        Ok(()) => {
+            // Broadcast to workers in cluster mode.
+            let broadcast_req = crate::cluster::request::ClusterRequest::new("PUT", &format!("/vertices/{}/meta", id))
+                .with_body(&body_str)
+                .with_graph(&graph.name);
+            gateway.broadcast(&broadcast_req);
+            StatusCode::OK
+        }
         Err(_) => StatusCode::NOT_FOUND,
     }
 }
 
 // ── POST /edges ─────────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct CreateEdgeBody {
     pub name: String,
     pub source: u32,
@@ -543,9 +694,12 @@ pub struct CreateEdgeBody {
     pub strength: Option<f32>,
     #[serde(default)]
     pub properties: std::collections::HashMap<String, crate::storage::types::PropertyValue>,
+    /// Optional ID for replication (used during cluster replay to keep IDs in sync).
+    #[serde(default)]
+    pub id: Option<u32>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct CreateEdgeResponse {
     pub id: u32,
 }
@@ -555,25 +709,62 @@ pub async fn create_edge(
     headers: axum::http::HeaderMap,
     Json(body): Json<CreateEdgeBody>,
 ) -> Result<Json<CreateEdgeResponse>, StatusCode> {
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let body_str = serde_json::to_string(&body).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let req = crate::cluster::request::ClusterRequest::new("POST", "/edges")
+        .with_body(&body_str)
+        .with_opt_graph(graph_name);
+    if let Some(resp) = gateway.forward::<CreateEdgeResponse>(&req).await? {
+        return Ok(Json(resp));
+    }
+
     let graph = resolve_graph_from_request(&state, &headers)
         .map_err(|_| StatusCode::NOT_FOUND)?;
-    let eid = crate::graph::locked::create_edge_locked(
-        &graph,
-        body.source,
-        body.target,
-        &body.name,
-        &body.labels.unwrap_or_default(),
-        &body.keywords.unwrap_or_default(),
-        body.strength.unwrap_or(1.0),
-        &body.properties,
-    )
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let labels = body.labels.clone().unwrap_or_default();
+    let keywords = body.keywords.clone().unwrap_or_default();
+
+    // During cluster replay, use master-assigned ID to ensure consistency
+    let eid = if crate::graph::graph::is_broadcast_replay() {
+        let replica_id = body.id.ok_or(StatusCode::BAD_REQUEST)?;
+        crate::graph::locked::create_edge_with_id_locked(
+            &graph, replica_id, body.source, body.target,
+            &body.name, &labels, &keywords,
+            body.strength.unwrap_or(1.0), &body.properties,
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    } else {
+        crate::graph::locked::create_edge_locked(
+            &graph, body.source, body.target,
+            &body.name, &labels, &keywords,
+            body.strength.unwrap_or(1.0), &body.properties,
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    };
+
+    // Broadcast to workers via ClusterGateway with master-assigned ID
+    let broadcast_req = crate::cluster::request::ClusterRequest::new("POST", "/edges")
+        .with_body(&serde_json::json!({
+            "source": body.source,
+            "target": body.target,
+            "name": &body.name,
+            "labels": &body.labels,
+            "keywords": &body.keywords,
+            "strength": body.strength,
+            "properties": &body.properties,
+            "id": eid,
+        }).to_string())
+        .with_graph(&graph.name);
+    gateway.broadcast(&broadcast_req);
+
     Ok(Json(CreateEdgeResponse { id: eid }))
 }
 
 // ── PUT /edges ──────────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct UpdateEdgeBody {
     pub name: Option<String>,
     pub labels: Option<Vec<String>>,
@@ -588,14 +779,27 @@ pub async fn update_edge(
     headers: axum::http::HeaderMap,
     Json(body): Json<UpdateEdgeBody>,
 ) -> StatusCode {
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let req = crate::cluster::request::ClusterRequest::new("PUT", &format!("/edges/{}", id))
+        .with_body(&body_str)
+        .with_opt_graph(graph_name);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(_)) => return StatusCode::OK,
+        Ok(None) => {}
+        Err(status) => return status,
+    }
+
     let graph = match resolve_graph_from_request(&state, &headers) {
         Ok(g) => g,
         Err(_) => return StatusCode::NOT_FOUND,
     };
 
     match crate::graph::locked::update_edge_locked(
-        &graph,
-        id,
+        &graph, id,
         body.name.as_deref(),
         body.labels.as_deref(),
         body.keywords.as_deref(),
@@ -603,7 +807,14 @@ pub async fn update_edge(
         body.properties.as_ref(),
         true,
     ) {
-        Ok(_) => StatusCode::OK,
+        Ok(_) => {
+            // Broadcast via ClusterGateway
+            let broadcast_req = crate::cluster::request::ClusterRequest::new("PUT", &format!("/edges/{}", id))
+                .with_body(&body_str)
+                .with_graph(&graph.name);
+            gateway.broadcast(&broadcast_req);
+            StatusCode::OK
+        }
         Err(_) => StatusCode::NOT_FOUND,
     }
 }
@@ -621,6 +832,21 @@ pub async fn delete_edge(
     Query(params): Query<DeleteEdgeParams>,
     headers: axum::http::HeaderMap,
 ) -> StatusCode {
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    let query_str = params.force.map(|f| format!("force={}", f));
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let path = format!("/edges/{}", id);
+    let req = crate::cluster::request::ClusterRequest::new("DELETE", &path)
+        .with_query_str(query_str.as_deref())
+        .with_opt_graph(graph_name);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(_)) => return StatusCode::OK,
+        Ok(None) => {}
+        Err(status) => return status,
+    }
+
     let graph = match resolve_graph_from_request(&state, &headers) {
         Ok(g) => g,
         Err(_) => return StatusCode::NOT_FOUND,
@@ -639,7 +865,14 @@ pub async fn delete_edge(
     };
 
     match result {
-        Ok(_) => StatusCode::OK,
+        Ok(_) => {
+            // Broadcast via ClusterGateway with faithful query parameter
+            let broadcast_req = crate::cluster::request::ClusterRequest::new("DELETE", &path)
+                .with_query_str(query_str.as_deref())
+                .with_graph(&graph.name);
+            gateway.broadcast(&broadcast_req);
+            StatusCode::OK
+        }
         Err(_) => StatusCode::NOT_FOUND,
     }
 }
@@ -658,7 +891,7 @@ pub async fn handle_get_edge_meta(
         Err(e) => return Json(serde_json::json!({"error": e.to_string()})),
     };
     let _elock = graph.locks.read_edge(id);
-    let ptr = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).edges.get(id).copied();
+    let ptr = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).edge_id.get(id).copied();
     let result = ptr.and_then(|p| crate::graph::crud::read_header_by_ptr(&graph, &p).ok());
     drop(_elock);
     match result {
@@ -678,6 +911,8 @@ pub async fn handle_get_edge_meta(
 // ── PUT /edges/:id/meta ───────────────────────────────────────────────────
 
 /// Update an edge's rank and/or atime. Body: `{"rank": u32, "atime": u64}`.
+/// Either field is optional — only provided fields are updated.
+/// Note: name changes must use PUT /edges/:id instead.
 pub async fn handle_update_edge_meta(
     State(state): State<AppState>,
     Path(id): Path<u32>,
@@ -686,10 +921,24 @@ pub async fn handle_update_edge_meta(
 ) -> StatusCode {
     let new_rank = body.get("rank").and_then(|v| v.as_u64()).map(|v| v as u32);
     let new_atime = body.get("atime").and_then(|v| v.as_u64());
-    let new_name = body.get("name").and_then(|v| v.as_str());
-    if new_rank.is_none() && new_atime.is_none() && new_name.is_none() {
+    if new_rank.is_none() && new_atime.is_none() {
         return StatusCode::BAD_REQUEST;
     }
+
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let req = crate::cluster::request::ClusterRequest::new("PUT", &format!("/edges/{}/meta", id))
+        .with_body(&body_str)
+        .with_opt_graph(graph_name);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(_)) => return StatusCode::OK,
+        Ok(None) => {}
+        Err(status) => return status,
+    }
+
     let graph = match resolve_graph_from_request(&state, &headers) {
         Ok(g) => g,
         Err(_) => return StatusCode::NOT_FOUND,
@@ -697,23 +946,19 @@ pub async fn handle_update_edge_meta(
     let _meta = graph.locks.read_metadata();
     let _elock = graph.locks.write_edge(id);
 
-    let result = if new_name.is_some() {
-        crate::graph::crud::update_edge(&graph, id, new_name, None, None, None, None, false)
-            .and_then(|_| {
-                if new_rank.is_some() || new_atime.is_some() {
-                    crate::graph::crud::update_edge_meta(&graph, id, new_rank, new_atime)
-                } else {
-                    Ok(())
-                }
-            })
-    } else {
-        crate::graph::crud::update_edge_meta(&graph, id, new_rank, new_atime)
-    };
+    let result = crate::graph::crud::update_edge_meta(&graph, id, new_rank, new_atime);
 
     drop(_elock);
     drop(_meta);
     match result {
-        Ok(()) => StatusCode::OK,
+        Ok(()) => {
+            // Broadcast to workers in cluster mode.
+            let broadcast_req = crate::cluster::request::ClusterRequest::new("PUT", &format!("/edges/{}/meta", id))
+                .with_body(&body_str)
+                .with_graph(&graph.name);
+            gateway.broadcast(&broadcast_req);
+            StatusCode::OK
+        }
         Err(_) => StatusCode::NOT_FOUND,
     }
 }
@@ -730,7 +975,7 @@ pub async fn list_graphs(State(state): State<AppState>) -> Json<serde_json::Valu
 
 // ── POST /graphs ────────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct CreateGraphParams {
     pub name: String,
     #[serde(default)]
@@ -739,7 +984,7 @@ pub struct CreateGraphParams {
     pub time_travel: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct CreateGraphResponse {
     pub name: String,
     pub description: String,
@@ -751,6 +996,21 @@ pub async fn create_graph(
     State(state): State<AppState>,
     Json(params): Json<CreateGraphParams>,
 ) -> Result<Json<CreateGraphResponse>, StatusCode> {
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let body_str = serde_json::to_string(&params).unwrap_or_default();
+    let req = crate::cluster::request::ClusterRequest::new("POST", "/graphs")
+        .with_body(&body_str);
+    if let Some(resp) = gateway.forward::<CreateGraphResponse>(&req).await? {
+        // Forward succeeded — worker also creates the graph locally
+        // so it's available immediately (broadcast may lag).
+        if let Ok(g) = state.gm.get(&params.name) {
+            let _ = state.gm.update_meta(&params.name, &params.description, params.time_travel);
+        }
+        return Ok(Json(resp));
+    }
+
     // Reject empty or whitespace-only names.
     if params.name.trim().is_empty() {
         return Err(StatusCode::BAD_REQUEST);
@@ -772,6 +1032,7 @@ pub async fn create_graph(
         Ok(_) => {
             // Persist the provided description / time_travel to the registry.
             let _ = state.gm.update_meta(&params.name, &params.description, params.time_travel);
+            gateway.broadcast(&req);
             Ok(Json(CreateGraphResponse {
                 name: params.name,
                 description: params.description,
@@ -794,15 +1055,27 @@ pub async fn delete_graph(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Json<serde_json::Value> {
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let req = crate::cluster::request::ClusterRequest::new("DELETE", &format!("/graphs/{}", name));
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(val)) => return Json(val),
+        Ok(None) => {}
+        Err(_) => return Json(serde_json::json!({"status": "error", "message": "forward failed"})),
+    }
     match state.gm.delete(&name) {
-        Ok(_) => Json(serde_json::json!({"status": "ok"})),
+        Ok(_) => {
+            gateway.broadcast(&req);
+            Json(serde_json::json!({"status": "ok"}))
+        }
         Err(_) => Json(serde_json::json!({"status": "error", "message": "not found"})),
     }
 }
 
 // ── PUT /graphs — set default graph ──────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct SetDefaultGraphBody {
     #[serde(default)]
     pub default: String,
@@ -812,15 +1085,29 @@ pub async fn set_default_graph(
     State(state): State<AppState>,
     Json(body): Json<SetDefaultGraphBody>,
 ) -> Json<serde_json::Value> {
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
+    let req = crate::cluster::request::ClusterRequest::new("PUT", "/graphs")
+        .with_body(&body_str);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(val)) => return Json(val),
+        Ok(None) => {}
+        Err(_) => return Json(serde_json::json!({"status": "error", "message": "forward failed"})),
+    }
     match state.gm.set_default(&body.default) {
-        Ok(_) => Json(serde_json::json!({"status": "ok"})),
+        Ok(_) => {
+            gateway.broadcast(&req);
+            Json(serde_json::json!({"status": "ok"}))
+        }
         Err(_) => Json(serde_json::json!({"status": "error", "message": "graph not found"})),
     }
 }
 
 // ── PUT /graphs/:name — update graph metadata ────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct UpdateGraphMetaBody {
     #[serde(default)]
     pub description: String,
@@ -833,8 +1120,24 @@ pub async fn update_graph_meta(
     Path(name): Path<String>,
     Json(body): Json<UpdateGraphMetaBody>,
 ) -> Json<serde_json::Value> {
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
+    let req = crate::cluster::request::ClusterRequest::new("PUT", &format!("/graphs/{}", name))
+        .with_body(&body_str);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(val)) => return Json(val),
+        Ok(None) => {}
+        Err(_) => return Json(serde_json::json!({"status": "error"})),
+    }
+
+    // Master processes locally
     match state.gm.update_meta(&name, &body.description, body.time_travel) {
-        Ok(true) => Json(serde_json::json!({"status": "ok"})),
+        Ok(true) => {
+            gateway.broadcast(&req);
+            Json(serde_json::json!({"status": "ok"}))
+        }
         Ok(false) => Json(serde_json::json!({"status": "error", "message": "not found"})),
         Err(e) => Json(serde_json::json!({"status": "error", "message": e.to_string()})),
     }
@@ -857,15 +1160,29 @@ pub async fn put_graph_config_handler(
     Path(name): Path<String>,
     Json(body): Json<crate::graph::graph::GraphConfig>,
 ) -> StatusCode {
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
+    let req = crate::cluster::request::ClusterRequest::new("PUT", &format!("/graphs/{}/config", name))
+        .with_body(&body_str);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(_)) => return StatusCode::OK,
+        Ok(None) => {}
+        Err(status) => return status,
+    }
     match state.gm.set_graph_config(&name, &body) {
-        Ok(_) => StatusCode::OK,
+        Ok(_) => {
+            gateway.broadcast(&req);
+            StatusCode::OK
+        }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
 // ── POST /batch/load — batch import vertices and edges ────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct BatchImportBody {
     #[serde(default)]
     pub entities: Vec<crate::graph::batch::BatchEntity>,
@@ -880,17 +1197,35 @@ pub async fn handle_batch_import(
     headers: axum::http::HeaderMap,
     Json(body): Json<BatchImportBody>,
 ) -> Result<Json<crate::graph::batch::BatchImportResult>, StatusCode> {
+    // Worker → Master forwarding
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    let body_str = serde_json::to_string(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let req = crate::cluster::request::ClusterRequest::new("POST", "/batch/load")
+        .with_body(&body_str)
+        .with_opt_graph(graph_name);
+    if let Some(resp) = gateway.forward::<crate::graph::batch::BatchImportResult>(&req).await? {
+        return Ok(Json(resp));
+    }
+
     let graph = crate::gremlin::resolve_graph_from_request(&state, &headers)
         .map_err(|_| StatusCode::NOT_FOUND)?;
     let result = crate::graph::batch::batch_import(
         &graph, &body.entities, &body.relations, "", body.update_existing,
     );
+    // Broadcast to workers via ClusterGateway
+    let broadcast_req = crate::cluster::request::ClusterRequest::new("POST", "/batch/load")
+        .with_body(&body_str)
+        .with_graph(&graph.name);
+    gateway.broadcast(&broadcast_req);
     Ok(Json(result))
 }
 
 // ── POST /batch/delete — batch delete vertices and edges ─────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct BatchDeleteBody {
     #[serde(default)]
     pub vertices: Vec<String>,
@@ -903,9 +1238,29 @@ pub async fn handle_batch_delete(
     headers: axum::http::HeaderMap,
     Json(body): Json<BatchDeleteBody>,
 ) -> Result<Json<crate::graph::batch::BatchDeleteResult>, StatusCode> {
-    let graph = crate::gremlin::resolve_graph_from_request(&state, &headers)
+    // Worker → Master forwarding
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    let body_str = serde_json::to_string(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let req = crate::cluster::request::ClusterRequest::new("POST", "/batch/delete")
+        .with_body(&body_str)
+        .with_opt_graph(graph_name);
+    if let Some(resp) = gateway.forward::<crate::graph::batch::BatchDeleteResult>(&req).await? {
+        return Ok(Json(resp));
+    }
+
+    let graph = resolve_graph_from_request(&state, &headers)
         .map_err(|_| StatusCode::NOT_FOUND)?;
     let result = crate::graph::batch::batch_delete(&graph, &body.vertices, &body.edges);
+
+    // Broadcast to workers in cluster mode.
+    let broadcast_req = crate::cluster::request::ClusterRequest::new("POST", "/batch/delete")
+        .with_body(&body_str)
+        .with_graph(&graph.name);
+    gateway.broadcast(&broadcast_req);
+
     Ok(Json(result))
 }
 
@@ -919,14 +1274,17 @@ pub async fn list_documents(
 }
 
 /// Create a new document.
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct CreateDocumentBody {
     pub title: String,
     pub content: String,
     pub tags: Option<Vec<String>>,
+    /// Optional ID for replication (used during cluster replay to keep UUID in sync).
+    #[serde(default)]
+    pub id: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct CreateDocumentResponse {
     pub id: String,
     pub title: String,
@@ -937,12 +1295,58 @@ pub async fn create_document(
     State(state): State<AppState>,
     Json(body): Json<CreateDocumentBody>,
 ) -> Json<CreateDocumentResponse> {
-    let id = uuid::Uuid::new_v4().to_string();
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
+    let req = crate::cluster::request::ClusterRequest::new("POST", "/documents")
+        .with_body(&body_str);
+    match gateway.forward::<CreateDocumentResponse>(&req).await {
+        Ok(Some(resp)) => {
+            // Also create locally so the Worker has immediate access
+            if !resp.id.is_empty() {
+                let tags = body.tags.as_deref().unwrap_or(&[]);
+                state.doc_mgr.add(&resp.id, &body.title, &body.content, tags, "");
+            }
+            return Json(resp);
+        }
+        Ok(None) => {}
+        Err(_) => return Json(CreateDocumentResponse { id: String::new(), title: body.title.clone(), created: false }),
+    }
+
+    // During cluster replay, use the provided ID to keep UUIDs in sync across nodes.
+    // If the document already exists locally (e.g., created during forwarding), skip it.
+    let id = if crate::graph::graph::is_broadcast_replay() {
+        if let Some(ref replica_id) = body.id {
+            if state.doc_mgr.get(replica_id).is_some() {
+                // Already created locally during forwarding — nothing more to do.
+                return Json(CreateDocumentResponse {
+                    id: replica_id.clone(),
+                    title: body.title,
+                    created: true,
+                });
+            }
+            replica_id.clone()
+        } else {
+            uuid::Uuid::new_v4().to_string()
+        }
+    } else {
+        uuid::Uuid::new_v4().to_string()
+    };
     // Documents are created without a graph association.
     // The graph is assigned during extraction.
     let graph_name = "";
     let tags = body.tags.unwrap_or_default();
     state.doc_mgr.add(&id, &body.title, &body.content, &tags, graph_name);
+    // Broadcast to workers via ClusterGateway so they have a local copy with the same UUID.
+    let broadcast_req = crate::cluster::request::ClusterRequest::new("POST", "/documents")
+        .with_body(&serde_json::json!({
+            "title": &body.title,
+            "content": &body.content,
+            "tags": &tags,
+            "id": &id,
+        }).to_string());
+    gateway.broadcast(&broadcast_req);
     Json(CreateDocumentResponse {
         id,
         title: body.title,
@@ -959,10 +1363,12 @@ pub async fn get_document(
 }
 
 /// Update document metadata.
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct UpdateDocumentBody {
     pub title: Option<String>,
     pub tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub graph_name: Option<String>,
 }
 
 pub async fn update_document(
@@ -970,20 +1376,56 @@ pub async fn update_document(
     Path(id): Path<String>,
     Json(body): Json<UpdateDocumentBody>,
 ) -> Json<serde_json::Value> {
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let body_str = serde_json::to_string(&body).unwrap_or_default();
+    let req = crate::cluster::request::ClusterRequest::new("PUT", &format!("/documents/{}", id))
+        .with_body(&body_str);
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(val)) => return Json(val),
+        Ok(None) => {}
+        Err(_) => return Json(serde_json::json!({"status": "error"})),
+    }
+
     let title = body.title.as_deref().unwrap_or("");
     let tags = body.tags.as_deref().unwrap_or(&[]);
-    // Document graph association is set only during extraction, not via update.
-    match state.doc_mgr.update(&id, title, tags, None) {
-        Some(_) => Json(serde_json::json!({"status": "ok"})),
+    let gname = body.graph_name.as_deref();
+    match state.doc_mgr.update(&id, title, tags, gname) {
+        Some(_) => {
+            gateway.broadcast(&req);
+            Json(serde_json::json!({"status": "ok"}))
+        }
         None => Json(serde_json::json!({"status": "error", "message": "not found"})),
     }
+}
+
+/// Query parameters for document deletion.
+#[derive(Deserialize, Default)]
+pub struct DeleteDocumentParams {
+    pub clean: Option<bool>,
 }
 
 /// Delete a document and optionally clean up associated graph data.
 pub async fn delete_document(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(params): Query<DeleteDocumentParams>,
 ) -> Json<serde_json::Value> {
+    // Pass through the original query parameter faithfully — no default value.
+    let clean_query = params.clean.map(|c| format!("clean={}", c));
+    let clean = params.clean.unwrap_or(false); // local execution decision
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let req = crate::cluster::request::ClusterRequest::new("DELETE", &format!("/documents/{}", id))
+        .with_query_str(clean_query.as_deref());
+    match gateway.forward::<serde_json::Value>(&req).await {
+        Ok(Some(val)) => return Json(val),
+        Ok(None) => {}
+        Err(_) => return Json(serde_json::json!({"status": "error"})),
+    }
+
     // Get the document before deleting, so we know which graph to clean.
     let doc = state.doc_mgr.get(&id);
     let graph_name = doc.as_ref().map(|d| d.graph_name.clone());
@@ -991,53 +1433,58 @@ pub async fn delete_document(
     let deleted = state.doc_mgr.delete(&id);
 
     // Clean up graph vertices/edges that carry this doc's _source_doc_id.
-    if let Some(ref gname) = graph_name {
-        if let Ok(graph) = state.gm.get(gname) {
-            // Phase 1: Collect all vertex IDs while holding memory_index lock.
-            let all_vids: Vec<u32> = {
-                let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-                mi.vertices.keys().copied().collect()
-            };
-
-            // Phase 2: Check each vertex's _source_doc_id property (lock released).
-            let mut match_vids: Vec<u32> = Vec::new();
-            for vid in &all_vids {
-                if let Ok(Some(vertex)) = crate::graph::locked::get_vertex_locked(&graph, *vid) {
-                    if vertex.properties.get("_source_doc_id")
-                        .map_or(false, |v| matches!(v, PropertyValue::String(s) if s == &id))
-                    {
-                        match_vids.push(*vid);
-                    }
-                }
-            }
-
-            // Phase 3: Collect connected edges and delete everything.
-            if !match_vids.is_empty() {
-                let mut edge_ids: Vec<u32> = Vec::new();
-                {
+    if clean {
+        if let Some(ref gname) = graph_name {
+            if let Ok(graph) = state.gm.get(gname) {
+                // Phase 1: Collect all vertex IDs while holding memory_index lock.
+                let all_vids: Vec<u32> = {
                     let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-                    for vid in &match_vids {
-                        for &(eid, _, _) in mi.adjacency.out_edges(*vid) {
-                            edge_ids.push(eid);
-                        }
-                        for &(eid, _, _) in mi.adjacency.in_edges(*vid) {
-                            edge_ids.push(eid);
+                    mi.vertex_id.keys().copied().collect()
+                };
+
+                // Phase 2: Check each vertex's _source_doc_id property (lock released).
+                let mut match_vids: Vec<u32> = Vec::new();
+                for vid in &all_vids {
+                    if let Ok(Some(vertex)) = crate::graph::locked::get_vertex_locked(&graph, *vid) {
+                        if vertex.properties.get("_source_doc_id")
+                            .map_or(false, |v| matches!(v, PropertyValue::String(s) if s == &id))
+                        {
+                            match_vids.push(*vid);
                         }
                     }
                 }
-                for eid in &edge_ids {
-                    let _ = crate::graph::locked::hard_delete_edge_locked(&graph, *eid);
+
+                // Phase 3: Collect connected edges and delete everything.
+                if !match_vids.is_empty() {
+                    let mut edge_ids: Vec<u32> = Vec::new();
+                    {
+                        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+                        for vid in &match_vids {
+                            for &(eid, _, _) in mi.vertex_adjacency.out_edges(*vid) {
+                                edge_ids.push(eid);
+                            }
+                            for &(eid, _, _) in mi.vertex_adjacency.in_edges(*vid) {
+                                edge_ids.push(eid);
+                            }
+                        }
+                    }
+                    for eid in &edge_ids {
+                        let _ = crate::graph::locked::hard_delete_edge_locked(&graph, *eid);
+                    }
+                    for vid in &match_vids {
+                        let _ = crate::graph::locked::hard_delete_vertex_locked(&graph, *vid);
+                    }
+                    log::info!("Cleaned {} vertices and {} edges for doc '{}' in graph '{}'",
+                        match_vids.len(), edge_ids.len(), id, gname);
                 }
-                for vid in &match_vids {
-                    let _ = crate::graph::locked::hard_delete_vertex_locked(&graph, *vid);
-                }
-                log::info!("Cleaned {} vertices and {} edges for doc '{}' in graph '{}'",
-                    match_vids.len(), edge_ids.len(), id, gname);
             }
         }
     }
 
+    // ── Broadcast cleanup to workers (if clean=true) ──────────────────
+
     if deleted {
+        gateway.broadcast(&req);
         Json(serde_json::json!({"status": "ok"}))
     } else {
         Json(serde_json::json!({"status": "error", "message": "not found"}))
@@ -1055,12 +1502,12 @@ pub async fn get_document_content(
 // ── Extraction ──────────────────────────────────────────────────────────────
 
 /// Submit an extraction task.
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct SubmitExtractionBody {
     pub document_id: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct SubmitExtractionResponse {
     pub task_id: String,
     pub status: String,
@@ -1072,6 +1519,19 @@ pub async fn submit_extraction(
     headers: axum::http::HeaderMap,
     Json(body): Json<SubmitExtractionBody>,
 ) -> Result<Json<SubmitExtractionResponse>, StatusCode> {
+    // Worker → Master forwarding (include graph name)
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    let body_str = serde_json::to_string(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let req = crate::cluster::request::ClusterRequest::new("POST", "/extract")
+        .with_body(&body_str)
+        .with_opt_graph(graph_name);
+    if let Some(resp) = gateway.forward::<SubmitExtractionResponse>(&req).await? {
+        return Ok(Json(resp));
+    }
+
     let default_name = state.gm.get_default_name();
     let graph_name = headers
         .get("X-Graph-Name")
@@ -1105,6 +1565,7 @@ pub async fn submit_extraction(
     let graph_arc = graph.clone();
     let doc_mgr = state.doc_mgr.clone();
     let gname = graph_name.to_string();
+    let gateway = state.cluster_gateway();
 
     tokio::spawn(async move {
         let tid = task_id_clone.clone();
@@ -1300,11 +1761,32 @@ Return ONLY valid JSON with this structure:
         let vertex_count = batch_result.vertices_created + batch_result.vertices_updated;
         let edge_count = batch_result.edges_created + batch_result.edges_updated;
 
+        // Broadcast the batch import to workers so they can replay the same data.
+        let batch_body = serde_json::json!({
+            "entities": batch_entities,
+            "relations": batch_relations,
+            "update_existing": true,
+        }).to_string();
+        let broadcast_req = crate::cluster::request::ClusterRequest::new("POST", "/batch/load")
+            .with_body(&batch_body)
+            .with_graph(&gname);
+        gateway.broadcast(&broadcast_req);
+
         task_mgr.complete_step(&tid, "Importing graph data");
 
         // Write extracted tags back to the document metadata and
         // associate the document with the target graph.
         doc_mgr.update(&doc_id, &doc_title, &parsed.tags, Some(&gname));
+
+        // Broadcast document metadata update to workers.
+        let update_body = serde_json::json!({
+            "title": &doc_title,
+            "tags": &parsed.tags,
+            "graph_name": &gname,
+        }).to_string();
+        let update_req = crate::cluster::request::ClusterRequest::new("PUT", &format!("/documents/{}", doc_id))
+            .with_body(&update_body);
+        gateway.broadcast(&update_req);
 
         // Mark task as completed
         {
@@ -1345,18 +1827,38 @@ Return ONLY valid JSON with this structure:
 pub async fn get_task_handler(
     State(state): State<AppState>,
     Path(task_id): Path<String>,
-) -> Result<Json<TaskResponse>, StatusCode> {
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    // Worker → Master forwarding via ClusterGateway (uses forward_read to bypass REPLAYING check).
+    let gateway = state.cluster_gateway();
+    let req = crate::cluster::request::ClusterRequest::new("GET", &format!("/tasks/{}", task_id));
+    match gateway.forward_read::<serde_json::Value>(&req).await {
+        Ok(Some(val)) => return Ok(Json(val)),
+        Ok(None) => {}
+        Err(status) => return Err(status),
+    }
     state.task_mgr.get_task(&task_id)
-        .map(|t| Json(t.into()))
+        .map(|t| {
+            let resp: TaskResponse = t.into();
+            Json(serde_json::to_value(resp).unwrap_or_default())
+        })
         .ok_or(StatusCode::NOT_FOUND)
 }
 
 /// List all tasks (newest first).
 pub async fn list_tasks_handler(
     State(state): State<AppState>,
-) -> Json<Vec<TaskResponse>> {
-    let tasks = state.task_mgr.list_tasks();
-    Json(tasks.into_iter().map(|t| t.into()).collect())
+) -> Json<serde_json::Value> {
+    // Worker → Master forwarding via ClusterGateway (uses forward_read to bypass REPLAYING check).
+    let gateway = state.cluster_gateway();
+    let req = crate::cluster::request::ClusterRequest::new("GET", "/tasks");
+    match gateway.forward_read::<serde_json::Value>(&req).await {
+        Ok(Some(val)) => return Json(val),
+        Ok(None) => {}
+        Err(_) => return Json(serde_json::json!([])),
+    }
+    let tasks: Vec<TaskResponse> = state.task_mgr.list_tasks()
+        .into_iter().map(|t| t.into()).collect();
+    Json(serde_json::to_value(tasks).unwrap_or_default())
 }
 
 /// POST /documents/:id/extract — extract from a document by ID.
@@ -1365,6 +1867,16 @@ pub async fn extract_document_handler(
     Path(document_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<SubmitExtractionResponse>, StatusCode> {
+    let graph_name = headers.get("X-Graph-Name").and_then(|v| v.to_str().ok());
+    let gateway = state.cluster_gateway();
+
+    // Worker → Master forwarding via ClusterGateway
+    let req = crate::cluster::request::ClusterRequest::new("POST", &format!("/documents/{}/extract", document_id))
+        .with_opt_graph(graph_name);
+    if let Some(resp) = gateway.forward::<SubmitExtractionResponse>(&req).await? {
+        return Ok(Json(resp));
+    }
+
     // Get graph name from X-Graph-Name header
     let default_name = state.gm.get_default_name();
     let graph_name = headers

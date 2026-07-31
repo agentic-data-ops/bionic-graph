@@ -17,8 +17,10 @@ pub mod graph;
 pub mod graph_registry;
 pub mod gremlin;
 pub mod locked;
+pub mod profile;
 pub mod rank_decay;
 pub mod serialize;
+pub mod token_batch;
 pub mod tokenizer;
 
 pub use graph::{Graph, GraphConfig};

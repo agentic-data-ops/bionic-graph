@@ -1,18 +1,85 @@
 //! Vertex/Edge CRUD operations for the block-based graph engine.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::graph::graph::Graph;
-use crate::graph::serialize::{self, deserialize_edge, deserialize_vertex, serialize_edge, serialize_vertex};
+use crate::graph::profile;
+use crate::graph::serialize::{self, deserialize_edge, deserialize_token, deserialize_vertex, serialize_edge, serialize_vertex};
 use crate::graph::tokenizer::Tokenizer;
 use crate::storage::block_allocator::BlockAllocator;
 use crate::storage::memory_index::MetaPointer;
 use crate::storage::redo_log::RedoLogEntry;
 use crate::storage::types::{
-    BlockHeader, DataHeader, DataStatus, EdgePayload, HistoryRecord, OpType, PropertyValue,
-    StorageError, StorageResult, TokenPayload, TokenRef, VertexPayload, BLOCK_SIZE, DATA_HEADER_SIZE,
-    timestamp_us,
+    BlockHeader, CHUNK_SIZE, CHUNKS_PER_BLOCK, DataHeader, DataStatus, EdgePayload, HistoryRecord,
+    OpType, PropertyValue, StorageError, StorageResult, TokenPayload, TokenRef, VertexPayload,
+    BLOCK_SIZE, DATA_HEADER_SIZE, timestamp_us,
 };
+
+/// Flag set during WAL replay — guards against recursive WAL writes
+/// when token operations are triggered by replay_initiated vertex/edge creation.
+
+const MAX_STORABLE_DATA: usize = (CHUNKS_PER_BLOCK - 1) * CHUNK_SIZE; // 255 * 64 = 16320
+const MAX_TOKEN_PAYLOAD: usize = 14000;
+
+
+/// Convert a PropertyValue to a string for property index lookup.
+fn prop_val_str(pv: &PropertyValue) -> String {
+    match pv {
+        PropertyValue::String(s) => s.clone(),
+        PropertyValue::Integer(i) => i.to_string(),
+        PropertyValue::Float(f) => f.to_string(),
+        PropertyValue::Boolean(b) => b.to_string(),
+        PropertyValue::List(_) => String::new(),
+        PropertyValue::Null => String::new(),
+    }
+}
+
+/// Insert property index entries for all registered keys.
+fn index_vertex_properties(mi: &mut crate::storage::memory_index::MemoryIndex, properties: &HashMap<String, PropertyValue>, ptr: MetaPointer) {
+    for (key, val) in properties {
+        if mi.has_vertex_property(key) {
+            let s = prop_val_str(val);
+            if !s.is_empty() {
+                mi.insert_vertex_property(key, &s, ptr);
+            }
+        }
+    }
+}
+
+fn index_edge_properties(mi: &mut crate::storage::memory_index::MemoryIndex, properties: &HashMap<String, PropertyValue>, ptr: MetaPointer) {
+    for (key, val) in properties {
+        if mi.has_edge_property(key) {
+            let s = prop_val_str(val);
+            if !s.is_empty() {
+                mi.insert_edge_property(key, &s, ptr);
+            }
+        }
+    }
+}
+
+/// Remove property index entries for all registered keys.
+fn unindex_vertex_properties(mi: &mut crate::storage::memory_index::MemoryIndex, properties: &HashMap<String, PropertyValue>, ptr: &MetaPointer) {
+    for (key, val) in properties {
+        if mi.has_vertex_property(key) {
+            let s = prop_val_str(val);
+            if !s.is_empty() {
+                mi.remove_vertex_property(key, &s, ptr);
+            }
+        }
+    }
+}
+
+fn unindex_edge_properties(mi: &mut crate::storage::memory_index::MemoryIndex, properties: &HashMap<String, PropertyValue>, ptr: &MetaPointer) {
+    for (key, val) in properties {
+        if mi.has_edge_property(key) {
+            let s = prop_val_str(val);
+            if !s.is_empty() {
+                mi.remove_edge_property(key, &s, ptr);
+            }
+        }
+    }
+}
 
 // ── Create ──────────────────────────────────────────────────────────────────
 
@@ -34,23 +101,96 @@ pub fn create_vertex(
         history: Vec::new(),
     };
 
-    let serialized = serialize_vertex(&payload)?;
+    let serialized = profile::time("ser_vertex", || serialize_vertex(&payload))?;
     let header = DataHeader::new_vertex(vid, serialized.len() as u16);
-    let ptr = write_data_record(graph, &header, &serialized)?;
+    let ptr = profile::time("write_data_record", || write_data_record(graph, &header, &serialized))?;
 
     // ── Update memory index ──────────────────────────────────────────
-    {
+    profile::time("idx_insert", || {
         let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-        mi.vertices.insert(vid, ptr);
-        mi.vertex_names.insert(payload.name.clone(), vid);
-        mi.ranks.insert(1, ptr);
-    }
+        mi.vertex_id.insert(vid, ptr);
+        mi.vertex_name.insert(payload.name.clone(), vid);
+        mi.rank.insert(1, ptr);
+        for l in &payload.labels {
+            mi.add_vertex_label(l, ptr);
+        }
+        index_vertex_properties(&mut mi, &payload.properties, ptr);
+    });
 
     // ── Tokenize attributes ──────────────────────────────────────────
-    tokenize_vertex(&graph, vid, &payload)?;
+    profile::time("tokenize_vertex", || -> StorageResult<()> {
+        tokenize_vertex(&graph, vid, &payload)
+    })?;
 
     // ── WAL ──────────────────────────────────────────────────────────
-    graph.redo_log.append(OpType::VertexCreate, vid as u64, &serialized)?;
+    profile::time("wal_append", || -> StorageResult<()> {
+        graph.redo_log.append(OpType::VertexCreate, vid as u64, &serialized)
+    })?;
+
+    Ok(vid)
+}
+
+/// Create a vertex with a specific ID (used during cluster replay).
+/// This skips the auto-increment allocator and uses the master-assigned ID
+/// directly. Returns an error if the ID already exists.
+pub fn create_vertex_with_id(
+    graph: &Graph,
+    vid: u32,
+    name: &str,
+    labels: &[String],
+    keywords: &[String],
+    properties: &HashMap<String, PropertyValue>,
+) -> StorageResult<u32> {
+    // Check for ID collision
+    let existing = {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        mi.vertex_id.get(vid).copied()
+    };
+    if let Some(ptr) = existing {
+        log::error!(
+            "ID collision: vertex {} already exists at block={} chunk={}. \
+             This should not happen during cluster replay.",
+            vid, ptr.block_idx, ptr.chunk_offset
+        );
+        return Err(StorageError::Other(format!("vertex ID {} already exists", vid)));
+    }
+
+    // Advance the allocator past this ID
+    graph.ensure_vertex_id(vid);
+
+    let payload = VertexPayload {
+        name: name.to_string(),
+        labels: labels.to_vec(),
+        keywords: keywords.to_vec(),
+        properties: properties.clone(),
+        history: Vec::new(),
+    };
+
+    let serialized = profile::time("ser_vertex", || serialize_vertex(&payload))?;
+    let header = DataHeader::new_vertex(vid, serialized.len() as u16);
+    let ptr = profile::time("write_data_record", || write_data_record(graph, &header, &serialized))?;
+
+    // ── Update memory index ──────────────────────────────────────────
+    profile::time("idx_insert", || {
+        let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+        mi.vertex_id.insert(vid, ptr);
+        mi.vertex_name.insert(payload.name.clone(), vid);
+        mi.rank.insert(1, ptr);
+        for l in &payload.labels {
+            mi.add_vertex_label(l, ptr);
+        }
+        index_vertex_properties(&mut mi, &payload.properties, ptr);
+    });
+
+    // ── Tokenize attributes ──────────────────────────────────────────
+    profile::time("tokenize_vertex", || -> StorageResult<()> {
+        tokenize_vertex(&graph, vid, &payload)
+    })?;
+
+    // ── WAL ──────────────────────────────────────────────────────────
+    profile::time("wal_append", || -> StorageResult<()> {
+        graph.redo_log.append(OpType::VertexCreate, vid as u64, &serialized)
+    })?;
 
     Ok(vid)
 }
@@ -86,10 +226,82 @@ pub fn create_edge(
     // ── Update memory index ──────────────────────────────────────────
     {
         let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-        mi.edges.insert(eid, ptr);
-        mi.edge_names.insert(payload.name.clone(), eid);
-        mi.ranks.insert(1, ptr);
-        mi.adjacency.add_edge(eid, source, target, ptr);
+        mi.edge_id.insert(eid, ptr);
+        mi.edge_name.insert(payload.name.clone(), eid);
+        mi.rank.insert(1, ptr);
+        mi.vertex_adjacency.add_edge(eid, source, target, ptr);
+        for l in &payload.labels {
+            mi.add_edge_label(l, ptr);
+        }
+        index_edge_properties(&mut mi, &payload.properties, ptr);
+    }
+
+    // ── Tokenize ─────────────────────────────────────────────────────
+    tokenize_edge(&graph, eid, &payload)?;
+
+    // ── WAL ──────────────────────────────────────────────────────────
+    graph.redo_log.append(OpType::EdgeCreate, eid as u64, &serialized)?;
+
+    Ok(eid)
+}
+
+/// Create an edge with a specific ID (used during cluster replay).
+/// This skips the auto-increment allocator and uses the master-assigned ID
+/// directly. Returns an error if the ID already exists.
+pub fn create_edge_with_id(
+    graph: &Graph,
+    eid: u32,
+    source: u32,
+    target: u32,
+    name: &str,
+    labels: &[String],
+    keywords: &[String],
+    strength: f32,
+    properties: &HashMap<String, PropertyValue>,
+) -> StorageResult<u32> {
+    // Check for ID collision
+    let existing = {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        mi.edge_id.get(eid).copied()
+    };
+    if let Some(ptr) = existing {
+        log::error!(
+            "ID collision: edge {} already exists at block={} chunk={}. \
+             This should not happen during cluster replay.",
+            eid, ptr.block_idx, ptr.chunk_offset
+        );
+        return Err(StorageError::Other(format!("edge ID {} already exists", eid)));
+    }
+
+    // Advance the allocator past this ID
+    graph.ensure_edge_id(eid);
+
+    let payload = EdgePayload {
+        name: name.to_string(),
+        labels: labels.to_vec(),
+        keywords: keywords.to_vec(),
+        strength,
+        properties: properties.clone(),
+        source,
+        target,
+        history: Vec::new(),
+    };
+
+    let serialized = serialize_edge(&payload)?;
+    let header = DataHeader::new_edge(eid, serialized.len() as u16);
+    let ptr = write_data_record(graph, &header, &serialized)?;
+
+    // ── Update memory index ──────────────────────────────────────────
+    {
+        let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+        mi.edge_id.insert(eid, ptr);
+        mi.edge_name.insert(payload.name.clone(), eid);
+        mi.rank.insert(1, ptr);
+        mi.vertex_adjacency.add_edge(eid, source, target, ptr);
+        for l in &payload.labels {
+            mi.add_edge_label(l, ptr);
+        }
+        index_edge_properties(&mut mi, &payload.properties, ptr);
     }
 
     // ── Tokenize ─────────────────────────────────────────────────────
@@ -107,7 +319,7 @@ pub fn create_edge(
 pub fn get_vertex(graph: &Graph, vid: u32) -> StorageResult<Option<VertexPayload>> {
     let ptr = {
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-        mi.vertices.get(vid).copied()
+        mi.vertex_id.get(vid).copied()
     };
     let Some(ptr) = ptr else { return Ok(None) };
 
@@ -130,7 +342,7 @@ pub fn get_vertex(graph: &Graph, vid: u32) -> StorageResult<Option<VertexPayload
 pub fn get_edge(graph: &Graph, eid: u32) -> StorageResult<Option<EdgePayload>> {
     let ptr = {
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-        mi.edges.get(eid).copied()
+        mi.edge_id.get(eid).copied()
     };
     let Some(ptr) = ptr else { return Ok(None) };
 
@@ -151,11 +363,11 @@ pub fn get_edge(graph: &Graph, eid: u32) -> StorageResult<Option<EdgePayload>> {
 
 /// Update a vertex's metadata (rank, atime). Name changes go through
 /// `update_vertex` (full payload rewrite) instead.
-/// Updates are persisted to the DataHeader in-place (no WAL entry needed).
+/// Writes a WAL entry (OpType::VertexMetaUpdate) for crash consistency.
 pub fn update_vertex_meta(graph: &Graph, vid: u32, new_rank: Option<u32>, new_atime: Option<u64>) -> StorageResult<()> {
     let ptr = {
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-        mi.vertices.get(vid).copied()
+        mi.vertex_id.get(vid).copied()
     }.ok_or_else(|| StorageError::Other(format!("vertex {} not found", vid)))?;
 
     let header = read_data_header(graph, ptr)?;
@@ -172,16 +384,16 @@ pub fn update_vertex_meta(graph: &Graph, vid: u32, new_rank: Option<u32>, new_at
     {
         let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
         if old_rank != rank {
-            mi.ranks.remove(old_rank, &ptr);
-            mi.ranks.insert(rank, ptr);
+            mi.rank.remove(old_rank, &ptr);
+            mi.rank.insert(rank, ptr);
         }
         if old_atime != atime {
-            mi.atime_index.remove(old_atime, &ptr);
-            mi.atime_index.insert(atime, ptr);
+            mi.atime.remove(old_atime, &ptr);
+            mi.atime.insert(atime, ptr);
         }
     }
 
-    // Persist to DataHeader in-place (no WAL — rank/atime are soft state).
+    // Persist to DataHeader in-place.
     if let Ok(mut hdr) = read_header_by_ptr(graph, &ptr) {
         hdr.rank = rank;
         hdr.atime = atime;
@@ -189,15 +401,22 @@ pub fn update_vertex_meta(graph: &Graph, vid: u32, new_rank: Option<u32>, new_at
         let _ = update_header_in_place(graph, &ptr, &hdr);
     }
 
+    // Write WAL entry for crash consistency.
+    if !crate::graph::graph::is_replaying() {
+        let data = bincode::serialize(&(rank, atime)).unwrap_or_default();
+        let _ = graph.redo_log.append(OpType::VertexMetaUpdate, vid as u64, &data);
+    }
+
     Ok(())
 }
 
 /// Update an edge's metadata (rank, atime). Name changes go through
 /// `update_edge` (full payload rewrite) instead.
+/// Writes a WAL entry (OpType::EdgeMetaUpdate) for crash consistency.
 pub fn update_edge_meta(graph: &Graph, eid: u32, new_rank: Option<u32>, new_atime: Option<u64>) -> StorageResult<()> {
     let ptr = {
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-        mi.edges.get(eid).copied()
+        mi.edge_id.get(eid).copied()
     }.ok_or_else(|| StorageError::Other(format!("edge {} not found", eid)))?;
 
     let header = read_data_header(graph, ptr)?;
@@ -214,12 +433,12 @@ pub fn update_edge_meta(graph: &Graph, eid: u32, new_rank: Option<u32>, new_atim
     {
         let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
         if old_rank != rank {
-            mi.ranks.remove(old_rank, &ptr);
-            mi.ranks.insert(rank, ptr);
+            mi.rank.remove(old_rank, &ptr);
+            mi.rank.insert(rank, ptr);
         }
         if old_atime != atime {
-            mi.atime_index.remove(old_atime, &ptr);
-            mi.atime_index.insert(atime, ptr);
+            mi.atime.remove(old_atime, &ptr);
+            mi.atime.insert(atime, ptr);
         }
     }
 
@@ -229,6 +448,12 @@ pub fn update_edge_meta(graph: &Graph, eid: u32, new_rank: Option<u32>, new_atim
         hdr.atime = atime;
         hdr.mtime = atime;
         let _ = update_header_in_place(graph, &ptr, &hdr);
+    }
+
+    // Write WAL entry for crash consistency.
+    if !crate::graph::graph::is_replaying() {
+        let data = bincode::serialize(&(rank, atime)).unwrap_or_default();
+        let _ = graph.redo_log.append(OpType::EdgeMetaUpdate, eid as u64, &data);
     }
 
     Ok(())
@@ -249,7 +474,7 @@ pub fn update_vertex(
     // Read current state.
     let (old_payload, old_ptr, old_header) = {
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-        let ptr = mi.vertices.get(vid).copied()
+        let ptr = mi.vertex_id.get(vid).copied()
             .ok_or_else(|| StorageError::Other(format!("vertex {} not found", vid)))?;
         let header = read_data_header(graph, ptr)?;
         let payload_len = header.payload_len as usize;
@@ -269,6 +494,12 @@ pub fn update_vertex(
         new_payload.keywords = k.to_vec();
     }
     if let Some(p) = properties {
+        // Update vertex property index: remove old entries, add new ones.
+        {
+            let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+            unindex_vertex_properties(&mut mi, &old_payload.properties, &old_ptr);
+            index_vertex_properties(&mut mi, p, old_ptr);
+        }
         new_payload.properties = p.clone();
     }
 
@@ -276,11 +507,18 @@ pub fn update_vertex(
     // The history entry's timestamp is the old header's mtime — the moment
     // this state snapshot was last current before being superseded.
     if record_history {
-        let old_bytes = serialize_vertex(&old_payload)?;
+        let mut old_payload_core = old_payload.clone();
+        old_payload_core.history.clear();
+        let old_bytes = serialize_vertex(&old_payload_core)?;
         new_payload.history.push(HistoryRecord {
             timestamp: old_header.mtime,
             data: old_bytes,
         });
+        // Cap history to prevent unbounded growth.
+        let max_history = graph.config.storage.time_travel_max_history;
+        while new_payload.history.len() > max_history {
+            new_payload.history.remove(0);
+        }
     }
 
     // Serialize and allocate new chunks (copy-on-write).
@@ -303,15 +541,15 @@ pub fn update_vertex(
     // Update cached metadata.
     {
         let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-        mi.vertices.insert(vid, new_ptr);
+        mi.vertex_id.insert(vid, new_ptr);
 
-        mi.ranks.remove(old_header.rank, &old_ptr);
-        mi.ranks.insert(new_header.rank, new_ptr);
-        mi.atime_index.remove(old_header.atime, &old_ptr);
-        mi.atime_index.insert(now, new_ptr);
+        mi.rank.remove(old_header.rank, &old_ptr);
+        mi.rank.insert(new_header.rank, new_ptr);
+        mi.atime.remove(old_header.atime, &old_ptr);
+        mi.atime.insert(now, new_ptr);
         if let Some(n) = name {
-            mi.vertex_names.remove(&old_payload.name);
-            mi.vertex_names.insert(n.to_string(), vid);
+            mi.vertex_name.remove(&old_payload.name);
+            mi.vertex_name.insert(n.to_string(), vid);
         }
     }
 
@@ -342,7 +580,7 @@ pub fn update_edge(
 ) -> StorageResult<()> {
     let (old_payload, old_ptr, old_header) = {
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-        let ptr = mi.edges.get(eid).copied()
+        let ptr = mi.edge_id.get(eid).copied()
             .ok_or_else(|| StorageError::Other(format!("edge {} not found", eid)))?;
         let header = read_data_header(graph, ptr)?;
         let payload_len = header.payload_len as usize;
@@ -365,15 +603,27 @@ pub fn update_edge(
         new_payload.strength = s;
     }
     if let Some(p) = properties {
+        // Update edge property index: remove old entries, add new ones.
+        {
+            let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+            unindex_edge_properties(&mut mi, &old_payload.properties, &old_ptr);
+            index_edge_properties(&mut mi, p, old_ptr);
+        }
         new_payload.properties = p.clone();
     }
 
     if record_history {
-        let old_bytes = serialize_edge(&old_payload)?;
+        let mut old_payload_core = old_payload.clone();
+        old_payload_core.history.clear();
+        let old_bytes = serialize_edge(&old_payload_core)?;
         new_payload.history.push(HistoryRecord {
             timestamp: old_header.mtime,
             data: old_bytes,
         });
+        let max_history = graph.config.storage.time_travel_max_history;
+        while new_payload.history.len() > max_history {
+            new_payload.history.remove(0);
+        }
     }
 
     let serialized = serialize_edge(&new_payload)?;
@@ -394,16 +644,16 @@ pub fn update_edge(
 
     {
         let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-        mi.edges.insert(eid, new_ptr);
+        mi.edge_id.insert(eid, new_ptr);
 
-        mi.ranks.remove(old_header.rank, &old_ptr);
-        mi.ranks.insert(new_header.rank, new_ptr);
-        mi.atime_index.remove(old_header.atime, &old_ptr);
-        mi.atime_index.insert(now, new_ptr);
+        mi.rank.remove(old_header.rank, &old_ptr);
+        mi.rank.insert(new_header.rank, new_ptr);
+        mi.atime.remove(old_header.atime, &old_ptr);
+        mi.atime.insert(now, new_ptr);
 
         // Update adjacency index with new pointer.
-        mi.adjacency.remove_edge(old_payload.source, old_payload.target, &old_ptr);
-        mi.adjacency.add_edge(eid, old_payload.source, old_payload.target, new_ptr);
+        mi.vertex_adjacency.remove_edge(old_payload.source, old_payload.target, &old_ptr);
+        mi.vertex_adjacency.add_edge(eid, old_payload.source, old_payload.target, new_ptr);
     }
 
     let old_total_len = DATA_HEADER_SIZE + old_header.payload_len as usize;
@@ -420,9 +670,12 @@ pub fn update_edge(
 
 /// Soft-delete a vertex: mark as deleted in header, but keep data for time-travel.
 pub fn soft_delete_vertex(graph: &Graph, vid: u32) -> StorageResult<()> {
+    // 级联软删除所有关联边
+    cascade_delete_edges(graph, vid, false)?;
+
     let ptr = {
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-        mi.vertices.get(vid).copied()
+        mi.vertex_id.get(vid).copied()
             .ok_or_else(|| StorageError::Other(format!("vertex {} not found", vid)))?
     };
 
@@ -437,7 +690,7 @@ pub fn soft_delete_vertex(graph: &Graph, vid: u32) -> StorageResult<()> {
     // Remove from ranks in cache.
     {
         let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-        mi.ranks.remove(old_rank, &ptr);
+        mi.rank.remove(old_rank, &ptr);
     }
 
     graph.redo_log.append(OpType::VertexDelete, vid as u64, &[])?;
@@ -446,9 +699,12 @@ pub fn soft_delete_vertex(graph: &Graph, vid: u32) -> StorageResult<()> {
 
 /// Hard-delete a vertex: remove data entirely.
 pub fn hard_delete_vertex(graph: &Graph, vid: u32) -> StorageResult<()> {
+    // 级联硬删除所有关联边
+    cascade_delete_edges(graph, vid, true)?;
+
     let ptr = {
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-        mi.vertices.get(vid).copied()
+        mi.vertex_id.get(vid).copied()
             .ok_or_else(|| StorageError::Other(format!("vertex {} not found", vid)))?
     };
 
@@ -467,10 +723,14 @@ pub fn hard_delete_vertex(graph: &Graph, vid: u32) -> StorageResult<()> {
         let payload_len = header.payload_len as usize;
         let data = read_data_chunks(graph, ptr.block_idx, ptr.chunk_offset + 1, payload_len as u16)?;
         if let Ok(payload) = deserialize_vertex(&data) {
-            mi.vertex_names.remove(&payload.name);
+            mi.vertex_name.remove(&payload.name);
+            for l in &payload.labels {
+                mi.remove_vertex_label(l, &ptr);
+            }
+            unindex_vertex_properties(&mut mi, &payload.properties, &ptr);
         }
-        mi.vertices.remove(vid);
-        mi.ranks.remove(header.rank, &ptr);
+        mi.vertex_id.remove(vid);
+        mi.rank.remove(header.rank, &ptr);
     }
 
     graph.redo_log.append(OpType::VertexDelete, vid as u64, &[])?;
@@ -481,7 +741,7 @@ pub fn hard_delete_vertex(graph: &Graph, vid: u32) -> StorageResult<()> {
 pub fn soft_delete_edge(graph: &Graph, eid: u32) -> StorageResult<()> {
     let ptr = {
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-        mi.edges.get(eid).copied()
+        mi.edge_id.get(eid).copied()
             .ok_or_else(|| StorageError::Other(format!("edge {} not found", eid)))?
     };
 
@@ -495,7 +755,7 @@ pub fn soft_delete_edge(graph: &Graph, eid: u32) -> StorageResult<()> {
 
     {
         let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-        mi.ranks.remove(old_rank, &ptr);
+        mi.rank.remove(old_rank, &ptr);
         // Keep edge in adjacency for time-travel traversal
     }
 
@@ -507,7 +767,7 @@ pub fn soft_delete_edge(graph: &Graph, eid: u32) -> StorageResult<()> {
 pub fn hard_delete_edge(graph: &Graph, eid: u32) -> StorageResult<()> {
     let ptr = {
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-        mi.edges.get(eid).copied()
+        mi.edge_id.get(eid).copied()
             .ok_or_else(|| StorageError::Other(format!("edge {} not found", eid)))?
     };
 
@@ -523,14 +783,47 @@ pub fn hard_delete_edge(graph: &Graph, eid: u32) -> StorageResult<()> {
         let payload_len = header.payload_len as usize;
         let data = read_data_chunks(graph, ptr.block_idx, ptr.chunk_offset + 1, payload_len as u16)?;
         if let Ok(payload) = deserialize_edge(&data) {
-            mi.edge_names.remove(&payload.name);
-            mi.adjacency.remove_edge(payload.source, payload.target, &ptr);
+            mi.edge_name.remove(&payload.name);
+            mi.vertex_adjacency.remove_edge(payload.source, payload.target, &ptr);
+            for l in &payload.labels {
+                mi.remove_edge_label(l, &ptr);
+            }
+            unindex_edge_properties(&mut mi, &payload.properties, &ptr);
         }
-        mi.edges.remove(eid);
-        mi.ranks.remove(header.rank, &ptr);
+        mi.edge_id.remove(eid);
+        mi.rank.remove(header.rank, &ptr);
     }
 
     graph.redo_log.append(OpType::EdgeDelete, eid as u64, &[])?;
+    Ok(())
+}
+
+/// 级联删除顶点关联的所有边。
+///
+/// `hard: true` 表示硬删除（释放数据块），`false` 表示软删除（标记 Deleted）。
+fn cascade_delete_edges(graph: &Graph, vid: u32, hard: bool) -> StorageResult<()> {
+    // 收集所有关联边的 ID（outgoing + incoming），避免在遍历中修改索引
+    let edge_ids: Vec<u32> = {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        let out = mi.vertex_adjacency.out_edges(vid);
+        let inc = mi.vertex_adjacency.in_edges(vid);
+        let mut ids: Vec<u32> = Vec::with_capacity(out.len() + inc.len());
+        for (eid, _, _) in out {
+            ids.push(*eid);
+        }
+        for (eid, _, _) in inc {
+            ids.push(*eid);
+        }
+        ids
+    };
+
+    for eid in &edge_ids {
+        if hard {
+            hard_delete_edge(graph, *eid)?;
+        } else {
+            soft_delete_edge(graph, *eid)?;
+        }
+    }
     Ok(())
 }
 
@@ -541,75 +834,58 @@ pub fn replay_entry(graph: &Graph, entry: &RedoLogEntry) -> StorageResult<()> {
     match entry.op_type {
         OpType::VertexCreate => {
             let id = entry.op_id as u32;
-            if id >= graph.next_vertex_id.load(std::sync::atomic::Ordering::Relaxed) {
-                graph.next_vertex_id.store(id + 1, std::sync::atomic::Ordering::Relaxed);
-            }
+            graph.next_vertex_id.store(id, Ordering::Relaxed);
             if let Ok(payload) = deserialize_vertex(&entry.data) {
-                // Always re-apply: data in dirty cache may have been lost.
-                replay_create_vertex(graph, id, &payload, &entry.data)?;
+                crate::graph::locked::create_vertex_locked_direct(graph, &payload.name, &payload.labels, &payload.keywords, &payload.properties)?;
             }
         }
         OpType::VertexUpdate => {
             let id = entry.op_id as u32;
-            if id >= graph.next_vertex_id.load(std::sync::atomic::Ordering::Relaxed) {
-                graph.next_vertex_id.store(id + 1, std::sync::atomic::Ordering::Relaxed);
+            if id >= graph.next_vertex_id.load(Ordering::Relaxed) {
+                graph.next_vertex_id.store(id + 1, Ordering::Relaxed);
             }
             if let Ok(payload) = deserialize_vertex(&entry.data) {
-                // Always write the update — do NOT skip even if vertex exists,
-                // because the data file may have the stale pre-update state
-                // (the update's new data record was only in dirty cache).
-                replay_create_vertex_always(graph, id, &payload, &entry.data)?;
+                crate::graph::locked::update_vertex_locked_direct(graph, id, Some(&payload.name), Some(&payload.labels), Some(&payload.keywords), Some(&payload.properties), true)?;
             }
         }
         OpType::EdgeCreate => {
             let id = entry.op_id as u32;
-            if id >= graph.next_edge_id.load(std::sync::atomic::Ordering::Relaxed) {
-                graph.next_edge_id.store(id + 1, std::sync::atomic::Ordering::Relaxed);
-            }
+            graph.next_edge_id.store(id, Ordering::Relaxed);
             if let Ok(payload) = deserialize_edge(&entry.data) {
-                replay_create_edge(graph, id, &payload, &entry.data)?;
+                crate::graph::locked::create_edge_locked_direct(graph, payload.source, payload.target, &payload.name, &payload.labels, &payload.keywords, payload.strength, &payload.properties)?;
             }
         }
         OpType::EdgeUpdate => {
             let id = entry.op_id as u32;
-            if id >= graph.next_edge_id.load(std::sync::atomic::Ordering::Relaxed) {
-                graph.next_edge_id.store(id + 1, std::sync::atomic::Ordering::Relaxed);
+            if id >= graph.next_edge_id.load(Ordering::Relaxed) {
+                graph.next_edge_id.store(id + 1, Ordering::Relaxed);
             }
             if let Ok(payload) = deserialize_edge(&entry.data) {
-                replay_create_edge_always(graph, id, &payload, &entry.data)?;
+                crate::graph::locked::update_edge_locked_direct(graph, id, Some(&payload.name), Some(&payload.labels), Some(&payload.keywords), Some(payload.strength), Some(&payload.properties), true)?;
             }
         }
         OpType::VertexDelete => {
             let id = entry.op_id as u32;
-            if graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).vertices.get(id).is_some() {
-                let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-                mi.vertices.remove(id);
-            }
+            let _ = crate::graph::locked::hard_delete_vertex_locked_direct(graph, id);
         }
         OpType::EdgeDelete => {
             let id = entry.op_id as u32;
-            if let Some(&ptr) = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).edges.get(id) {
-                // Read source/target from data header payload before removal.
-                let (source, target) = {
-                    let header = read_data_header(graph, ptr)?;
-                    let payload_len = header.payload_len as usize;
-                    let data = read_data_chunks(graph, ptr.block_idx, ptr.chunk_offset + 1, payload_len as u16)
-                        .unwrap_or_default();
-                    if let Ok(payload) = deserialize_edge(&data) {
-                        (payload.source, payload.target)
-                    } else {
-                        (0, 0)
-                    }
-                };
-                let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-                mi.edges.remove(id);
-                // Use the real source/target vertex IDs, NOT edge_id, to properly
-                // clean up the adjacency index.
-                mi.adjacency.remove_edge(source, target, &ptr);
-            }
+            let _ = crate::graph::locked::hard_delete_edge_locked_direct(graph, id);
         }
         OpType::TokenCreate | OpType::TokenUpdate | OpType::TokenDelete => {
-            // Token state is rebuilt from data file at startup; no WAL replay needed.
+            // Tokens are implicitly created by vertex/edge CRUD replay.
+        }
+        OpType::VertexMetaUpdate => {
+            let id = entry.op_id as u32;
+            if let Ok((rank, atime)) = bincode::deserialize::<(u32, u64)>(&entry.data) {
+                replay_vertex_meta_update(graph, id, rank, atime)?;
+            }
+        }
+        OpType::EdgeMetaUpdate => {
+            let id = entry.op_id as u32;
+            if let Ok((rank, atime)) = bincode::deserialize::<(u32, u64)>(&entry.data) {
+                replay_edge_meta_update(graph, id, rank, atime)?;
+            }
         }
     }
     Ok(())
@@ -622,7 +898,7 @@ fn replay_create_vertex(graph: &Graph, id: u32, payload: &VertexPayload, wal_dat
     // Skip if this vertex was already re-created during build_memory_index.
     {
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-        if mi.vertices.contains(id) {
+        if mi.vertex_id.contains(id) {
             return Ok(());
         }
     }
@@ -632,9 +908,13 @@ fn replay_create_vertex(graph: &Graph, id: u32, payload: &VertexPayload, wal_dat
     let ptr = write_data_record(graph, &header, &serialized)?;
 
     let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-    mi.vertices.insert(id, ptr);
-    mi.vertex_names.insert(payload.name.clone(), id);
-    mi.ranks.insert(header.rank, ptr);
+    mi.vertex_id.insert(id, ptr);
+    mi.vertex_name.insert(payload.name.clone(), id);
+    mi.rank.insert(header.rank, ptr);
+    for l in &payload.labels {
+        mi.add_vertex_label(l, ptr);
+    }
+    index_vertex_properties(&mut mi, &payload.properties, ptr);
     drop(mi);
 
     tokenize_vertex(graph, id, payload)?;
@@ -644,15 +924,42 @@ fn replay_create_vertex(graph: &Graph, id: u32, payload: &VertexPayload, wal_dat
 /// Replay helper: write a vertex data record unconditionally (no duplicate check).
 /// Used for VertexUpdate replay, where the WAL entry may contain a newer state
 /// than what's on disk (if the update's dirty blocks weren't flushed before crash).
+/// Cleans up old index entries before inserting the new ones.
 fn replay_create_vertex_always(graph: &Graph, id: u32, payload: &VertexPayload, wal_data: &[u8]) -> StorageResult<()> {
+    // Remove old index entries (read lock scoped to avoid deadlock on upgrade).
+    let old_info: Option<(MetaPointer, u32)> = {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        mi.vertex_id.get(id).map(|&ptr| (ptr, 0u32))
+    };
+    if let Some((old_ptr, _)) = old_info {
+        if let Ok(old_header) = read_data_header(graph, old_ptr) {
+            let old_plen = old_header.payload_len as usize;
+            let old_data = read_data_chunks(graph, old_ptr.block_idx, old_ptr.chunk_offset + 1, old_plen as u16)
+                .unwrap_or_default();
+            if let Ok(old_payload) = deserialize_vertex(&old_data) {
+                let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+                mi.vertex_name.remove(&old_payload.name);
+                for l in &old_payload.labels {
+                    mi.remove_vertex_label(l, &old_ptr);
+                }
+                unindex_vertex_properties(&mut mi, &old_payload.properties, &old_ptr);
+                mi.rank.remove(old_header.rank, &old_ptr);
+            }
+        }
+    }
+
     let serialized = wal_data.to_vec();
     let header = DataHeader::new_vertex(id, serialized.len() as u16);
     let ptr = write_data_record(graph, &header, &serialized)?;
 
     let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-    mi.vertices.insert(id, ptr);
-    mi.vertex_names.insert(payload.name.clone(), id);
-    mi.ranks.insert(header.rank, ptr);
+    mi.vertex_id.insert(id, ptr);
+    mi.vertex_name.insert(payload.name.clone(), id);
+    mi.rank.insert(header.rank, ptr);
+    for l in &payload.labels {
+        mi.add_vertex_label(l, ptr);
+    }
+    index_vertex_properties(&mut mi, &payload.properties, ptr);
     drop(mi);
 
     tokenize_vertex(graph, id, payload)?;
@@ -664,7 +971,7 @@ fn replay_create_edge(graph: &Graph, id: u32, payload: &EdgePayload, wal_data: &
     // Skip if this edge was already re-created during build_memory_index.
     {
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-        if mi.edges.contains(id) {
+        if mi.edge_id.contains(id) {
             return Ok(());
         }
     }
@@ -674,10 +981,14 @@ fn replay_create_edge(graph: &Graph, id: u32, payload: &EdgePayload, wal_data: &
     let ptr = write_data_record(graph, &header, &serialized)?;
 
     let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-    mi.edges.insert(id, ptr);
-    mi.edge_names.insert(payload.name.clone(), id);
-    mi.ranks.insert(header.rank, ptr);
-    mi.adjacency.add_edge(id, payload.source, payload.target, ptr);
+    mi.edge_id.insert(id, ptr);
+    mi.edge_name.insert(payload.name.clone(), id);
+    mi.rank.insert(header.rank, ptr);
+    mi.vertex_adjacency.add_edge(id, payload.source, payload.target, ptr);
+    for l in &payload.labels {
+        mi.add_edge_label(l, ptr);
+    }
+    index_edge_properties(&mut mi, &payload.properties, ptr);
     drop(mi);
 
     tokenize_edge(graph, id, payload)?;
@@ -687,19 +998,172 @@ fn replay_create_edge(graph: &Graph, id: u32, payload: &EdgePayload, wal_data: &
 /// Replay helper: write an edge data record unconditionally (no duplicate check).
 /// Used for EdgeUpdate replay, same rationale as replay_create_vertex_always.
 fn replay_create_edge_always(graph: &Graph, id: u32, payload: &EdgePayload, wal_data: &[u8]) -> StorageResult<()> {
+    // Remove old index entries (read lock scoped to avoid deadlock on upgrade).
+    let old_ptr: Option<MetaPointer> = {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        mi.edge_id.get(id).copied()
+    };
+    if let Some(old_ptr) = old_ptr {
+        if let Ok(old_header) = read_data_header(graph, old_ptr) {
+            let old_plen = old_header.payload_len as usize;
+            let old_data = read_data_chunks(graph, old_ptr.block_idx, old_ptr.chunk_offset + 1, old_plen as u16)
+                .unwrap_or_default();
+            if let Ok(old_payload) = deserialize_edge(&old_data) {
+                let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+                mi.edge_name.remove(&old_payload.name);
+                mi.vertex_adjacency.remove_edge(old_payload.source, old_payload.target, &old_ptr);
+                for l in &old_payload.labels {
+                    mi.remove_edge_label(l, &old_ptr);
+                }
+                unindex_edge_properties(&mut mi, &old_payload.properties, &old_ptr);
+                mi.rank.remove(old_header.rank, &old_ptr);
+            }
+        }
+    }
+
     let serialized = wal_data.to_vec();
     let header = DataHeader::new_edge(id, serialized.len() as u16);
     let ptr = write_data_record(graph, &header, &serialized)?;
 
     let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-    mi.edges.insert(id, ptr);
-    mi.edge_names.insert(payload.name.clone(), id);
-    mi.ranks.insert(header.rank, ptr);
-    mi.adjacency.add_edge(id, payload.source, payload.target, ptr);
+    mi.edge_id.insert(id, ptr);
+    mi.edge_name.insert(payload.name.clone(), id);
+    mi.rank.insert(header.rank, ptr);
+    mi.vertex_adjacency.add_edge(id, payload.source, payload.target, ptr);
+    for l in &payload.labels {
+        mi.add_edge_label(l, ptr);
+    }
+    index_edge_properties(&mut mi, &payload.properties, ptr);
     drop(mi);
 
     tokenize_edge(graph, id, payload)?;
     Ok(())
+}
+
+// ── Token replay helpers ─────────────────────────────────────────
+
+/// Replay helper: create a token record from WAL data.
+fn replay_create_token(graph: &Graph, payload: &TokenPayload, wal_data: &[u8]) -> StorageResult<()> {
+    let serialized = wal_data.to_vec();
+    let header = DataHeader::new_token(payload.id, serialized.len() as u16);
+    let ptr = write_data_record(graph, &header, &serialized)?;
+    let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+    mi.token.insert(payload.token.clone(), ptr);
+    Ok(())
+}
+
+/// Replay helper: update (replace) a token record from WAL data.
+/// Free old segments' data chunks and insert the new segment.
+fn replay_update_token(graph: &Graph, payload: &TokenPayload, wal_data: &[u8]) -> StorageResult<()> {
+    // Free all existing segments for this token.
+    {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        if let Some(ptrs) = mi.token.get(&payload.token) {
+            for p in ptrs {
+                if let Ok(header) = read_data_header(graph, *p) {
+                    let total = DATA_HEADER_SIZE + header.payload_len as usize;
+                    let chunks = BlockAllocator::chunks_needed(total);
+                    let _ = free_data_chunks(graph, p.block_idx, p.chunk_offset, chunks as u8);
+                }
+            }
+        }
+    }
+
+    let serialized = wal_data.to_vec();
+    let header = DataHeader::new_token(payload.id, serialized.len() as u16);
+    let ptr = write_data_record(graph, &header, &serialized)?;
+    let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+    mi.token.remove_token(&payload.token);
+    mi.token.insert(payload.token.clone(), ptr);
+    Ok(())
+}
+
+/// Replay helper: delete all segments of a token from memory index and free chunks.
+fn replay_delete_token(graph: &Graph, token_str: &str) -> StorageResult<()> {
+    let ptrs = {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        mi.token.get(token_str).cloned().unwrap_or_default()
+    };
+    for p in &ptrs {
+        if let Ok(header) = read_data_header(graph, *p) {
+            let total = DATA_HEADER_SIZE + header.payload_len as usize;
+            let chunks = BlockAllocator::chunks_needed(total);
+            let _ = free_data_chunks(graph, p.block_idx, p.chunk_offset, chunks as u8);
+        }
+    }
+    let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+    mi.token.remove_token(token_str);
+    Ok(())
+}
+
+/// Replay helper: apply vertex metadata update (rank, atime) from WAL.
+fn replay_vertex_meta_update(graph: &Graph, vid: u32, rank: u32, atime: u64) -> StorageResult<()> {
+    let ptr = {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        mi.vertex_id.get(vid).copied()
+    };
+    match ptr {
+        Some(p) => {
+            // Apply the meta change in-place.
+            if let Ok(mut hdr) = read_header_by_ptr(graph, &p) {
+                let old_rank = hdr.rank;
+                let old_atime = hdr.atime;
+                hdr.rank = rank;
+                hdr.atime = atime;
+                hdr.mtime = atime;
+                let _ = update_header_in_place(graph, &p, &hdr);
+                // Sync memory index.
+                let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+                if old_rank != rank {
+                    mi.rank.remove(old_rank, &p);
+                    mi.rank.insert(rank, p);
+                }
+                if old_atime != atime {
+                    mi.atime.remove(old_atime, &p);
+                    mi.atime.insert(atime, p);
+                }
+            }
+            Ok(())
+        }
+        None => {
+            log::warn!("replay_vertex_meta_update: vertex {} not found, skipping", vid);
+            Ok(())
+        }
+    }
+}
+
+/// Replay helper: apply edge metadata update (rank, atime) from WAL.
+fn replay_edge_meta_update(graph: &Graph, eid: u32, rank: u32, atime: u64) -> StorageResult<()> {
+    let ptr = {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        mi.edge_id.get(eid).copied()
+    };
+    match ptr {
+        Some(p) => {
+            if let Ok(mut hdr) = read_header_by_ptr(graph, &p) {
+                let old_rank = hdr.rank;
+                let old_atime = hdr.atime;
+                hdr.rank = rank;
+                hdr.atime = atime;
+                hdr.mtime = atime;
+                let _ = update_header_in_place(graph, &p, &hdr);
+                let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+                if old_rank != rank {
+                    mi.rank.remove(old_rank, &p);
+                    mi.rank.insert(rank, p);
+                }
+                if old_atime != atime {
+                    mi.atime.remove(old_atime, &p);
+                    mi.atime.insert(atime, p);
+                }
+            }
+            Ok(())
+        }
+        None => {
+            log::warn!("replay_edge_meta_update: edge {} not found, skipping", eid);
+            Ok(())
+        }
+    }
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
@@ -708,104 +1172,119 @@ fn replay_create_edge_always(graph: &Graph, id: u32, payload: &EdgePayload, wal_
 fn allocate_chunks(graph: &Graph, chunks_needed: u8) -> StorageResult<(u32, u8)> {
     let mut bf = graph.bitmap_file.write().unwrap_or_else(|e| e.into_inner());
 
-    loop {
-        let block_idx = bf.alloc_block(|count| {
-            graph.data_file.allocate_blocks(count)
-        })?;
+    // Track how many blocks we've tried this round. When every free
+    // block has been tried and none has enough contiguous space, discard
+    // one to free up a slot for a fresh block allocation.
+    let mut tried = 0usize;
 
-        let mut cache = graph.block_cache.write().unwrap_or_else(|e| e.into_inner());
-        let block = cache.get_or_load(block_idx,
+    loop {
+        let block_idx = match bf.peek_free_block() {
+            Some(idx) => idx,
+            None => {
+                bf.alloc_new_blocks(|count| {
+                    graph.data_file.allocate_blocks(count)
+                })?;
+                bf.peek_free_block().expect("fresh blocks must exist")
+            }
+        };
+
+        // Remove from free_blocks for this attempt
+        bf.consume_free_block(block_idx);
+
+        let block_data = graph.block_cache.read_block_data(block_idx,
             |idx| graph.data_file.read_block(idx),
             &|idx, data| graph.data_file.write_block(idx, data),
         )?;
-
-        let mut header = BlockHeader::decode(block);
-        if let Some(off) = BlockAllocator::alloc_chunks(&mut header.bitmap, chunks_needed) {
-            header.encode(block);
+        let mut block_buf = block_data;
+        let mut header = BlockHeader::decode(&block_buf);
+        if let Some(off) = BlockAllocator::alloc_chunks(&mut header.bitmap, &mut header.offset, chunks_needed) {
+            header.encode(&mut block_buf);
             let was_full = BlockAllocator::is_block_full(&header.bitmap);
-            cache.mark_dirty(block_idx);
-            drop(cache);
+            graph.block_cache.write_block_data(block_idx, &block_buf,
+                |idx| graph.data_file.read_block(idx),
+                &|idx, data| graph.data_file.write_block(idx, data),
+            )?;
 
             if was_full {
                 bf.mark_full(block_idx)?;
+            } else {
+                bf.mark_partial(block_idx);
             }
             return Ok((block_idx, off));
         }
 
-        // This block doesn't have enough contiguous free chunks (fragmented).
-        // Mark it full so alloc_block skips it, then try the next block.
-        drop(cache);
-        bf.mark_full(block_idx)?;
+        // This block doesn't have enough contiguous free chunks.
+        tried += 1;
+        // Detect if we've been around all free blocks without success.
+        let free_count = bf.free_block_count();
+        if tried > free_count {
+            // Full circle with no success — discard the fragmented block
+            // so consume_free_block causes peek_free_block to return None,
+            // triggering alloc_new_blocks at the top of the loop.
+            bf.consume_free_block(block_idx);
+            tried = 0;
+        } else {
+            bf.mark_partial(block_idx);
+        }
         // Continue loop to try next block
     }
 }
 
 /// Write padded data into the allocated chunks.
 fn write_data_chunks(graph: &Graph, block_idx: u32, chunk_offset: u8, chunks: u8, data: &[u8]) -> StorageResult<()> {
-    // Write data into the block through cache, then flush to disk.
-    let _block_copy = {
-        let mut cache = graph.block_cache.write().unwrap_or_else(|e| e.into_inner());
-        cache.with_block(block_idx,
-            |idx| graph.data_file.read_block(idx),
-            &|idx, data| graph.data_file.write_block(idx, data),
-            |block| {
-                let start = (chunk_offset as usize) * 64;
-                let end = start + (chunks as usize) * 64;
-                let write_len = data.len().min(end - start);
-                block[start..start + write_len].copy_from_slice(&data[..write_len]);
-                *block  // copy for disk flush
-            },
-        )?
-    };
+    graph.block_cache.with_block(block_idx,
+        |idx| graph.data_file.read_block(idx),
+        &|idx, data| graph.data_file.write_block(idx, data),
+        |block| {
+            let start = (chunk_offset as usize) * 64;
+            let end = start + (chunks as usize) * 64;
+            let write_len = data.len().min(end - start);
+            block[start..start + write_len].copy_from_slice(&data[..write_len]);
+        },
+    )?;
     Ok(())
 }
 
 /// Read data from chunks given the total data length.
 pub(crate) fn read_data_chunks(graph: &Graph, block_idx: u32, chunk_offset: u8, data_len: u16) -> StorageResult<Vec<u8>> {
     let _chunks = BlockAllocator::chunks_needed(data_len as usize);
-    let mut cache = graph.block_cache.write().unwrap_or_else(|e| e.into_inner());
-    let block = cache.get_or_load(block_idx, |idx| {
-        graph.data_file.read_block(idx)
-    }, &|idx, data| {
-        graph.data_file.write_block(idx, data)
-    })?;
-
-    let start = (chunk_offset as usize) * 64;
-    let read_len = data_len as usize;
-    // Clamp to block boundary to avoid slice index out of bounds.
-    let end = (start + read_len).min(BLOCK_SIZE);
-    let avail = end - start;
-    if avail < read_len {
-        log::warn!(
-            "read_data_chunks: truncated read at block={} chunk_offset={}: requested {} bytes, available {}",
-            block_idx, chunk_offset, read_len, avail,
-        );
-    }
-    let mut data = vec![0u8; avail];
-    data.copy_from_slice(&block[start..end]);
-    Ok(data)
+    graph.block_cache.with_block(block_idx,
+        |idx| graph.data_file.read_block(idx),
+        &|idx, data| graph.data_file.write_block(idx, data),
+        |block| {
+            let start = (chunk_offset as usize) * 64;
+            let read_len = data_len as usize;
+            let end = (start + read_len).min(BLOCK_SIZE);
+            let avail = end - start;
+            if avail < read_len {
+                log::warn!(
+                    "read_data_chunks: truncated read at block={} chunk_offset={}: requested {} bytes, available {}",
+                    block_idx, chunk_offset, read_len, avail,
+                );
+            }
+            let mut data = vec![0u8; avail];
+            data.copy_from_slice(&block[start..end]);
+            data
+        },
+    )
 }
 
 /// Free previously allocated data chunks.
 fn free_data_chunks(graph: &Graph, block_idx: u32, chunk_offset: u8, chunks: u8) -> StorageResult<()> {
-    let was_full = {
-        let mut cache = graph.block_cache.write().unwrap_or_else(|e| e.into_inner());
-        if cache.contains(block_idx) {
-            let block = cache.get_or_load(block_idx, |idx| {
-                graph.data_file.read_block(idx)
-            }, &|idx, data| {
-                graph.data_file.write_block(idx, data)
-            })?;
+    // Load block (from cache or disk) and free the chunks.
+    // Always load even if not cached — avoiding the load causes chunk leaks
+    // during WAL replay and other bulk operations.
+    let was_full = graph.block_cache.with_block(block_idx,
+        |idx| graph.data_file.read_block(idx),
+        &|idx, data| graph.data_file.write_block(idx, data).map_err(|e| e.into()),
+        |block| {
             let mut header = BlockHeader::decode(block);
-            let was_full = BlockAllocator::is_block_full(&header.bitmap);
+            let wf = BlockAllocator::is_block_full(&header.bitmap);
             BlockAllocator::free_chunks(&mut header.bitmap, chunk_offset, chunks);
             header.encode(block);
-            cache.mark_dirty(block_idx);
-            was_full && !BlockAllocator::is_block_full(&header.bitmap)
-        } else {
-            false
-        }
-    };
+            wf && !BlockAllocator::is_block_full(&header.bitmap)
+        },
+    )?;
 
     if was_full {
         let mut bf = graph.bitmap_file.write().unwrap_or_else(|e| e.into_inner());
@@ -862,11 +1341,108 @@ fn tokenize_edge(graph: &Graph, eid: u32, payload: &EdgePayload) -> StorageResul
 }
 
 /// Add or update a token entry.
+///
+/// Add or update a token entry — dispatches to batch or immediate.
 fn add_token(graph: &Graph, token_str: &str, ref_type: u8, ref_id: u32, hits: &[crate::storage::types::Hit]) -> StorageResult<()> {
+    if crate::graph::token_batch::is_active() {
+        crate::graph::token_batch::buffer_add(graph, token_str, ref_type, ref_id, hits)
+    } else {
+        add_token_immediate(graph, token_str, ref_type, ref_id, hits)
+    }
+}
+
+/// Append multiple refs to an existing token in one write (called from token_batch::flush_batch).
+/// Reads the existing token segment, appends all refs at once, and writes a single new record.
+/// Falls back to per-ref writes if the combined payload would exceed MAX_TOKEN_PAYLOAD.
+pub fn add_token_batch(graph: &Graph, token_str: &str, refs: &[crate::graph::token_batch::PendingRef]) -> StorageResult<()> {
+    // Read the first existing token segment.
+    let (ptr, header, mut token_payload) = {
+        let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
+        let ptrs = mi.token.get(token_str);
+        let ptr = match ptrs.and_then(|v| v.first().copied()) {
+            Some(p) => p,
+            None => {
+                // Token doesn't exist yet — create it with all refs.
+                drop(mi);
+                let seg = TokenPayload {
+                    id: graph.alloc_token_id(),
+                    token: token_str.to_string(),
+                    refs: refs.iter().map(|pr| TokenRef {
+                        ref_type: pr.ref_type, ref_id: pr.ref_id,
+                        ref_version: 1, ref_frequency: pr.hits.len() as u16,
+                        hits: pr.hits.clone(),
+                    }).collect(),
+                };
+                let data = serialize::serialize_token(&seg)?;
+                let h = DataHeader::new_token(seg.id, data.len() as u16);
+                let new_ptr = write_data_record(graph, &h, &data)?;
+                let mut mi2 = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+                mi2.token.insert(token_str.to_string(), new_ptr);
+                return Ok(());
+            }
+        };
+        let h = read_data_header(graph, ptr)?;
+        let plen = h.payload_len as usize;
+        let data = read_data_chunks(graph, ptr.block_idx, ptr.chunk_offset + 1, plen as u16)?;
+        let payload = serialize::deserialize_token(&data)
+            .map_err(|e| StorageError::Other(format!("token deser: {e}")))?;
+        (ptr, h, payload)
+    };
+
+    let old_payload_len = header.payload_len as usize;
+
+    // Append all refs.
+    for pr in refs {
+        token_payload.refs.push(TokenRef {
+            ref_type: pr.ref_type, ref_id: pr.ref_id,
+            ref_version: 1, ref_frequency: pr.hits.len() as u16,
+            hits: pr.hits.clone(),
+        });
+    }
+
+    let new_data = serialize::serialize_token(&token_payload)?;
+
+    // If the combined payload would overflow, fall back to per-ref writes.
+    if new_data.len() > MAX_TOKEN_PAYLOAD {
+        for pr in refs {
+            add_token_immediate(graph, token_str, pr.ref_type, pr.ref_id, &pr.hits)?;
+        }
+        return Ok(());
+    }
+
+    let new_header = DataHeader {
+        chunk_type: crate::storage::types::ChunkType::Token,
+        status: DataStatus::Normal, version: 0,
+        entity_id: token_payload.id,
+        ctime: header.ctime, mtime: 0, atime: 0, rank: 0,
+        payload_len: new_data.len() as u16,
+    };
+
+    let new_ptr = write_data_record(graph, &new_header, &new_data)?;
+
+    // Update memory index.
+    {
+        let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+        mi.token.remove_pointer(token_str, &ptr);
+        mi.token.insert(token_str.to_string(), new_ptr);
+    }
+
+    // Free old chunks.
+    if old_payload_len > 0 {
+        let old_total = (DATA_HEADER_SIZE + old_payload_len) as u16;
+        let old_chunks = BlockAllocator::chunks_needed(old_total as usize);
+        free_data_chunks(graph, ptr.block_idx, ptr.chunk_offset, old_chunks)?;
+    }
+
+    Ok(())
+}
+
+/// Add or update a token entry — immediate write (no batching).
+pub(crate) fn add_token_immediate(graph: &Graph, token_str: &str, ref_type: u8, ref_id: u32, hits: &[crate::storage::types::Hit]) -> StorageResult<()> {
     // Check if token already exists in memory index.
     let existing = {
         let mi = graph.memory_index.read().unwrap_or_else(|e| e.into_inner());
-        mi.tokens.get(token_str).map(|v| v.clone())
+        mi.token.get(token_str).map(|v| v.clone())
     };
 
     if let Some(ptrs) = existing {
@@ -885,6 +1461,29 @@ fn add_token(graph: &Graph, token_str: &str, ref_type: u8, ref_id: u32, hits: &[
                     hits: hits.to_vec(),
                 });
                 let new_data = crate::graph::serialize::serialize_token(&token_payload)?;
+
+                // If appending would exceed the safe limit, create a new segment.
+                if new_data.len() > MAX_TOKEN_PAYLOAD {
+                    let seg_payload = TokenPayload {
+                        id: graph.alloc_token_id(),
+                        token: token_str.to_string(),
+                        refs: vec![TokenRef {
+                            ref_type, ref_id, ref_version: 1,
+                            ref_frequency: hits.len() as u16,
+                            hits: hits.to_vec(),
+                        }],
+                    };
+                    let seg_data = crate::graph::serialize::serialize_token(&seg_payload)?;
+                    let seg_header = DataHeader::new_token(seg_payload.id, seg_data.len() as u16);
+                    let seg_ptr = profile::time("token_write", || write_data_record(graph, &seg_header, &seg_data))?;
+                    if !crate::graph::graph::is_replaying() {
+                        graph.redo_log.append(OpType::TokenCreate, seg_payload.id as u64, &seg_data)?;
+                    }
+                    let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
+                    mi.token.insert(token_str.to_string(), seg_ptr);
+                    return Ok(());
+                }
+
                 let new_header = DataHeader {
                     chunk_type: crate::storage::types::ChunkType::Token,
                     status: DataStatus::Normal,
@@ -898,12 +1497,17 @@ fn add_token(graph: &Graph, token_str: &str, ref_type: u8, ref_id: u32, hits: &[
                 };
 
                 // Allocate new space and write DataHeader + payload.
-                let new_ptr = write_data_record(graph, &new_header, &new_data)?;
+                let new_ptr = profile::time("token_write", || write_data_record(graph, &new_header, &new_data))?;
+
+                // WAL
+                if !crate::graph::graph::is_replaying() {
+                    graph.redo_log.append(OpType::TokenUpdate, token_payload.id as u64, &new_data)?;
+                }
 
                 // Update token pointer in memory index.
                 let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-                mi.tokens.remove_pointer(token_str, &ptr);
-                mi.tokens.insert(token_str.to_string(), new_ptr);
+                mi.token.remove_pointer(token_str, &ptr);
+                mi.token.insert(token_str.to_string(), new_ptr);
 
                 // Free old data chunks (header + payload).
                 let old_total = (DATA_HEADER_SIZE + payload_len) as u16;
@@ -928,9 +1532,14 @@ fn add_token(graph: &Graph, token_str: &str, ref_type: u8, ref_id: u32, hits: &[
         let header = DataHeader::new_token(token_payload.id, data.len() as u16);
         let ptr = write_data_record(graph, &header, &data)?;
 
+        // WAL
+        if !crate::graph::graph::is_replaying() {
+            graph.redo_log.append(OpType::TokenCreate, token_payload.id as u64, &data)?;
+        }
+
         // Update memory index.
         let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-        mi.tokens.insert(token_str.to_string(), ptr);
+        mi.token.insert(token_str.to_string(), ptr);
     }
 
     Ok(())
@@ -950,14 +1559,25 @@ fn update_rank_and_atime(graph: &Graph, id: u32, ptr: &MetaPointer) -> StorageRe
 
     {
         let mut mi = graph.memory_index.write().unwrap_or_else(|e| e.into_inner());
-        mi.ranks.remove(old_rank, ptr);
-        mi.ranks.insert(new_rank, *ptr);
-        mi.atime_index.remove(old_atime, ptr);
-        mi.atime_index.insert(now, *ptr);
+        mi.rank.remove(old_rank, ptr);
+        mi.rank.insert(new_rank, *ptr);
+        mi.atime.remove(old_atime, ptr);
+        mi.atime.insert(now, *ptr);
     }
 
     // Persist to DataHeader in-place.
     update_header_in_place(graph, ptr, &header)?;
+
+    // Write WAL entry for crash consistency.
+    if !crate::graph::graph::is_replaying() {
+        let data = bincode::serialize(&(new_rank, now)).unwrap_or_default();
+        let op_type = match header.chunk_type {
+            crate::storage::types::ChunkType::Vertex => OpType::VertexMetaUpdate,
+            crate::storage::types::ChunkType::Edge => OpType::EdgeMetaUpdate,
+            _ => return Ok(()),
+        };
+        let _ = graph.redo_log.append(op_type, id as u64, &data);
+    }
 
     Ok(())
 }
@@ -1094,22 +1714,14 @@ pub fn read_token_by_ptr(
 /// Used by Gremlin engine and rank decay to resolve entity identity from data pointers.
 pub fn read_header_by_ptr(graph: &Graph, ptr: &MetaPointer) -> StorageResult<DataHeader> {
     let mut buf = [0u8; 64];
-    // Fast path: read lock.
-    {
-        let cache = graph.block_cache.read().unwrap_or_else(|e| e.into_inner());
-        if let Some(block) = cache.peek(ptr.block_idx) {
+    graph.block_cache.with_block(ptr.block_idx,
+        |idx| graph.data_file.read_block(idx),
+        &|idx, data| graph.data_file.write_block(idx, data).map_err(|e| e.into()),
+        |block| {
             let start = (ptr.chunk_offset as usize) * 64;
             buf.copy_from_slice(&block[start..start + 64]);
-            return Ok(DataHeader::decode(&buf));
-        }
-    }
-    // Slow path: write lock on cache miss.
-    let mut cache = graph.block_cache.write().unwrap_or_else(|e| e.into_inner());
-    let block = cache.get_or_load(ptr.block_idx, |idx| graph.data_file.read_block(idx), &|idx, data| {
-        graph.data_file.write_block(idx, data).map_err(|e| e.into())
-    })?;
-    let start = (ptr.chunk_offset as usize) * 64;
-    buf.copy_from_slice(&block[start..start + 64]);
+        },
+    )?;
     Ok(DataHeader::decode(&buf))
 }
 
@@ -1119,15 +1731,16 @@ pub fn read_header_by_ptr(graph: &Graph, ptr: &MetaPointer) -> StorageResult<Dat
 /// and marks the block dirty. No WAL entry is needed — the change is
 /// persisted at the next checkpoint.
 pub fn update_header_in_place(graph: &Graph, ptr: &MetaPointer, header: &DataHeader) -> StorageResult<()> {
-    let mut cache = graph.block_cache.write().unwrap_or_else(|e| e.into_inner());
-    let block = cache.get_or_load(ptr.block_idx, |idx| graph.data_file.read_block(idx), &|idx, data| {
-        graph.data_file.write_block(idx, data).map_err(|e| e.into())
-    })?;
-    let start = (ptr.chunk_offset as usize) * 64;
-    let mut buf = [0u8; 64];
-    header.encode(&mut buf);
-    block[start..start + 64].copy_from_slice(&buf);
-    cache.mark_dirty(ptr.block_idx);
+    graph.block_cache.with_block(ptr.block_idx,
+        |idx| graph.data_file.read_block(idx),
+        &|idx, data| graph.data_file.write_block(idx, data).map_err(|e| e.into()),
+        |block| {
+            let start = (ptr.chunk_offset as usize) * 64;
+            let mut buf = [0u8; 64];
+            header.encode(&mut buf);
+            block[start..start + 64].copy_from_slice(&buf);
+        },
+    )?;
     Ok(())
 }
 
@@ -1140,29 +1753,17 @@ fn read_data_payload(
     data_len: usize,
 ) -> StorageResult<Vec<u8>> {
     let padded = BlockAllocator::padded_length(data_len);
-    let mut buf = vec![0u8; padded];
-
-    // Fast path: read lock — block may already be cached.
-    {
-        let cache = graph.block_cache.read().unwrap_or_else(|e| e.into_inner());
-        if let Some(block) = cache.peek(block_idx) {
+    graph.block_cache.with_block(block_idx,
+        |idx| graph.data_file.read_block(idx),
+        &|idx, data| graph.data_file.write_block(idx, data).map_err(|e| e.into()),
+        |block| {
             let start = (chunk_offset as usize) * 64;
             let end = start + padded.min(BLOCK_SIZE - start);
-            buf[..(end - start)].copy_from_slice(&block[start..end]);
-            return Ok(buf[..data_len].to_vec());
-        }
-    }
-
-    // Slow path: write lock — load from disk on cache miss.
-    let mut cache = graph.block_cache.write().unwrap_or_else(|e| e.into_inner());
-    let block = cache.get_or_load(block_idx, |idx| graph.data_file.read_block(idx), &|idx, data| {
-        graph.data_file.write_block(idx, data).map_err(|e| e.into())
-    })?;
-
-    let start = (chunk_offset as usize) * 64;
-    let end = start + padded.min(BLOCK_SIZE - start);
-    buf[..(end - start)].copy_from_slice(&block[start..end]);
-    Ok(buf[..data_len].to_vec())
+            let mut buf = vec![0u8; end - start];
+            buf.copy_from_slice(&block[start..end]);
+            buf
+        },
+    )
 }
 
 // ── New DataHeader-based helpers ─────────────────────────────────────────────
@@ -1175,6 +1776,12 @@ fn write_data_record(
     payload_bytes: &[u8],
 ) -> StorageResult<MetaPointer> {
     let total_len = DATA_HEADER_SIZE + payload_bytes.len();
+    if total_len > MAX_STORABLE_DATA {
+        return Err(StorageError::Other(format!(
+            "data record too large: {} bytes (max {})",
+            total_len, MAX_STORABLE_DATA
+        )));
+    }
     let chunks_needed = BlockAllocator::chunks_needed(total_len);
     let padded_len = BlockAllocator::padded_length(total_len);
     let mut buf = vec![0u8; padded_len];

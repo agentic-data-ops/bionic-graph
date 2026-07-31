@@ -143,8 +143,7 @@ def search_vertex_by_name(client: Client, name: str, graph_name: str) -> Optiona
     """
     try:
         steps = [
-            {"step": "V"},
-            {"step": "has", "key": "name", "value": name},
+            {"step": "hasName", "name": name},
         ]
         resp = client.execute_gremlin(steps, graph=graph_name)
         if resp.success and resp.data:

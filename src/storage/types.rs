@@ -116,6 +116,12 @@ pub enum OpType {
     TokenCreate = 0x06,
     TokenUpdate = 0x07,
     TokenDelete = 0x08,
+    /// Metadata-only update (rank, atime) for a vertex — no payload rewrite.
+    /// Data is bincode-serialized (rank: u32, atime: u64).
+    VertexMetaUpdate = 0x09,
+    /// Metadata-only update (rank, atime) for an edge — no payload rewrite.
+    /// Data is bincode-serialized (rank: u32, atime: u64).
+    EdgeMetaUpdate = 0x0A,
 }
 
 impl TryFrom<u8> for OpType {
@@ -131,6 +137,8 @@ impl TryFrom<u8> for OpType {
             0x06 => Ok(OpType::TokenCreate),
             0x07 => Ok(OpType::TokenUpdate),
             0x08 => Ok(OpType::TokenDelete),
+            0x09 => Ok(OpType::VertexMetaUpdate),
+            0x0A => Ok(OpType::EdgeMetaUpdate),
             _ => Err(()),
         }
     }

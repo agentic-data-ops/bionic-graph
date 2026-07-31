@@ -6,10 +6,14 @@
 //! operation, replicates the redo log entry to all workers, and returns
 //! the result to the worker, which proxies it back to the client.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// A forwarded write request.
+/// The `graph` field was removed in favor of `headers["X-Graph-Name"]`.
+/// Old serialized data with a `graph` field is silently ignored via `#[serde(deny_unknown_fields)]` removal.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ForwardedRequest {
     /// HTTP method (POST, PUT, DELETE).
@@ -20,8 +24,11 @@ pub struct ForwardedRequest {
     pub query: Option<String>,
     /// Request body as a JSON string.
     pub body: Option<String>,
-    /// Optional graph name.
-    pub graph: Option<String>,
+    /// Original request headers (X-Graph-Name, X-Time-Travel, etc.).
+    /// Set by ClusterRequest::to_forwarded(); proxy_to_api iterates
+    /// these to faithfully reproduce the original request context.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
 }
 
 /// Response from the master after executing a forwarded write.
@@ -58,6 +65,7 @@ pub async fn forward_write(
     let body = serde_json::to_string(request)?;
 
     let client = reqwest::Client::new();
+    log::warn!("forward_write POST {} body={}", url, body);
     let resp = client
         .post(&url)
         .header("Content-Type", "application/json")
@@ -67,6 +75,7 @@ pub async fn forward_write(
 
     let status = resp.status().as_u16();
     let response_body = resp.text().await?;
+    log::warn!("forward_write response: status={} body={}", status, response_body);
 
     if status >= 200 && status < 300 {
         let forwarded: ForwardedResponse = serde_json::from_str(&response_body)?;
@@ -107,8 +116,6 @@ pub const WRITE_PATHS: &[&str] = &[
     "/graphs",
     "/documents",
     "/settings",
-    "/compact",
-    "/reindex",
     "/extract",
 ];
 
