@@ -301,7 +301,7 @@ Auto-created at `~/.config/bionic-graph/settings.json` if not present. Full refe
       "params": {},
       "headers": {
         "Content-Type": "application/json",
-        "Authorization": "Bearer <your-bce-token>"
+        "Authorization": "Bearer <your-api-key>"
       }
     }]
   },
@@ -814,7 +814,7 @@ bgcli task wait --task-id t1
 bgcli settings get-search
 bgcli settings set-search --config '{"greedy":{"match_mode":"prefix"},"exact":{"match_mode":"word"}}'
 bgcli settings get-llm
-bgcli settings set-llm --providers '[{"name":"DeepSeek","api_base_url":"https://api.deepseek.com/v1","api_key":"sk-...","models":["deepseek-v4-flash"]}]'
+bgcli settings set-llm --providers '[{"name":"DeepSeek","api_base_url":"https://api.deepseek.com/v1","api_key":"<your-api-key>","models":["deepseek-v4-flash"]}]'
 bgcli settings get-rank
 bgcli settings set-rank --config '{"auto_inc_rank_when_read":false}'
 bgcli settings get-web-search

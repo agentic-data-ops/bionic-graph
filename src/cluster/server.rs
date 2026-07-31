@@ -64,14 +64,14 @@ async fn handle_heartbeat(
     Json(msg): Json<ClusterMessage>,
 ) -> Result<Json<ClusterMessage>, StatusCode> {
     match msg {
-        ClusterMessage::Heartbeat { node_id, api_addr, cluster_addr, last_acked_seq: _, graphs } => {
+        ClusterMessage::Heartbeat { node_id, api_addr, cluster_addr, last_acked_seq: _, graphs, default_graph } => {
             let info = WorkerInfo::new(&node_id, &api_addr, &cluster_addr);
             state.registry.register(info);
 
             // Master: compute graph sync commands from the worker's reported
             // graph list vs the master's registry (6.2).
             let sync_commands = if state.is_master {
-                compute_graph_sync_commands(&state.gm, &graphs)
+                compute_graph_sync_commands(&state.gm, &graphs, &default_graph)
             } else {
                 Vec::new()
             };
@@ -94,18 +94,23 @@ async fn handle_heartbeat(
 
 /// Compare the worker's reported graph list against the master's registry
 /// and produce commands that bring the worker's graphs in sync:
-/// - graphs the worker is missing → CreateGraph
+/// - graphs the worker is missing → CreateGraph (with master's config)
 /// - graphs whose metadata (description/time_travel) differs → UpdateGraphMeta
+/// - graphs whose config (storage/lock/indices) differs → UpdateGraphConfig
+/// - graphs the worker has but master doesn't → DeleteGraph
+/// - worker's default graph differs → SetDefaultGraph
 fn compute_graph_sync_commands(
     gm: &GraphManager,
-    worker_graphs: &[crate::graph::graph_registry::GraphMetadata],
+    worker_graphs: &[crate::cluster::node::WorkerGraphSnapshot],
+    worker_default: &str,
 ) -> Vec<crate::cluster::node::GraphSyncCommand> {
-    let (master_graphs, _) = gm.get_registry();
+    let (master_graphs, master_default) = gm.get_registry();
     let mut commands = Vec::new();
 
     for master_meta in &master_graphs {
-        match worker_graphs.iter().find(|w| w.name == master_meta.name) {
-            Some(worker_meta) => {
+        match worker_graphs.iter().find(|w| w.meta.name == master_meta.name) {
+            Some(worker_snapshot) => {
+                let worker_meta = &worker_snapshot.meta;
                 if worker_meta.description != master_meta.description
                     || worker_meta.time_travel != master_meta.time_travel
                 {
@@ -115,16 +120,44 @@ fn compute_graph_sync_commands(
                         time_travel: master_meta.time_travel,
                     });
                 }
+                // Compare per-graph config (storage/lock/indices).
+                let master_config = gm.get_graph_config(&master_meta.name);
+                if master_config != worker_snapshot.config {
+                    commands.push(crate::cluster::node::GraphSyncCommand::UpdateGraphConfig {
+                        name: master_meta.name.clone(),
+                        config: master_config,
+                    });
+                }
             }
             None => {
+                // Worker is missing the graph — create it with the master's config.
                 commands.push(crate::cluster::node::GraphSyncCommand::CreateGraph {
                     name: master_meta.name.clone(),
                     description: master_meta.description.clone(),
                     time_travel: master_meta.time_travel,
+                    config: gm.get_graph_config(&master_meta.name),
                 });
             }
         }
     }
+
+    // Delete graphs the worker has but the master does not.
+    for worker_snapshot in worker_graphs {
+        let name = &worker_snapshot.meta.name;
+        if !master_graphs.iter().any(|m| m.name == *name) {
+            commands.push(crate::cluster::node::GraphSyncCommand::DeleteGraph {
+                name: name.clone(),
+            });
+        }
+    }
+
+    // Sync the default graph if it differs.
+    if !master_default.is_empty() && worker_default != master_default {
+        commands.push(crate::cluster::node::GraphSyncCommand::SetDefaultGraph {
+            name: master_default,
+        });
+    }
+
     commands
 }
 

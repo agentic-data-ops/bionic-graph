@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Parser;
-use bionic_graph::cluster::node::GraphSyncCommand;
+use bionic_graph::cluster::node::{GraphSyncCommand, WorkerInfo};
 use bionic_graph::cluster::server::{build_cluster_router, ClusterAppState};
 use bionic_graph::config::load_or_create_settings_from;
 use bionic_graph::config::NodeRole;
@@ -11,17 +11,19 @@ use bionic_graph::gremlin::build_router as build_new_router;
 use bionic_graph::graph_manager::GraphManager;
 
 /// Apply graph sync commands received from the master in a heartbeat ack (6.2).
-/// Workers create missing graphs and update metadata to match the master.
+/// Workers create missing graphs, update metadata/config to match, delete
+/// graphs the master doesn't have, and sync the default graph.
 fn apply_graph_sync_commands(
     gm: &GraphManager,
     commands: &[GraphSyncCommand],
 ) {
     for cmd in commands {
         match cmd {
-            GraphSyncCommand::CreateGraph { name, description, time_travel } => {
+            GraphSyncCommand::CreateGraph { name, description, time_travel, config } => {
                 match gm.get(name) {
                     Ok(_) => {
                         let _ = gm.update_meta(name, description, *time_travel);
+                        let _ = gm.set_graph_config(name, config);
                         log::info!("Graph sync: created graph '{}' (desc={}, tt={})", name, description, time_travel);
                     }
                     Err(e) => log::warn!("Graph sync: failed to create graph '{}': {}", name, e),
@@ -32,6 +34,24 @@ fn apply_graph_sync_commands(
                     Ok(true) => log::info!("Graph sync: updated graph '{}' (desc={}, tt={})", name, description, time_travel),
                     Ok(false) => log::warn!("Graph sync: graph '{}' not found for update", name),
                     Err(e) => log::warn!("Graph sync: failed to update graph '{}': {}", name, e),
+                }
+            }
+            GraphSyncCommand::UpdateGraphConfig { name, config } => {
+                match gm.set_graph_config(name, config) {
+                    Ok(()) => log::info!("Graph sync: updated config of graph '{}'", name),
+                    Err(e) => log::warn!("Graph sync: failed to update config of graph '{}': {}", name, e),
+                }
+            }
+            GraphSyncCommand::DeleteGraph { name } => {
+                match gm.delete(name) {
+                    Ok(()) => log::info!("Graph sync: deleted graph '{}' (absent on master)", name),
+                    Err(e) => log::warn!("Graph sync: failed to delete graph '{}': {}", name, e),
+                }
+            }
+            GraphSyncCommand::SetDefaultGraph { name } => {
+                match gm.set_default(name) {
+                    Ok(()) => log::info!("Graph sync: set default graph to '{}'", name),
+                    Err(e) => log::warn!("Graph sync: failed to set default graph '{}': {}", name, e),
                 }
             }
         }
@@ -293,9 +313,17 @@ async fn main() {
             .await
             .expect("Failed to bind cluster address");
 
-        // If master, spawn heartbeat cleanup task and wait for known
-        // workers to register (startup readiness, 6.1).
+        // If master, persist own identity + spawn heartbeat cleanup task and
+        // wait for known workers to register (startup readiness, 6.1).
         if is_master {
+            // Record the master's own identity in nodes.json.
+            let master_info = WorkerInfo::new(
+                &format!("master@{}", settings.cluster.bind_addr),
+                &format!("{}:{}", settings.server.host, settings.server.port),
+                &settings.cluster.bind_addr,
+            );
+            registry.set_master_info(master_info);
+
             // Load workers known from a previous run (nodes.json).
             let known = registry.load_known(&std::path::Path::new(&settings.graph.storage.data_dir));
             if !known.is_empty() {
@@ -365,14 +393,23 @@ async fn main() {
                 tokio::spawn(async move {
                     let client = reqwest::Client::new();
                     loop {
-                        // Gather local graph list for the master to diff (6.2).
-                        let (graph_metas, _) = worker_gm.get_registry();
+                        // Gather local graph list (metadata + config) and default
+                        // graph for the master to diff (6.2).
+                        let (graph_metas, default_name) = worker_gm.get_registry();
+                        let graphs: Vec<bionic_graph::cluster::node::WorkerGraphSnapshot> = graph_metas
+                            .iter()
+                            .map(|meta| bionic_graph::cluster::node::WorkerGraphSnapshot {
+                                meta: meta.clone(),
+                                config: worker_gm.get_graph_config(&meta.name),
+                            })
+                            .collect();
                         let heartbeat = bionic_graph::cluster::node::ClusterMessage::Heartbeat {
                             node_id: format!("worker@{}", settings.cluster.bind_addr),
                             api_addr: format!("{}:{}", settings.server.host, settings.server.port),
                             cluster_addr: settings.cluster.bind_addr.clone(),
                             last_acked_seq: 0,
-                            graphs: graph_metas,
+                            graphs,
+                            default_graph: default_name,
                         };
                         let url = format!("http://{}/cluster/heartbeat", master_cluster);
                         match client

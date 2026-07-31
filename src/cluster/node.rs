@@ -89,6 +89,16 @@ impl Default for NodeSnapshot {
     }
 }
 
+/// A graph as reported by a worker in its heartbeat, including its
+/// full per-graph config so the master can detect inconsistencies.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WorkerGraphSnapshot {
+    /// Graph metadata (name, description, time_travel).
+    pub meta: GraphMetadata,
+    /// Full per-graph config (storage / lock / indices).
+    pub config: crate::graph::graph::GraphConfig,
+}
+
 /// Messages exchanged between master and workers.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ClusterMessage {
@@ -100,9 +110,12 @@ pub enum ClusterMessage {
         api_addr: String,
         cluster_addr: String,
         last_acked_seq: u64,
-        /// Worker's local graph metadata list.
+        /// Worker's local graphs (metadata + config).
         #[serde(default)]
-        graphs: Vec<GraphMetadata>,
+        graphs: Vec<WorkerGraphSnapshot>,
+        /// Worker's default graph name.
+        #[serde(default)]
+        default_graph: String,
     },
     /// Master → Worker: heartbeat acknowledgment + graph sync commands.
     HeartbeatAck {
@@ -122,17 +135,32 @@ pub enum ClusterMessage {
 /// in sync with the master's registry.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum GraphSyncCommand {
-    /// Create (open) a graph the worker is missing.
+    /// Create (open) a graph the worker is missing, with the master's
+    /// metadata and full config.
     CreateGraph {
         name: String,
         description: String,
         time_travel: bool,
+        config: crate::graph::graph::GraphConfig,
     },
     /// Update a graph's metadata (description / time_travel) to match.
     UpdateGraphMeta {
         name: String,
         description: String,
         time_travel: bool,
+    },
+    /// Update a graph's full config (storage / lock / indices) to match.
+    UpdateGraphConfig {
+        name: String,
+        config: crate::graph::graph::GraphConfig,
+    },
+    /// Delete a graph the worker has but the master does not.
+    DeleteGraph {
+        name: String,
+    },
+    /// Set the default graph to match the master.
+    SetDefaultGraph {
+        name: String,
     },
 }
 
@@ -144,6 +172,8 @@ pub struct NodeRegistry {
     /// Workers known from a previous run (loaded from nodes.json).
     /// Used for the master's startup readiness check.
     known_workers: RwLock<Vec<WorkerInfo>>,
+    /// The master node's own identity (for nodes.json persistence).
+    master_info: RwLock<Option<WorkerInfo>>,
     /// The heartbeat timeout duration (computed from config).
     timeout: Duration,
     /// Monotonically increasing cluster-wide operation sequence.
@@ -158,6 +188,7 @@ impl NodeRegistry {
             config: config.clone(),
             workers: RwLock::new(HashMap::new()),
             known_workers: RwLock::new(Vec::new()),
+            master_info: RwLock::new(None),
             timeout: Duration::from_secs(config.worker_timeout_secs),
             next_seq: std::sync::atomic::AtomicU64::new(1),
             data_dir: None,
@@ -245,12 +276,22 @@ impl NodeRegistry {
         self.data_dir = Some(dir);
     }
 
+    /// Set the master node's own identity (node_id / api_addr / cluster_addr).
+    /// Called on the master at startup so nodes.json includes master info.
+    pub fn set_master_info(&self, info: WorkerInfo) {
+        {
+            let mut mi = self.master_info.write().unwrap_or_else(|e| e.into_inner());
+            *mi = Some(info);
+        } // release write lock before persist
+        self.persist();
+    }
+
     /// Persist the current cluster topology to `<data_dir>/cluster/nodes.json`.
     /// Called after every worker registration / removal.
     pub fn persist(&self) {
         let Some(dir) = self.data_dir.as_ref() else { return };
         let snapshot = NodeSnapshot {
-            master: None, // filled by the caller on the master
+            master: self.master_info.read().unwrap_or_else(|e| e.into_inner()).clone(),
             workers: self.list(),
             version: 1,
         };
@@ -286,22 +327,6 @@ impl NodeRegistry {
         ids
     }
 
-    /// Node IDs known from a previous run (for startup readiness checks).
-    pub fn known_node_ids(&self) -> Vec<String> {
-        let known = self.known_workers.read().unwrap_or_else(|e| e.into_inner());
-        known.iter().map(|w| w.node_id.clone()).collect()
-    }
-
-    /// Check whether a known worker has registered via heartbeat.
-    pub fn is_known_registered(&self, node_id: &str) -> bool {
-        let known = self.known_workers.read().unwrap_or_else(|e| e.into_inner());
-        if known.is_empty() {
-            return true; // no known nodes — nothing to wait for
-        }
-        let workers = self.workers.read().unwrap_or_else(|e| e.into_inner());
-        workers.contains_key(node_id)
-    }
-
     /// Number of known workers that have registered so far.
     pub fn known_registered_count(&self) -> usize {
         let known = self.known_workers.read().unwrap_or_else(|e| e.into_inner());
@@ -316,17 +341,6 @@ impl NodeRegistry {
     pub fn known_total(&self) -> usize {
         let known = self.known_workers.read().unwrap_or_else(|e| e.into_inner());
         known.len()
-    }
-
-    /// Merge a worker's reported graph list into the snapshot for 6.2.
-    /// (Comparison happens in the heartbeat handler on the master.)
-    pub fn update_known_worker(&self, info: &WorkerInfo) {
-        let mut known = self.known_workers.write().unwrap_or_else(|e| e.into_inner());
-        if let Some(existing) = known.iter_mut().find(|w| w.node_id == info.node_id) {
-            *existing = info.clone();
-        } else {
-            known.push(info.clone());
-        }
     }
 }
 

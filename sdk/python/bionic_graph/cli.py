@@ -593,7 +593,7 @@ def settings_get_llm(ctx):
 
 @settings.command("set-llm")
 @click.option("--providers", callback=_parse_json_arg,
-              help='JSON array of LLM provider configs. Each: {name, api_base_url, api_key, models: [...], default_model, id}. Example: \'[{"name":"openai","api_base_url":"https://api.openai.com/v1","api_key":"sk-...","models":["gpt-4"]}]\'')
+              help='JSON array of LLM provider configs. Each: {name, api_base_url, api_key, models: [...], default_model, id}. Example: \'[{"name":"openai","api_base_url":"https://api.openai.com/v1","api_key":"<your-api-key>","models":["gpt-4"]}]\'')
 @click.option("--default-model", help="Default model key (Provider/Model)")
 @click.pass_context
 def settings_set_llm(ctx, providers, default_model):

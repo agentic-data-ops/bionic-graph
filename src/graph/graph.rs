@@ -59,7 +59,7 @@ use crate::storage::{
 };
 
 /// 自定义属性索引配置段
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct IndicesConfig {
     /// 已注册的顶点属性 key 列表
@@ -84,7 +84,7 @@ impl Default for IndicesConfig {
 /// Each graph can independently tune these parameters. Defaults match the
 /// engine's built-in constants and can be overridden via `PUT /graphs/:name/config`.
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct GraphConfig {
     /// 存储引擎配置
@@ -109,7 +109,7 @@ impl Default for GraphConfig {
 }
 
 /// 存储引擎配置段
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct GraphStorageConfig {
     /// LRU 块缓存容量（MB）。默认 64 MB
@@ -149,7 +149,7 @@ impl GraphStorageConfig {
 }
 
 /// 锁引擎配置段
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct GraphLockConfig {
     /// 顶点/边锁分片数（必须为 2 的幂）
