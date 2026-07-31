@@ -314,9 +314,12 @@ impl Graph {
         crate::graph::graph::WAL_REPLAYING.store(false, Ordering::Relaxed);
         replay_result?;
 
-        // After replay, switch to a fresh WAL file so crash recovery
-        // during this session works (the file stays on disk with a real
-        // directory entry).
+        // After replay, flush the replayed dirty blocks to the data file
+        // BEFORE removing the old WAL. `renew()` deletes all old WAL files;
+        // without flushing first, a crash (e.g. kill -9) right after startup
+        // would lose every replayed operation that was only in memory —
+        // the old WAL is already gone, so nothing can recover it.
+        graph.flush()?;
         graph.redo_log.renew()?;
 
         // Wire up the flush handler: before WAL rotation deletes old files,
