@@ -47,7 +47,7 @@ src/
 │   ├── graph_registry.rs    # Graph metadata registry (persistent, multi-graph)
 │   ├── batch.rs             # Batch import/delete (upsert by name)
 │   ├── crud.rs              # Vertex/Edge CRUD with WAL + token extraction + rank
-│   ├── gremlin.rs           # Gremlin pipeline step engine (24 steps)
+│   ├── gremlin.rs           # Gremlin pipeline step engine (22 steps)
 │   ├── locked.rs            # Lock-safe CRUD wrappers
 │   ├── serialize.rs         # Bincode serialization with JSON properties
 │   ├── tokenizer.rs         # jieba-rs tokenizer, stop-words, min length 2
@@ -185,14 +185,17 @@ App.jsx
 └── SettingsDialog.jsx   — 设置弹窗（搜索/排序/LLM 三个页签）
 ```
 
-## Gremlin Steps (24 total)
+## Gremlin Steps (22 total)
 
 | Step | Parameters | Description |
 |------|-----------|-------------|
 | `search` | `text`, `mode?`, `match_mode?`, `limit?`, `min_rank?` | Full-text search via token index. Auto-injects `match_mode` + optional `traverse` step. Time travel via `X-Time-Travel` header. |
-| `V` | `ids?` | Vertices by ID |
-| `E` | `ids?` | Edges by ID |
-| `has` / `hasNot` / `hasKey` / `hasValue` / `hasLabel` / `hasText` | (6 filter steps) | Property/label filters |
+| `V` | `ids?`, `limit?` | Vertices by ID, or top-N by rank when `limit` set |
+| `E` | `ids?`, `limit?` | Edges by ID, or top-N by rank when `limit` set |
+| `has` / `hasNot` | `key`, `value` | Property value filter (any JSON type) |
+| `hasKey` | `key` | Property key existence filter |
+| `hasLabel` | `label` | Label filter (Vertex.labels / Edge.labels) |
+| `hasName` | `name`, `source_name?`, `target_name?` | Lookup by name via `vertex_name`/`edge_name` index |
 | `out` / `in` / `both` | `depth?`, `labels?` | Vertex traversal (BFS) |
 | `outE` / `inE` / `bothE` | `labels?` | Edge traversal |
 | `values` / `limit` / `count` / `dedup` | — | Result processing |
@@ -230,9 +233,6 @@ App.jsx
 | GET/POST | `/documents` | List / create documents |
 | GET/PUT/DELETE | `/documents/:id` | Get / update / delete document metadata |
 | GET | `/documents/:id/content` | Document body |
-| POST | `/extract` | Submit extraction task |
-| POST | `/documents/:id/extract` | Extract from document by ID |
-| POST | `/extract` | Submit extraction task |
 | POST | `/documents/:id/extract` | Extract from document by ID |
 | GET | `/tasks/:task_id` | Task polling |
 | GET | `/tasks` | List tasks |
@@ -568,7 +568,7 @@ Master handler (create_vertex, create_document 等)
 - [x] create_vertex_with_id / create_edge_with_id / ensure_vertex_id / ensure_edge_id — 保证集群广播 ID 一致性
 - [x] 文档生命周期集群同步（创建/更新/提取/删除含 clean 参数）
 - [x] 软/硬删除广播路径参数传递 — delete_vertex/delete_edge/delete_document 的 query 参数（force/clean）忠实地按原始请求传递，不做默认值推断
-- [x] submit_extraction/extract_document_handler 转发补充 graph_name 参数
+- [x] extract_document_handler 转发补充 graph_name 参数
 - [x] 集群测试验证：Worker1 创建顶点→Worker2 可读；Master 创建顶点→Worker2 可读；边创建/删除/搜索全部通过
 - [x] 6.1 节点持久化与启动等待 — `<data_dir>/cluster/nodes.json`，NodeRegistry::persist/load_known，master 启动等待已知 worker 注册（超时降级）
 - [x] 6.2 图库配置同步 — Heartbeat 携带 WorkerGraphSnapshot(meta+config)，master 下发 CreateGraph/UpdateGraphMeta/UpdateGraphConfig/DeleteGraph/SetDefaultGraph 命令

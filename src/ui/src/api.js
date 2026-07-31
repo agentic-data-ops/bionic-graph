@@ -72,34 +72,7 @@ export async function traverse(vid, label = null, graph = 'default', timeTravelA
   return gremlin(steps, graph, timeTravelAt);
 }
 
-// ─── Sync extraction (legacy, still works) ───────────────────────
-
-export async function extractDoc(content, graph = '') {
-  const headers = { 'Content-Type': 'text/markdown' };
-  if (graph) headers['X-Graph-Name'] = graph;
-  const res = await fetch(BASE + '/extract', {
-    method: 'POST',
-    headers,
-    body: content,
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
 // ─── Async extraction (task-based) ──────────────────────────────
-
-/** Submit a markdown document for async extraction. Returns { task_id, status } */
-export async function extractDocAsync(content, graph = '') {
-  const headers = { 'Content-Type': 'text/markdown' };
-  if (graph) headers['X-Graph-Name'] = graph;
-  const res = await fetch(BASE + '/extract', {
-    method: 'POST',
-    headers,
-    body: content,
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
 
 /** Get the status and results of an extraction task. */
 export async function getTaskStatus(taskId) {

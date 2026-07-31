@@ -10,7 +10,6 @@
 //! | POST | `/cluster/replicate` | Master → Worker | Redo log entry push |
 //! | POST | `/cluster/touch` | Worker → Master | Report read vertex/edge IDs for rank/atime update |
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use axum::{
@@ -27,7 +26,6 @@ use crate::cluster::forward::{ForwardedRequest, ForwardedResponse};
 use crate::cluster::node::{ClusterMessage, NodeRegistry, WorkerInfo};
 use crate::cluster::replication::{ReplicatedEntry, ReplicationAck};
 use crate::graph_manager::GraphManager;
-use crate::storage::types::OpType;
 
 /// Shared state for the cluster communication server.
 #[derive(Clone)]
@@ -203,118 +201,6 @@ pub async fn handle_execute(
     let result = proxy_to_api(&state.api_addr, &req, Some(&req_id)).await;
     crate::graph::graph::INFLIGHT_REQUESTS.lock().unwrap().remove(&req_id);
     Json(result)
-}
-
-/// Build broadcast entries using a raw GraphManager (used by both
-/// the cluster forward handler and direct write broadcast).
-pub(crate) fn build_broadcast_entries_raw(
-    gm: &crate::graph_manager::GraphManager,
-    req: &ForwardedRequest,
-    result: &ForwardedResponse,
-) -> Vec<crate::storage::redo_log::RedoLogEntry> {
-    let mut entries = Vec::new();
-    let method = req.method.to_uppercase();
-
-    let graph_name = req.headers.get("X-Graph-Name").cloned()
-        .unwrap_or_else(|| gm.get_default_name());
-    let graph = match gm.get(&graph_name) {
-        Ok(g) => g,
-        Err(_) => return entries,
-    };
-
-    let path_id: Option<u32> = {
-        let path = req.path.split('?').next().unwrap_or(&req.path);
-        let parts: Vec<&str> = path.split('/').collect();
-        parts.last().and_then(|s| s.parse().ok())
-    };
-
-    let body = match result.body { Some(ref b) => b.clone(), None => return entries };
-    let parsed: std::collections::HashMap<String, serde_json::Value> = match serde_json::from_str(&body) {
-        Ok(v) => v, Err(_) => return entries,
-    };
-
-    match (method.as_str(), req.path.as_str()) {
-        ("POST", "/vertices") | ("PUT", "/vertices") => {
-            let id = parsed.get("id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            if id == 0 { return entries; }
-            let found = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).vertex_id.get(id).copied();
-            if let Some(ptr) = found {
-                if let Ok(dh) = crate::graph::crud::read_header_by_ptr(&graph, &ptr) {
-                    if dh.status != crate::storage::types::DataStatus::Deleted {
-                        let payload_len = dh.payload_len as usize;
-                        if let Ok(data) = crate::graph::crud::read_data_chunks(
-                            &graph, ptr.block_idx, ptr.chunk_offset + 1, dh.payload_len as u16,
-                        ) {
-                            if let Ok(payload) = crate::graph::serialize::deserialize_vertex(&data[..payload_len]) {
-                                if let Ok(serialized) = crate::graph::serialize::serialize_vertex(&payload) {
-                                    entries.push(crate::storage::redo_log::RedoLogEntry {
-                                        op_type: OpType::VertexCreate,
-                                        op_id: id as u64,
-                                        data: serialized,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        ("POST", "/edges") | ("PUT", "/edges") => {
-            let id = parsed.get("id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            if id == 0 { return entries; }
-            let found = graph.memory_index.read().unwrap_or_else(|e| e.into_inner()).edge_id.get(id).copied();
-            if let Some(ptr) = found {
-                if let Ok(dh) = crate::graph::crud::read_header_by_ptr(&graph, &ptr) {
-                    if dh.status != crate::storage::types::DataStatus::Deleted {
-                        let payload_len = dh.payload_len as usize;
-                        if let Ok(data) = crate::graph::crud::read_data_chunks(
-                            &graph, ptr.block_idx, ptr.chunk_offset + 1, dh.payload_len as u16,
-                        ) {
-                            if let Ok(payload) = crate::graph::serialize::deserialize_edge(&data[..payload_len]) {
-                                if let Ok(serialized) = crate::graph::serialize::serialize_edge(&payload) {
-                                    entries.push(crate::storage::redo_log::RedoLogEntry {
-                                        op_type: OpType::EdgeCreate,
-                                        op_id: id as u64,
-                                        data: serialized,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        ("DELETE", path) if path.starts_with("/vertices/") => {
-            if let Some(vid) = path_id {
-                entries.push(crate::storage::redo_log::RedoLogEntry {
-                    op_type: OpType::VertexDelete,
-                    op_id: vid as u64,
-                    data: Vec::new(),
-                });
-            }
-        }
-        ("DELETE", path) if path.starts_with("/edges/") => {
-            if let Some(eid) = path_id {
-                entries.push(crate::storage::redo_log::RedoLogEntry {
-                    op_type: OpType::EdgeDelete,
-                    op_id: eid as u64,
-                    data: Vec::new(),
-                });
-            }
-        }
-        _ => {}
-    }
-    entries
-}
-
-/// After a successful forwarded write, build redo-log entries from the
-/// actual data stored on the master so workers can replay them correctly.
-fn build_broadcast_entries(
-    state: &ClusterAppState,
-    req: &ForwardedRequest,
-    result: &ForwardedResponse,
-) -> Vec<crate::storage::redo_log::RedoLogEntry> {
-    build_broadcast_entries_raw(&state.gm, req, result)
 }
 
 /// Proxy a ForwardedRequest to the master's main API server via HTTP.

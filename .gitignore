@@ -8,6 +8,7 @@ __pycache__
 .SKILL.md.swp
 target
 .venv
+node_modules/
 
 # Python SDK build artifacts
 sdk/python/*.egg-info/

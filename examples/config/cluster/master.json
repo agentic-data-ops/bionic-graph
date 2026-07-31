@@ -9,8 +9,7 @@
     "bind_addr": "127.0.0.1:9090",
     "master_addr": null,
     "heartbeat_interval_secs": 5,
-    "worker_timeout_secs": 30,
-    "forward_writes": true
+    "worker_timeout_secs": 30
   },
   "llm": {
     "providers": [

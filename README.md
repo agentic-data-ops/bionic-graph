@@ -31,11 +31,11 @@ Bionic-Graph is built from the ground up with Rust, organized in five layers fro
 │            REST API + Proxy (axum)                           │
 │  /gremlin  |  /vertices  |  /edges  |  /search               │
 │  /proxy/openai/*  |  /proxy/web-search                       │
-│  /batch/*  |  /documents  |  /extract                        │
-│  /settings/*  |  /graphs  |  /tasks                          │
+│  /batch/*  |  /documents  |  /tasks                          │
+│  /settings/*  |  /graphs                                   │
 ├──────────────────────────────────────────────────────────────┤
 │            Graph Engine (token-indexed)                      │
-│  Gremlin (23 steps)  |  BFS+DFS Traversal                    │
+│  Gremlin (22 steps)  |  BFS+DFS Traversal                    │
 │  jieba-rs Tokenizer  |  Lock-safe CRUD                       │
 │  Rank/Atime Tracking  |  Time Travel                         │
 ├──────────────────────────────────────────────────────────────┤
@@ -56,7 +56,7 @@ Bionic-Graph is built from the ground up with Rust, organized in five layers fro
 |-------|--------|-------------|
 | **Frontend** | `src/ui/` | React 19 + vis-network. Chat UI, graph visualization, knowledge base management. All LLM calls proxied through backend. |
 | **REST API** | `src/gremlin/` | 55+ axum routes: graph CRUD, Gremlin queries, settings, document extraction, custom property indices, OpenAI-compatible proxy, web search proxy, async task tracking. All forwarding/broadcasting unified via `ClusterGateway`. |
-| **Graph Engine** | `src/graph/` | Gremlin pipeline (24 steps), jieba-rs tokenizer, lock-safe CRUD with WAL, rank/atime tracking, time travel, custom property indices. |
+| **Graph Engine** | `src/graph/` | Gremlin pipeline (22 steps), jieba-rs tokenizer, lock-safe CRUD with WAL, rank/atime tracking, time travel, custom property indices. |
 | **In-Memory Index** | `src/storage/` | BTreeMap (by ID), TokenMap (prefix+word), RankIndex, AdjacencyIndex, opt-in property key index. Rebuilt from disk at startup. |
 | **Storage Engine** | `src/storage/` | 16KB block-based, 64B fixed records, LRU BlockCache (64MB), WAL redo log with size/time rotation + async background dirty-block flush on rotation, deadlock-free RwLock pools. |
 | **Python SDK** | `sdk/python/` | Full REST API client. CLI tool `bgcli` with 12 topics, interactive chat with web + graph search. |
@@ -90,30 +90,32 @@ User query: "AI engineer"
 
 ### Quick start (from Release)
 
-Download the pre-built binary and start using Bionic-Graph immediately:
+Download the pre-built binary and the example config files from GitHub, then start Bionic-Graph:
 
 ```bash
 # 1. Download the binary
 wget https://github.com/agentic-data-ops/bionic-graph/releases/download/v0.1.0/bionic-graph-linux-x64
 chmod +x bionic-graph-linux-x64
 
-# 2. Start the server (config file is auto-created on first run)
-./bionic-graph-linux-x64
+# 2. Download the example config file (single-node mode)
+#    Raw URL: https://raw.githubusercontent.com/agentic-data-ops/bionic-graph/main/examples/config/settings.json
+wget https://raw.githubusercontent.com/agentic-data-ops/bionic-graph/main/examples/config/settings.json
+
+# 3. Edit the config to set your LLM API key
+nano settings.json
+# → Replace "<your-api-key>" under llm.providers[].api_key (and web_search.providers[].headers.Authorization if you use web search)
+
+# 4. Start the server with the config file
+./bionic-graph-linux-x64 --config settings.json
 # → Open http://127.0.0.1:8080 to access the chat UI
 ```
 
-On first launch, the server automatically creates `~/.config/bionic-graph/settings.json`. Edit this file to configure your LLM provider:
-
-```bash
-nano ~/.config/bionic-graph/settings.json
-```
-
-Set your LLM API key under `llm.providers[0].api_key` (default provider is DeepSeek). You can also change all settings through the UI at **Settings → LLM** tab.
+The example config (`examples/config/settings.json`) uses DeepSeek as the default LLM provider and Baidu for web search, both with `<your-api-key>` placeholders. Set your API keys before starting. You can also change all settings through the UI at **Settings** tabs.
 
 Once the server is running:
 
 1. **Open** http://127.0.0.1:8080 in your browser
-2. **Configure LLM** via Settings dialog (gear icon) → LLM tab, or edit `~/.config/bionic-graph/settings.json` directly
+2. **Configure LLM** via Settings dialog (gear icon) → LLM tab, or edit the config file directly
 3. **Import documents** into the Knowledge Base (book icon) → upload or paste content
 4. **Extract entities** from a document by clicking the extract button — this uses the LLM to parse entities and relations into the graph
 5. **Search** the graph using natural language in the chat input — the system performs full-text search and graph traversal, then uses the LLM to answer based on results
@@ -138,65 +140,48 @@ Bionic-Graph supports a **master-worker cluster** architecture for horizontal re
      │    to ALL workers      │
      └───────────────────────┘
 
-Touch（rank/atime 读取同步）：
+Touch (rank/atime read sync):
 ┌─────────┐   POST /cluster/touch   ┌─────────┐   relay   ┌─────────┐
 │ Worker  │ ─────────────────────►  │ Master  │ ────────► │ Worker 2│
-│ (读 V)  │     worker→master       │ apply+  │           │ apply   │
+│ (read V)│     worker→master       │ apply+  │           │ apply   │
 └─────────┘                         └─────────┘           └─────────┘
 ```
 
-**Step 1 — Configure the master** (`~/.config/bionic-graph/settings.json`):
+**Step 1 — Download the cluster config files** from `examples/config/cluster/`:
 
-```json
-{
-  "server": { "host": "0.0.0.0", "port": 8080 },
-  "cluster": {
-    "enabled": true,
-    "role": "master",
-    "bind_addr": "0.0.0.0:9090",
-    "master_addr": null,
-    "heartbeat_interval_secs": 5,
-    "worker_timeout_secs": 30,
-    "forward_writes": true
-  },
-  ...  // other settings unchanged
-}
+```bash
+BASE=https://raw.githubusercontent.com/agentic-data-ops/bionic-graph/main/examples/config/cluster
+wget $BASE/master.json
+wget $BASE/worker1.json
+wget $BASE/worker2.json
 ```
+
+Each file contains the full settings with `<your-api-key>` placeholders. Edit them to set your LLM API keys:
+
+```bash
+nano master.json   # llm.providers[].api_key, web_search provider key
+nano worker1.json
+nano worker2.json
+```
+
+> **Fixed IP configuration**: For a cluster spread across machines, set `server.host` to the node's fixed IP, and configure the `cluster` section with fixed IPs — `bind_addr` must be the node's own fixed IP:port (e.g. `"192.168.1.10:9090"`), and on workers `master_addr` must point to the master's fixed IP:port (e.g. `"http://192.168.1.10:9090"`). See [Settings](#settings) for details.
 
 **Step 2 — Start the master node** (read + write, accepts worker connections):
 
 ```bash
-./bionic-graph-linux-x64
-# Master API → http://0.0.0.0:8080
-# Cluster endpoint → 0.0.0.0:9090 (for worker heartbeats + replication)
+./bionic-graph-linux-x64 --config master.json
+# Master API → http://127.0.0.1:8080
+# Cluster endpoint → 127.0.0.1:9090 (for worker heartbeats + replication)
 ```
 
-**Step 3 — Configure each worker** (`~/.config/bionic-graph/settings.json`):
-
-```json
-{
-  "server": { "host": "0.0.0.0", "port": 8081 },
-  "cluster": {
-    "enabled": true,
-    "role": "worker",
-    "bind_addr": "0.0.0.0:9091",
-    "master_addr": "http://<master-ip>:9090",
-    "heartbeat_interval_secs": 5,
-    "worker_timeout_secs": 30,
-    "forward_writes": true
-  },
-  ...  // other settings unchanged
-}
-```
-
-**Step 4 — Start worker nodes**:
+**Step 3 — Start worker nodes**:
 
 ```bash
 # Worker 1 (port 8081)
-./bionic-graph-linux-x64
+./bionic-graph-linux-x64 --config worker1.json
 
-# Worker 2 (port 8082) — use separate config or CLI flags
-./bionic-graph-linux-x64 -P 8082
+# Worker 2 (port 8082)
+./bionic-graph-linux-x64 --config worker2.json
 ```
 
 **How it works:**
@@ -204,8 +189,8 @@ Touch（rank/atime 读取同步）：
 | Aspect | Behavior |
 |--------|----------|
 | **Reads** | Any node (master or worker) can serve read requests (Gremlin, search, vertex/edge queries) |
-| **Writes** | Workers forward write requests to the master automatically via HTTP |
-| **Write broadcast** | After each write, the master broadcasts the entry to ALL known workers (including offline ones) via `ClusterGateway::broadcast()` → **persistent FIFO queue** (plan 6.3). The request is durably written to `<data_dir>/cluster/broadcast-<node>-<ts>.bin` before any HTTP attempt; an async consumer thread delivers the oldest undelivered entry in order (POST `/cluster/execute`, with `X-Request-Id` header to prevent recursion), retrying forever on failure. Workers detect the header via middleware, set `IS_BROADCAST_REPLAY` (task-local), and skip forwarding/broadcasting. Workers replay the entry into their local WAL and graph. Queue files roll at 1000 entries (write-side); each file is deleted once fully delivered. On master restart, leftover files are re-queued and drained automatically (at-least-once). Query parameters (`?force`, `?clean`) are faithfully passed through — no default value inference. All original request headers (`X-Graph-Name`, `X-Time-Travel`, etc.) are passed through via `ForwardedRequest.headers`. Broadcast ID consistency is guaranteed by `create_vertex_with_id()`/`create_edge_with_id()`. |
+| **Write forward** | When a write request (vertex/edge/graph/document/settings/index CRUD) arrives at a worker, the handler forwards it to the master via `ClusterGateway::forward()` — the worker does not apply it locally. The master executes the write and returns the result to the worker, which passes it back to the caller. |
+| **Write broadcast** | After the master executes a write, it broadcasts the request to ALL known workers (including offline ones) via `ClusterGateway::broadcast()` → persistent FIFO queue (durable, at-least-once). An async consumer delivers queued entries in order to each worker (POST `/cluster/execute`); workers apply the entry into their own WAL and graph, so every node converges to the same state. Offline workers catch up automatically when they come back. |
 | **Heartbeat** | Workers send periodic heartbeats to the master (every 5s by default) carrying their local graph list; the master detects missing/inconsistent graphs and issues sync commands (CreateGraph/UpdateGraphMeta/UpdateGraphConfig/DeleteGraph/SetDefaultGraph). Worker `node_id` must be unique — two workers with the same ID will overwrite each other in master's registry. |
 | **Node persistence** | The master persists the cluster topology to `<data_dir>/cluster/nodes.json` on every heartbeat; on startup it loads known workers and waits for them to register (timeout, then degrades to available nodes). |
 | **Data isolation** | Each node has its own `data/` directory — workers sync via write broadcast, not shared storage |
@@ -233,8 +218,6 @@ cargo run --release
 
 After frontend changes, `touch src/ui_serve.rs` is required to force Rust recompilation (rust-embed doesn't auto-detect `dist/` changes).
 
-> **Frontend polling resiliency**: The Knowledge Base extraction task polling now includes `try-catch` around each poll iteration. If a single poll request fails (e.g., network glitch or cluster broadcast collision), the error is logged and polling continues — the import no longer gets stuck permanently.
-
 ### Commands
 
 | Command | Description |
@@ -257,7 +240,9 @@ After frontend changes, `touch src/ui_serve.rs` is required to force Rust recomp
 
 ### Settings
 
-Auto-created at `~/.config/bionic-graph/settings.json` if not present. Full reference in `REASONIX.md`.
+Auto-created at `~/.config/bionic-graph/settings.json` if not present. Example configs are also provided in `examples/config/` — `settings.json` for single-node mode and `examples/config/cluster/{master,worker1,worker2}.json` for cluster mode.
+
+> **Cluster mode**: When running a cluster (`cluster.enabled: true`), configure the `cluster` section with **fixed IPs** instead of loopback addresses — set `bind_addr` to the node's own fixed IP:port (e.g. `"192.168.1.10:9090"`), and on workers set `master_addr` to the master's fixed IP:port (e.g. `"http://192.168.1.10:9090"`). Each node also needs a distinct `server.port` (e.g. master `8080`, workers `8081`/`8082`).
 
 | Internet field | Type | Default | Description |
 |-------------|------|---------|-------------|
@@ -282,11 +267,10 @@ Auto-created at `~/.config/bionic-graph/settings.json` if not present. Full refe
   "cluster": {
     "enabled": false,
     "role": "master",
-    "bind_addr": "0.0.0.0:9090",
+    "bind_addr": "127.0.0.1:9090",
     "master_addr": null,
     "heartbeat_interval_secs": 5,
-    "worker_timeout_secs": 30,
-    "forward_writes": true
+    "worker_timeout_secs": 30
   },
   "internet": {
     "proxy": null,
@@ -556,9 +540,19 @@ curl -X DELETE 'localhost:8080/documents/<id>?clean=true'
 # Get document content
 curl localhost:8080/documents/<id>/content
 
-# Extract entities/relations from a document
+# Submit extraction task for a document
 curl -X POST localhost:8080/documents/<id>/extract \
   -H 'X-Graph-Name: mygraph'
+```
+
+#### Tasks management
+
+```bash
+# List tasks
+curl localhost:8080/tasks
+
+# Poll task status
+curl localhost:8080/tasks/<task_id>
 ```
 
 #### Batch operations
@@ -575,22 +569,6 @@ curl -X POST localhost:8080/batch/delete \
   -H 'Content-Type: application/json' \
   -H 'X-Graph-Name: mygraph' \
   -d '{"vertices":["Alice","Bob"],"edges":[{"source":"Alice","target":"Bob","name":"knows"}]}'
-```
-
-#### Extraction tasks
-
-```bash
-# Submit extraction task with raw text
-curl -X POST localhost:8080/extract \
-  -H 'Content-Type: application/json' \
-  -H 'X-Graph-Name: mygraph' \
-  -d '{"text":"Alice works at Acme Corp as an engineer.","mode":"full"}'
-
-# List extraction tasks
-curl localhost:8080/tasks
-
-# Poll task status
-curl localhost:8080/tasks/<task_id>
 ```
 
 #### All REST endpoints
@@ -628,7 +606,6 @@ curl localhost:8080/tasks/<task_id>
 | `POST` | `/documents` | Create a document |
 | `GET/PUT/DELETE` | `/documents/:id` | Get/update/delete document metadata |
 | `GET` | `/documents/:id/content` | Get document body |
-| `POST` | `/extract` | Submit extraction task |
 | `POST` | `/documents/:id/extract` | Extract from document by ID |
 | `GET` | `/tasks` | List all tasks |
 | `GET` | `/tasks/:task_id` | Poll task status |
@@ -649,14 +626,13 @@ All Gremlin queries are sent via `POST /gremlin` with a `steps` array. Two optio
 | Step | Parameters | Description |
 |------|-----------|-------------|
 | `search` | `text`, `mode?`, `match_mode?`, `limit?`, `min_rank?` | Token-indexed full-text search. `mode` = `"greedy"` (union of any token match) or `"exact"` (intersection — must match all tokens). `match_mode` = `"prefix"` or `"word"`. Auto-injects `match_mode` from graph search settings + optional `traverse` step. |
-| `V` | `ids?` | All vertices or filtered by ID array. |
-| `E` | `ids?` | All edges or filtered by ID array. |
+| `V` | `ids?`, `limit?` | All vertices or filtered by ID array. `limit` uses the rank index to return top-N vertices. |
+| `E` | `ids?`, `limit?` | All edges or filtered by ID array. `limit` uses the rank index to return top-N edges. |
 | `has` | `key`, `value` | Filter results by exact property key-value match. `value` supports any JSON type (string, number, boolean, array, object). |
 | `hasNot` | `key`, `value` | Negated property filter — exclude if property matches. `value` supports any JSON type. |
 | `hasKey` | `key` | Filter by property key existence. |
-| `hasValue` | `value` | Filter by any property value match (supports any JSON type). |
 | `hasLabel` | `label` | Filter by labels array (checks both Vertex.labels and Edge.labels). |
-| `hasText` | `text` | Case-insensitive substring match against name, labels, keywords, and string properties. |
+| `hasName` | `name`, `source_name?`, `target_name?` | Look up a vertex or edge by name via the `vertex_name`/`edge_name` index. For edges, optionally narrow by `source_name` and `target_name`. |
 | `out` | `depth?`, `labels?` | BFS traversal to outgoing neighbor vertices. `labels` filters by target vertex labels. `depth` controls BFS depth (default 1). |
 | `in` | `depth?`, `labels?` | BFS traversal to incoming neighbor vertices. |
 | `both` | `depth?`, `labels?` | Bidirectional BFS traversal (out + in, deduplicated). |
@@ -696,7 +672,7 @@ src/
 │   ├── graph.rs               # Graph struct (facade), open/close
 │   ├── graph_registry.rs      # Graph metadata registry
 │   ├── crud.rs                # Vertex/Edge CRUD + WAL + tokenize
-│   ├── gremlin.rs             # Gremlin pipeline (23 steps)
+│   ├── gremlin.rs             # Gremlin pipeline (22 steps)
 │   ├── locked.rs              # Lock-safe CRUD wrappers
 │   ├── serialize.rs           # Bincode + JSON properties
 │   ├── tokenizer.rs           # jieba-rs tokenizer
@@ -750,7 +726,7 @@ src/
 4. **CPU inference** — all computation in memory, no GPU
 5. **Token-indexed search** — jieba-rs tokenization replaces old neural network index
 6. **Custom storage engine** — 16KB blocks, 64B chunks, LRU cache, WAL with crash recovery
-7. **Gremlin-compatible** — standard graph query interface with 25 pipeline steps
+7. **Gremlin-compatible** — standard graph query interface with 22 pipeline steps
 8. **Time travel** — per-vertex MVCC via soft-delete, point-in-time queries
 9. **Multi-graph** — multiple named graphs, isolated `data/graphs/<name>/` directories
 10. **Fine-grained concurrency** — striped RwLock pools with deadlock-free ordering
@@ -852,6 +828,8 @@ See `sdk/python/SKILL.md` for full documentation.
 
 Two example pipelines demonstrating LLM-driven knowledge graph construction and simulation.
 
+> **LLM calls are streamed**: All three phases call the LLM in streaming mode (`stream=True`) — the response is written chunk-by-chunk to a temp file (`<output>.tmp`), validated as JSON when complete, and **no retries** are performed. Any LLM/transport error or invalid JSON aborts the command with a non-zero exit code. See each example's `README.md` (LLM Interaction section) for details.
+
 ### Self-awareness (`examples/self_awareness/`)
 
 Simulates the "soul" of a human being — loads a self-description document, generates life plans, and simulates activities.
@@ -873,7 +851,7 @@ python3 cli.py act --count 3 --graph self-awareness --model "DeepSeek/deepseek-v
 |---------|-------------|-------------|
 | `load` | Extract entities/relations from Markdown and load into graph | `--md` (default: `self_soul.md`), `--graph`, `--model`, `--force` |
 | `plan` | Search graph for interests, generate plans via LLM, load into graph | `--graph`, `--model` |
-| `act` | Fetch top plans by rank, simulate activities, update statuses | `--count` (default: 3), `--graph`, `--model`, `--force` |
+| `act` | Fetch top plans by rank, simulate activities, update statuses | `--count` (default: 3), `--graph`, `--model` |
 
 All commands support `--base-url` (default `http://127.0.0.1:8080`) and `--output` for saving results to JSON.
 
@@ -898,7 +876,7 @@ python3 cli.py act --count 3 --graph social-graph --model "DeepSeek/deepseek-v4-
 |---------|-------------|-------------|
 | `load` | Extract group profiles and activity templates from Markdown | `--md` (default: `social_activities.md`), `--graph`, `--model`, `--force` |
 | `plan` | Search graph for activity plans, generate new ones via LLM | `--graph`, `--model` |
-| `act` | Fetch top plans by priority, simulate execution, update results | `--count` (default: 3), `--graph`, `--model`, `--force` |
+| `act` | Fetch top plans by priority, simulate execution, update results | `--count` (default: 3), `--graph`, `--model` |
 
 All commands support `--base-url` (default `http://127.0.0.1:8080`) and `--output` for saving results to JSON.
 

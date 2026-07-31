@@ -830,7 +830,7 @@ fn step_search(
         vertex_scores.keys().copied().collect()
     };
 
-    let mut results: Vec<GremlinResult> = Vec::new();
+    let _results: Vec<GremlinResult> = Vec::new();
 
     // Helper: check if a token was actually valid in the payload at the query time.
     let token_valid_in_payload = |token: &str, name: &str, labels: &[String], keywords: &[String], properties: &HashMap<String, PropertyValue>| -> bool {
@@ -1023,7 +1023,7 @@ fn step_has_name(
     // Edge lookup by name
     let candidates: Vec<(u32, MetaPointer)> = {
         let eids: Vec<u32> = match (source_name, target_name) {
-            (Some(src), Some(tgt)) => {
+            (Some(_src), Some(_tgt)) => {
                 // Composite key: read all edges with this name, filter by source+target
                 mi.edge_name.get(name).map(|&eid| vec![eid]).unwrap_or_default()
                 // Note: simple name→eid lookup, then we verify source/target after read
@@ -1783,17 +1783,6 @@ fn pv_matches(pv: &PropertyValue, json_val: &serde_json::Value) -> bool {
         }
         (PropertyValue::Boolean(b), serde_json::Value::Bool(j)) => *b == *j,
         _ => false,
-    }
-}
-
-fn pv_str(pv: &PropertyValue) -> String {
-    match pv {
-        PropertyValue::String(s) => s.clone(),
-        PropertyValue::Integer(i) => i.to_string(),
-        PropertyValue::Float(f) => f.to_string(),
-        PropertyValue::Boolean(b) => b.to_string(),
-        PropertyValue::List(l) => format!("{:?}", l),
-        PropertyValue::Null => "null".to_string(),
     }
 }
 

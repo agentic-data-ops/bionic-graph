@@ -4,7 +4,6 @@
 //! Persisted to `<data_dir>/tokenizer/words.json`.
 
 use axum::{extract::State, Json};
-use std::sync::atomic::Ordering;
 
 use crate::gremlin::AppState;
 

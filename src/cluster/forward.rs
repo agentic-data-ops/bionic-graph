@@ -116,7 +116,6 @@ pub const WRITE_PATHS: &[&str] = &[
     "/graphs",
     "/documents",
     "/settings",
-    "/extract",
 ];
 
 /// Check if a path is a write operation that should be forwarded.
