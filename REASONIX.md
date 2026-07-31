@@ -76,10 +76,11 @@ src/
 ├── cluster/                 # Master-worker cluster mode
 │   ├── mod.rs
 │   ├── server.rs            # Cluster HTTP server (heartbeat/forward/replicate/touch)
-│   ├── node.rs              # NodeRegistry (master/worker)
+│   ├── node.rs              # NodeRegistry (master/worker) + nodes.json 持久化 + 图库同步
 │   ├── forward.rs           # Write forwarding (worker → master)
 │   ├── request.rs           # Unified ClusterRequest model for forwarding + broadcast
 │   ├── gateway.rs           # ClusterGateway — unified forward/broadcast entry point
+│   ├── broadcast_queue.rs   # 持久化 FIFO 广播队列（写入侧滚动 + 消费侧实时投递 + 重启恢复）
 │   └── replication.rs       # Redo-log replication
 ├── ui_serve.rs              # Embedded static file serving (rust-embed)
 
@@ -466,6 +467,7 @@ Master handler (create_vertex, create_document 等)
 - **Cluster mode**: requires `"role": "master"` or `"role": "worker"` in settings. Heartbeat every 5s by default. **Worker `node_id` 必须唯一**：多个 worker 必须使用不同的 node_id（源码生成 `worker@{bind_addr}`），否则 master 的 HashMap 中后注册者覆盖前者。
 - **Replay prevention**: 使用 `X-Request-Id` header + `INFLIGHT_REQUESTS` set + axum middleware + `tokio::task_local!` `IS_BROADCAST_REPLAY`。无需全局 `REPLAYING` 标志，并发安全。
 - **ClusterGateway**: 所有 handler 通过 `state.cluster_gateway().forward::<T>(&req)` 转发（Worker→Master），通过 `state.cluster_gateway().broadcast(&req)` 广播（Master→Workers）。读转发使用 `.forward_read::<T>()` 跳过 REPLAYING 检查。同时替代了旧的 `try_forward_json`、`try_forward_status`、`try_forward_read_json`、`broadcast_request_to_workers` 函数（已删除）。
+- **持久化 FIFO 广播队列 (6.3)**: `broadcast()` 不再 fire-and-forget，而是写入 `<data_dir>/cluster/broadcast-<node>-<ts>.bin`（JSON Lines）。**写入侧**每文件满 1000 条滚动；**消费侧**异步线程实时投递最早未投递条目（成功即前进 consumed 游标），投递完一个文件删除之，失败无限重试（退避 500ms）。master 重启时 `rebuild_state_from_files()` 扫描遗留文件自动 replay。**广播目标为所有已知 worker（含离线）**——离线 worker 的广播持续入队，恢复后补投（at-least-once）。
 - **Headers 忠实传递**: `proxy_to_api` 遍历 `ForwardedRequest.headers` 逐项设置 HTTP 请求头，跳过 `host`/`content-length`/`content-type`。`X-Graph-Name`、`X-Time-Travel` 等所有原始请求头均随转发和广播完整传递。`ForwardedRequest.graph` 字段已移除，改用 `headers["X-Graph-Name"]`。
 - **Document broadcast with same UUID**: `CreateDocumentBody` 支持可选 `id` 字段，广播时携带 master UUID，workers 在 REPLAYING 模式下使用指定 ID 创建。`UpdateDocumentBody` 支持可选 `graph_name` 字段。广播时 ID 一致性由 `create_vertex_with_id()`/`create_edge_with_id()` 保证。
 - **Document delete ?clean**: 后端解析 `?clean=true` 查询参数，控制是否清理关联图谱数据，集群转发和广播时携带该参数。
@@ -553,9 +555,9 @@ Master handler (create_vertex, create_document 等)
 - [x] 验证master, worker1的前端是否正常
 - [x] 刷新代码注释，涉及广播的场景（touch/read），不再使用WAL日志了
 - [x] 刷新REASONIX.md 和 README.md
-- [ ] master将连接的节点信息进行持久化: cluster/nodes.json
-- [ ] worker首次连接到master时检查每个图库的配置与master是否一致，如果不一致，报错退出，不允许加入集群
-- [ ] 如果worker离线，master将未被成功处理的节点广播请求持久化到数据目录下的文件：cluster/broadcast.bin，并在节点状态正常时进行重试
+- [x] master将连接的节点信息进行持久化: cluster/nodes.json
+- [x] worker首次连接到master时检查每个图库的配置与master是否一致，如果不一致，报错退出，不允许加入集群
+- [x] 如果worker离线，master将未被成功处理的节点广播请求持久化到数据目录下的文件：cluster/broadcast.bin，并在节点状态正常时进行重试
 - [x] 自定义索引的配置进行持久化，保存到图库的config.json中（indecies.properties），如果数据库崩溃，则需要重配置文件中加载自定义索引配置，并扫描数据文件进行重建
 - [x] 检查下顶点和边的元数据更新有没有记录日志，能否保证崩溃一致性 — 已全部添加 WAL（VertexMetaUpdate / EdgeMetaUpdate），SIGKILL 测试通过
 - [x] 修复log checkpoint刷盘机制 — log rotation 时后台线程异步刷脏块，不阻塞 writer
@@ -568,6 +570,11 @@ Master handler (create_vertex, create_document 等)
 - [x] 软/硬删除广播路径参数传递 — delete_vertex/delete_edge/delete_document 的 query 参数（force/clean）忠实地按原始请求传递，不做默认值推断
 - [x] submit_extraction/extract_document_handler 转发补充 graph_name 参数
 - [x] 集群测试验证：Worker1 创建顶点→Worker2 可读；Master 创建顶点→Worker2 可读；边创建/删除/搜索全部通过
+- [x] 6.1 节点持久化与启动等待 — `<data_dir>/cluster/nodes.json`，NodeRegistry::persist/load_known，master 启动等待已知 worker 注册（超时降级）
+- [x] 6.2 图库配置同步 — Heartbeat 携带 WorkerGraphSnapshot(meta+config)，master 下发 CreateGraph/UpdateGraphMeta/UpdateGraphConfig/DeleteGraph/SetDefaultGraph 命令
+- [x] 6.3 持久化 FIFO 队列广播 — broadcast_queue.rs：写入侧满 1000 条滚动，消费侧实时投递逐文件删除，失败无限重试，重启 rebuild 遗留队列
+- [x] 6.3 广播目标改为所有已知 worker（含离线）— known_worker_targets，离线 worker 广播持续入队，恢复后补投
+- [x] 6.3 三用例实测：①kill worker2 重启补投一致 ②1200 条触发滚动后消费删文件 ③重启所有节点自动 replay
 - [x] InfoPanel saveEdit 的 setUpdateSuccess 作用域修复（顶层函数无法访问父组件 useState）
 - [x] onDataChange 改为 (items, msgId) 按消息ID直接定位，不再遍历匹配/去重合并
 - [x] formatGraphContext 增强：顶点含 id/name/labels/keywords/properties；边含 id/name/sourceName/targetName/sourceId/targetId/strength/labels/keywords/properties

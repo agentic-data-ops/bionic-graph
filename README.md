@@ -205,8 +205,9 @@ Touch（rank/atime 读取同步）：
 |--------|----------|
 | **Reads** | Any node (master or worker) can serve read requests (Gremlin, search, vertex/edge queries) |
 | **Writes** | Workers forward write requests to the master automatically via HTTP |
-| **Write broadcast** | After each write, the master broadcasts the entry to ALL workers via `ClusterGateway::broadcast()` (HTTP POST `/cluster/execute`, with `X-Request-Id` header to prevent recursion). Workers detect the header via middleware, set `IS_BROADCAST_REPLAY` (task-local), and skip forwarding/broadcasting. Workers replay the entry into their local WAL and graph. Query parameters (`?force`, `?clean`) are faithfully passed through — no default value inference. All original request headers (`X-Graph-Name`, `X-Time-Travel`, etc.) are passed through via `ForwardedRequest.headers`; `proxy_to_api` iterates them to faithfully reproduce the request context. Broadcast ID consistency is guaranteed by `create_vertex_with_id()`/`create_edge_with_id()` which use master-assigned IDs during replay. |
-| **Heartbeat** | Workers send periodic heartbeats to the master (every 5s by default). Worker `node_id` must be unique — two workers with the same ID will overwrite each other in master's registry. |
+| **Write broadcast** | After each write, the master broadcasts the entry to ALL known workers (including offline ones) via `ClusterGateway::broadcast()` → **persistent FIFO queue** (plan 6.3). The request is durably written to `<data_dir>/cluster/broadcast-<node>-<ts>.bin` before any HTTP attempt; an async consumer thread delivers the oldest undelivered entry in order (POST `/cluster/execute`, with `X-Request-Id` header to prevent recursion), retrying forever on failure. Workers detect the header via middleware, set `IS_BROADCAST_REPLAY` (task-local), and skip forwarding/broadcasting. Workers replay the entry into their local WAL and graph. Queue files roll at 1000 entries (write-side); each file is deleted once fully delivered. On master restart, leftover files are re-queued and drained automatically (at-least-once). Query parameters (`?force`, `?clean`) are faithfully passed through — no default value inference. All original request headers (`X-Graph-Name`, `X-Time-Travel`, etc.) are passed through via `ForwardedRequest.headers`. Broadcast ID consistency is guaranteed by `create_vertex_with_id()`/`create_edge_with_id()`. |
+| **Heartbeat** | Workers send periodic heartbeats to the master (every 5s by default) carrying their local graph list; the master detects missing/inconsistent graphs and issues sync commands (CreateGraph/UpdateGraphMeta/UpdateGraphConfig/DeleteGraph/SetDefaultGraph). Worker `node_id` must be unique — two workers with the same ID will overwrite each other in master's registry. |
+| **Node persistence** | The master persists the cluster topology to `<data_dir>/cluster/nodes.json` on every heartbeat; on startup it loads known workers and waits for them to register (timeout, then degrades to available nodes). |
 | **Data isolation** | Each node has its own `data/` directory — workers sync via write broadcast, not shared storage |
 | **Rank/Atime sync** | Read access triggers touch: worker→master reports the read via HTTP POST `/cluster/touch`, then master applies locally + **relay-broadcasts** to all workers. Each node updates its own DataHeader in-place (no WAL). |
 
@@ -711,12 +712,13 @@ src/
 ├── documents.rs               # Document CRUD manager
 ├── graph_manager.rs           # Multi-graph lifecycle
 ├── maas/                      # MaaS OpenAI-compatible proxy
-├── cluster/                   # Master-worker cluster (server, registry, gateway, replication)
+├── cluster/                   # Master-worker cluster (server, registry, gateway, queue, replication)
 │   ├── server.rs              # Heartbeat, forward, replicate, touch
-│   ├── node.rs                # NodeRegistry
+│   ├── node.rs                # NodeRegistry + nodes.json persistence + graph sync
 │   ├── forward.rs             # Write forwarding
 │   ├── request.rs             # Unified ClusterRequest model
 │   ├── gateway.rs             # ClusterGateway — unified forward/broadcast
+│   ├── broadcast_queue.rs     # Persistent FIFO broadcast queue (plan 6.3)
 │   └── replication.rs         # Redo-log replication
 ├── ui_serve.rs                # Embedded frontend serving
 ├── ui/                        # React frontend
