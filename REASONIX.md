@@ -466,6 +466,7 @@ Master handler (create_vertex, create_document 等)
 - **Cluster mode**: requires `"role": "master"` or `"role": "worker"` in settings. Heartbeat every 5s by default. **Worker `node_id` 必须唯一**：多个 worker 必须使用不同的 node_id（源码生成 `worker@{bind_addr}`），否则 master 的 HashMap 中后注册者覆盖前者。
 - **Replay prevention**: 使用 `X-Request-Id` header + `INFLIGHT_REQUESTS` set + axum middleware + `tokio::task_local!` `IS_BROADCAST_REPLAY`。无需全局 `REPLAYING` 标志，并发安全。
 - **ClusterGateway**: 所有 handler 通过 `state.cluster_gateway().forward::<T>(&req)` 转发（Worker→Master），通过 `state.cluster_gateway().broadcast(&req)` 广播（Master→Workers）。读转发使用 `.forward_read::<T>()` 跳过 REPLAYING 检查。同时替代了旧的 `try_forward_json`、`try_forward_status`、`try_forward_read_json`、`broadcast_request_to_workers` 函数（已删除）。
+- **Headers 忠实传递**: `proxy_to_api` 遍历 `ForwardedRequest.headers` 逐项设置 HTTP 请求头，跳过 `host`/`content-length`/`content-type`。`X-Graph-Name`、`X-Time-Travel` 等所有原始请求头均随转发和广播完整传递。`ForwardedRequest.graph` 字段已移除，改用 `headers["X-Graph-Name"]`。
 - **Document broadcast with same UUID**: `CreateDocumentBody` 支持可选 `id` 字段，广播时携带 master UUID，workers 在 REPLAYING 模式下使用指定 ID 创建。`UpdateDocumentBody` 支持可选 `graph_name` 字段。广播时 ID 一致性由 `create_vertex_with_id()`/`create_edge_with_id()` 保证。
 - **Document delete ?clean**: 后端解析 `?clean=true` 查询参数，控制是否清理关联图谱数据，集群转发和广播时携带该参数。
 - **Query parameter faithful pass-through**: 所有转发和广播的查询参数（`?force`, `?clean`）均**忠实于原始请求**传递，不做默认值推断。`params.force == Some(true)` 时广播 `?force=true`，`Some(false)` 时广播 `?force=false`，`None` 时不加。`delete_document` 的 `clean_query` 使用 `params.clean.map(|c| format!("clean={}", c))` 而非 `unwrap_or(false)` 隐含默认值。
@@ -530,6 +531,16 @@ Master handler (create_vertex, create_document 等)
 ### 任务查询（读转发）✅
 - [x] `GET /tasks/:task_id` — 通过 Worker1 查询任务状态
 - [x] `GET /tasks` — 通过 Worker1 列出任务
+
+### 多图隔离（graph1）测试 ✅
+- [x] `POST /graphs` 创建 graph1 → Worker2 验证图库已同步
+- [x] `PUT /graphs` 设置 graph1 为默认 → Worker2 验证
+- [x] 并发创建 10 顶点（Worker1+Worker2）→ 所有节点 graph1 有 10
+- [x] 并发更新顶点 → 3 节点均查到更新后名称
+- [x] 并发创建 3 条边 → 所有节点各有 3 条
+- [x] 并发软/硬删除 → Worker2 验证只剩 1 条可见边
+- [x] batch/load + batch/delete → Worker2 搜索验证
+- [x] 混合读写 20 次 → Worker2 查到全部 10 个混合顶点
 
 
 ## TODO
