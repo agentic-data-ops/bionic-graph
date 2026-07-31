@@ -692,39 +692,60 @@ Worker 首次心跳
 
 图库配置同步后，Master 才开始向该 Worker 广播写入请求。
 
-### 6.3 广播失败持久化与重试
+### 6.3 基于持久化 FIFO 队列的广播机制（重构）
 
-**文件**：`<data_dir>/cluster/broadcast.bin`
+**文件**：`<data_dir>/cluster/broadcast-<node>-<timestamp>.bin`
 
-当 `broadcast()` 向 Worker 发送请求失败（网络错误），将未送达的广播写入持久化文件：
+将广播从 fire-and-forget 重构为 **持久化 FIFO 消息队列 + 异步消费线程**，保证 at-least-once 投递：
+
+**队列文件格式**（bincode 或 JSON 序列化）：
 
 ```rust
 #[derive(Serialize, Deserialize)]
-pub struct PendingBroadcast {
+pub struct QueuedBroadcast {
     pub req: ForwardedRequest,
-    pub target_worker: String,
+    pub target_node: String,   // worker 的 node_id（如 "worker@127.0.0.1:9091"）
     pub created_at: u64,
-    pub retry_count: u32,
 }
 ```
 
-**重试流程**：
+**滚动策略**：
+- 每个队列文件最多记录 **1000 个请求**，写满后滚动创建新文件 `broadcast-<node>-<timestamp>.bin`（时间戳保证文件名唯一）
+- 文件名中的 `<node>` 区分不同目标节点，每个 worker 有独立的队列
+- 处理完一个队列文件（全部成功投递）后执行 **删除**
+
+**异步消费流程**：
 
 ```
-Worker 心跳到达 Master
-  ├─ 更新 worker 状态为 alive
-  ├─ 检查 cluster/broadcast.bin 中是否有该 worker 的未送达广播
-  │    ├─ 有 → 依次发送（按 created_at 排序）
-  │    │    ├─ 成功 → 从 broadcast.bin 删除
-  │    │    └─ 失败 → 保留，retry_count++，下次重试
-  │    └─ 无 → 正常处理
-  └─ 响应心跳
+broadcast() 调用（Master handler）
+  └─ 将 QueuedBroadcast 追加到 <node> 的当前 FIFO 队列文件（同步写盘）
+
+异步消费线程（每个 worker 一个，或统一调度）
+  ├─ 扫描 broadcast-<node>-*.bin（按时间戳排序）
+  ├─ 顺序读取队首请求 → POST /cluster/execute → 目标 worker
+  │    ├─ 成功 → 从队列移除，继续下一条
+  │    └─ 失败（网络错误）→ 保留在队首，持续重试，直到该节点成功
+  │         └─ 重试间隔可退避（如 1s → 2s → 4s → ... 上限 30s）
+  └─ 队列文件全部投递成功 → 删除该文件 → 处理下一个文件
 ```
 
-**清理策略**：
-- 成功送达的广播立即从 `broadcast.bin` 删除
-- `retry_count > 10` 的广播标记为 `failed` 并记录错误日志（不再重试）
-- Master 启动时扫描 `broadcast.bin`，对 `status != delivered` 的条目重新加入重试队列
+**Master 启动就绪检查**：
+
+```
+master 启动 → 读取 cluster/nodes.json（已知节点）
+  ├─ 等待所有已知 worker 通过心跳注册（超时 N 秒）
+  │    └─ 超时后，已注册 worker ≥ 1 → 继续
+  │    └─ 超时后，尚无任何 worker → 允许单节点降级继续
+  ├─ 扫描并执行所有遗留 broadcast-<node>-*.bin 队列（重启前未投递的）
+  │    └─ 队列全部执行完毕后，才开始对外服务
+  └─ 开始接受 API 请求
+       └─ 未就绪的 worker 广播请求 → 先入队，由消费线程投递
+```
+
+**失败语义**：
+- 与旧方案的 `retry_count > 10 放弃` 不同，新机制 **无限重试**，直到节点成功——因为队列文件持久化在磁盘，进程重启也不丢失
+- 网络恢复后，消费线程自动继续投递队首请求
+- worker 永久离线时，队列持续堆积（符合 at-least-once 语义）；可通过运维人工清理
 
 ### 6.4 实施优先级
 
@@ -732,7 +753,7 @@ Worker 心跳到达 Master
 |------|--------|--------|------|
 | 6.1 节点持久化 | P0 | 1天 | 启动就绪检查，影响集群可用性 |
 | 6.2 图库同步 | P1 | 1天 | 数据一致性保障 |
-| 6.3 广播重试 | P2 | 2天 | 数据可靠性保障，可后续实施 |
+| 6.3 持久化 FIFO 队列广播 | P2 | 2-3天 | 数据可靠性保障：重构广播为持久化队列 + 异步消费线程 + 启动就绪检查 |
 
 ## 7. 总工作量估算
 |------|--------|---------|

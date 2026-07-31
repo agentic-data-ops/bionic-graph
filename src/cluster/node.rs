@@ -1,13 +1,15 @@
-//! Node registry — tracks live workers, manages heartbeats, and detects
-//! failed nodes.
+//! Node registry — tracks live workers, manages heartbeats, detects
+//! failed nodes, and persists known nodes for startup readiness checks.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
 use crate::config::settings::ClusterConfig;
+use crate::graph::graph_registry::GraphMetadata;
 
 /// Identity and status of a single worker node.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -20,10 +22,20 @@ pub struct WorkerInfo {
     pub cluster_addr: String,
     /// The last redo log sequence the worker has acknowledged.
     pub last_acked_seq: u64,
+    /// Last heartbeat timestamp in microseconds (for persistence).
+    #[serde(default)]
+    pub last_seen: u64,
+    /// Node status ("alive" / "offline") for the persisted snapshot.
+    #[serde(default = "default_status")]
+    pub status: String,
     #[serde(skip, default = "Instant::now")]
     last_heartbeat: Instant,
     #[serde(skip, default)]
     alive: bool,
+}
+
+fn default_status() -> String {
+    "alive".to_string()
 }
 
 impl WorkerInfo {
@@ -35,6 +47,8 @@ impl WorkerInfo {
             last_heartbeat: Instant::now(),
             alive: true,
             last_acked_seq: 0,
+            last_seen: now_micros(),
+            status: "alive".to_string(),
         }
     }
 
@@ -44,23 +58,81 @@ impl WorkerInfo {
     }
 }
 
+/// Snapshot of the whole cluster topology, persisted to
+/// `<data_dir>/cluster/nodes.json` by the master on every heartbeat.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NodeSnapshot {
+    /// The master node's own identity.
+    #[serde(default)]
+    pub master: Option<WorkerInfo>,
+    /// All known workers (including currently offline ones).
+    #[serde(default)]
+    pub workers: Vec<WorkerInfo>,
+    /// Snapshot format version.
+    #[serde(default)]
+    pub version: u32,
+}
+
+impl NodeSnapshot {
+    pub fn new() -> Self {
+        Self {
+            master: None,
+            workers: Vec::new(),
+            version: 1,
+        }
+    }
+}
+
+impl Default for NodeSnapshot {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Messages exchanged between master and workers.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ClusterMessage {
     /// Worker → Master: registration / heartbeat.
+    /// Carries the worker's local graph list so the master can detect
+    /// missing/inconsistent graphs and issue sync commands.
     Heartbeat {
         node_id: String,
         api_addr: String,
         cluster_addr: String,
         last_acked_seq: u64,
+        /// Worker's local graph metadata list.
+        #[serde(default)]
+        graphs: Vec<GraphMetadata>,
     },
-    /// Master → Worker: heartbeat acknowledgment.
+    /// Master → Worker: heartbeat acknowledgment + graph sync commands.
     HeartbeatAck {
         master_time: u64,
+        /// Graph sync commands computed by the master from the diff
+        /// between the master's registry and the worker's reported graphs.
+        #[serde(default)]
+        sync_commands: Vec<GraphSyncCommand>,
     },
     /// Worker → Master: I am shutting down.
     Shutdown {
         node_id: String,
+    },
+}
+
+/// A command the master sends to a worker to bring its local graphs
+/// in sync with the master's registry.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum GraphSyncCommand {
+    /// Create (open) a graph the worker is missing.
+    CreateGraph {
+        name: String,
+        description: String,
+        time_travel: bool,
+    },
+    /// Update a graph's metadata (description / time_travel) to match.
+    UpdateGraphMeta {
+        name: String,
+        description: String,
+        time_travel: bool,
     },
 }
 
@@ -69,10 +141,15 @@ pub struct NodeRegistry {
     #[allow(dead_code)]
     config: ClusterConfig,
     workers: RwLock<HashMap<String, WorkerInfo>>,
+    /// Workers known from a previous run (loaded from nodes.json).
+    /// Used for the master's startup readiness check.
+    known_workers: RwLock<Vec<WorkerInfo>>,
     /// The heartbeat timeout duration (computed from config).
     timeout: Duration,
     /// Monotonically increasing cluster-wide operation sequence.
     next_seq: std::sync::atomic::AtomicU64,
+    /// Data directory for persisting cluster/nodes.json.
+    data_dir: Option<PathBuf>,
 }
 
 impl NodeRegistry {
@@ -80,22 +157,30 @@ impl NodeRegistry {
         Self {
             config: config.clone(),
             workers: RwLock::new(HashMap::new()),
+            known_workers: RwLock::new(Vec::new()),
             timeout: Duration::from_secs(config.worker_timeout_secs),
             next_seq: std::sync::atomic::AtomicU64::new(1),
+            data_dir: None,
         }
     }
 
     /// Register or heartbeat a worker.
     pub fn register(&self, info: WorkerInfo) {
         log::info!("register worker: {} (cluster={})", info.node_id, info.cluster_addr);
-        let mut workers = self.workers.write().unwrap_or_else(|e| e.into_inner());
-        workers.insert(info.node_id.clone(), info);
+        {
+            let mut workers = self.workers.write().unwrap_or_else(|e| e.into_inner());
+            workers.insert(info.node_id.clone(), info);
+        } // release write lock before persist (persist re-acquires read lock)
+        self.persist();
     }
 
     /// Remove a worker (on shutdown or timeout).
     pub fn remove(&self, node_id: &str) {
-        let mut workers = self.workers.write().unwrap_or_else(|e| e.into_inner());
-        workers.remove(node_id);
+        {
+            let mut workers = self.workers.write().unwrap_or_else(|e| e.into_inner());
+            workers.remove(node_id);
+        } // release write lock before persist
+        self.persist();
     }
 
     /// Get a worker by ID.
@@ -123,15 +208,20 @@ impl NodeRegistry {
     /// Purge workers that have timed out.
     pub fn purge_expired(&self) -> Vec<String> {
         let mut expired = Vec::new();
-        let mut workers = self.workers.write().unwrap_or_else(|e| e.into_inner());
-        workers.retain(|id, w| {
-            if w.is_expired(self.timeout) {
-                expired.push(id.clone());
-                false
-            } else {
-                true
-            }
-        });
+        {
+            let mut workers = self.workers.write().unwrap_or_else(|e| e.into_inner());
+            workers.retain(|id, w| {
+                if w.is_expired(self.timeout) {
+                    expired.push(id.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+        } // release write lock before persist
+        if !expired.is_empty() {
+            self.persist();
+        }
         expired
     }
 
@@ -147,4 +237,103 @@ impl NodeRegistry {
             let _ = w; // alive status tracked via is_expired at query time
         }
     }
+
+    // ── Node persistence (6.1) ───────────────────────────────────────────
+
+    /// Set the data directory used for cluster/nodes.json persistence.
+    pub fn set_data_dir(&mut self, dir: PathBuf) {
+        self.data_dir = Some(dir);
+    }
+
+    /// Persist the current cluster topology to `<data_dir>/cluster/nodes.json`.
+    /// Called after every worker registration / removal.
+    pub fn persist(&self) {
+        let Some(dir) = self.data_dir.as_ref() else { return };
+        let snapshot = NodeSnapshot {
+            master: None, // filled by the caller on the master
+            workers: self.list(),
+            version: 1,
+        };
+        let cluster_dir = dir.join("cluster");
+        if std::fs::create_dir_all(&cluster_dir).is_err() {
+            return;
+        }
+        let path = cluster_dir.join("nodes.json");
+        let json = serde_json::to_string_pretty(&snapshot);
+        if let Ok(json) = json {
+            if let Err(e) = std::fs::write(&path, json) {
+                log::warn!("Failed to persist cluster/nodes.json: {}", e);
+            }
+        }
+    }
+
+    /// Load known workers from `<data_dir>/cluster/nodes.json`.
+    /// Returns the list of worker node_ids known from a previous run.
+    pub fn load_known(&self, dir: &Path) -> Vec<String> {
+        let path = dir.join("cluster").join("nodes.json");
+        if !path.exists() {
+            return Vec::new();
+        }
+        let known = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<NodeSnapshot>(&s).ok());
+        let Some(snapshot) = known else {
+            return Vec::new();
+        };
+        let ids: Vec<String> = snapshot.workers.iter().map(|w| w.node_id.clone()).collect();
+        let mut known_workers = self.known_workers.write().unwrap_or_else(|e| e.into_inner());
+        *known_workers = snapshot.workers;
+        ids
+    }
+
+    /// Node IDs known from a previous run (for startup readiness checks).
+    pub fn known_node_ids(&self) -> Vec<String> {
+        let known = self.known_workers.read().unwrap_or_else(|e| e.into_inner());
+        known.iter().map(|w| w.node_id.clone()).collect()
+    }
+
+    /// Check whether a known worker has registered via heartbeat.
+    pub fn is_known_registered(&self, node_id: &str) -> bool {
+        let known = self.known_workers.read().unwrap_or_else(|e| e.into_inner());
+        if known.is_empty() {
+            return true; // no known nodes — nothing to wait for
+        }
+        let workers = self.workers.read().unwrap_or_else(|e| e.into_inner());
+        workers.contains_key(node_id)
+    }
+
+    /// Number of known workers that have registered so far.
+    pub fn known_registered_count(&self) -> usize {
+        let known = self.known_workers.read().unwrap_or_else(|e| e.into_inner());
+        if known.is_empty() {
+            return 0;
+        }
+        let workers = self.workers.read().unwrap_or_else(|e| e.into_inner());
+        known.iter().filter(|k| workers.contains_key(&k.node_id)).count()
+    }
+
+    /// Total number of known workers (from a previous run).
+    pub fn known_total(&self) -> usize {
+        let known = self.known_workers.read().unwrap_or_else(|e| e.into_inner());
+        known.len()
+    }
+
+    /// Merge a worker's reported graph list into the snapshot for 6.2.
+    /// (Comparison happens in the heartbeat handler on the master.)
+    pub fn update_known_worker(&self, info: &WorkerInfo) {
+        let mut known = self.known_workers.write().unwrap_or_else(|e| e.into_inner());
+        if let Some(existing) = known.iter_mut().find(|w| w.node_id == info.node_id) {
+            *existing = info.clone();
+        } else {
+            known.push(info.clone());
+        }
+    }
+}
+
+/// Current time in microseconds since the UNIX epoch.
+pub fn now_micros() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros() as u64
 }

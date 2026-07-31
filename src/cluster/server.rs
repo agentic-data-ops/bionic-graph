@@ -57,27 +57,75 @@ pub fn build_cluster_router(state: ClusterAppState) -> Router {
 /// POST /cluster/heartbeat
 ///
 /// Worker sends its identity; master records/refreshes the worker.
+/// On the master, the reported graph list is compared against the
+/// master's registry and the worker is told what to create/update (6.2).
 async fn handle_heartbeat(
     State(state): State<ClusterAppState>,
     Json(msg): Json<ClusterMessage>,
 ) -> Result<Json<ClusterMessage>, StatusCode> {
     match msg {
-        ClusterMessage::Heartbeat { node_id, api_addr, cluster_addr, last_acked_seq: _ } => {
+        ClusterMessage::Heartbeat { node_id, api_addr, cluster_addr, last_acked_seq: _, graphs } => {
             let info = WorkerInfo::new(&node_id, &api_addr, &cluster_addr);
             state.registry.register(info);
+
+            // Master: compute graph sync commands from the worker's reported
+            // graph list vs the master's registry (6.2).
+            let sync_commands = if state.is_master {
+                compute_graph_sync_commands(&state.gm, &graphs)
+            } else {
+                Vec::new()
+            };
+
             Ok(Json(ClusterMessage::HeartbeatAck {
                 master_time: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_micros() as u64,
+                sync_commands,
             }))
         }
         ClusterMessage::Shutdown { node_id } => {
             state.registry.remove(&node_id);
-            Ok(Json(ClusterMessage::HeartbeatAck { master_time: 0 }))
+            Ok(Json(ClusterMessage::HeartbeatAck { master_time: 0, sync_commands: Vec::new() }))
         }
         _ => Err(StatusCode::BAD_REQUEST),
     }
+}
+
+/// Compare the worker's reported graph list against the master's registry
+/// and produce commands that bring the worker's graphs in sync:
+/// - graphs the worker is missing → CreateGraph
+/// - graphs whose metadata (description/time_travel) differs → UpdateGraphMeta
+fn compute_graph_sync_commands(
+    gm: &GraphManager,
+    worker_graphs: &[crate::graph::graph_registry::GraphMetadata],
+) -> Vec<crate::cluster::node::GraphSyncCommand> {
+    let (master_graphs, _) = gm.get_registry();
+    let mut commands = Vec::new();
+
+    for master_meta in &master_graphs {
+        match worker_graphs.iter().find(|w| w.name == master_meta.name) {
+            Some(worker_meta) => {
+                if worker_meta.description != master_meta.description
+                    || worker_meta.time_travel != master_meta.time_travel
+                {
+                    commands.push(crate::cluster::node::GraphSyncCommand::UpdateGraphMeta {
+                        name: master_meta.name.clone(),
+                        description: master_meta.description.clone(),
+                        time_travel: master_meta.time_travel,
+                    });
+                }
+            }
+            None => {
+                commands.push(crate::cluster::node::GraphSyncCommand::CreateGraph {
+                    name: master_meta.name.clone(),
+                    description: master_meta.description.clone(),
+                    time_travel: master_meta.time_travel,
+                });
+            }
+        }
+    }
+    commands
 }
 
 // ── Forward ─────────────────────────────────────────────────────────────────
