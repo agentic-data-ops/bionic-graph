@@ -177,10 +177,14 @@ impl ClusterGateway {
 
     // ── Broadcasting ───────────────────────────────────────────────────────
 
-    /// Broadcast a request to all alive workers via the **persistent FIFO
+    /// Broadcast a request to all **known** workers via the **persistent FIFO
     /// queue** (plan 6.3). The request is durably written to disk *before*
     /// any HTTP attempt; an async consumer thread drains the queue and
     /// retries forever on failure (at-least-once delivery).
+    ///
+    /// The target set is the registry's *known* workers (including offline
+    /// ones), so broadcasts keep queuing for a worker that is temporarily
+    /// down and are replayed when it reconnects.
     ///
     /// Tokenizer operations are enqueued too — the consumer routes them to
     /// `/cluster/tokenizer-sync` instead of `/cluster/execute`.
@@ -199,14 +203,14 @@ impl ClusterGateway {
             log::warn!("broadcast: no broadcast queue available");
             return;
         };
-        let workers = registry.alive_workers();
-        if workers.is_empty() {
+        let targets = registry.known_worker_targets();
+        if targets.is_empty() {
             return;
         }
 
         let forwarded = req.to_forwarded();
-        for worker in workers {
-            queue.enqueue(&worker.node_id, &worker.cluster_addr, &forwarded);
+        for (node_id, cluster_addr) in targets {
+            queue.enqueue(&node_id, &cluster_addr, &forwarded);
         }
     }
 }

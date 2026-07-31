@@ -200,8 +200,18 @@ impl NodeRegistry {
         log::info!("register worker: {} (cluster={})", info.node_id, info.cluster_addr);
         {
             let mut workers = self.workers.write().unwrap_or_else(|e| e.into_inner());
-            workers.insert(info.node_id.clone(), info);
-        } // release write lock before persist (persist re-acquires read lock)
+            workers.insert(info.node_id.clone(), info.clone());
+        } // release write lock before persist
+        // Also track the worker as "known" so broadcasts keep flowing to it
+        // even while it is offline (persisted queue replays on recovery).
+        {
+            let mut known = self.known_workers.write().unwrap_or_else(|e| e.into_inner());
+            if let Some(existing) = known.iter_mut().find(|w| w.node_id == info.node_id) {
+                *existing = info.clone();
+            } else {
+                known.push(info.clone());
+            }
+        }
         self.persist();
     }
 
@@ -341,6 +351,18 @@ impl NodeRegistry {
     pub fn known_total(&self) -> usize {
         let known = self.known_workers.read().unwrap_or_else(|e| e.into_inner());
         known.len()
+    }
+
+    /// All known workers as (node_id, cluster_addr) pairs — includes workers
+    /// that are currently offline. The broadcast queue uses this so that
+    /// broadcasts keep flowing to offline workers and are replayed when they
+    /// come back.
+    pub fn known_worker_targets(&self) -> Vec<(String, String)> {
+        let known = self.known_workers.read().unwrap_or_else(|e| e.into_inner());
+        known
+            .iter()
+            .map(|w| (w.node_id.clone(), w.cluster_addr.clone()))
+            .collect()
     }
 }
 
