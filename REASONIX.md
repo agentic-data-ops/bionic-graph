@@ -463,6 +463,7 @@ Master handler (create_vertex, create_document 等)
 - **Rank/Atime WAL**: All rank/atime update paths (`update_rank_and_atime`, `update_vertex_meta`, `update_edge_meta`, `rank_decay`) now write WAL entries (`OpType::VertexMetaUpdate` / `EdgeMetaUpdate`, bincode-serialized `(rank, atime)`). Crash consistency is guaranteed via WAL replay on startup.
 - **SIGINT/SIGTERM**: server calls `GraphManager::close_all()` → flushes dirty blocks + syncs + renews WAL.
 - **`Graph::close()`**: calls `flush()` + `sync()` + `renew()`.
+- **`Graph::open` crash safety**: after WAL replay, `graph.flush()` is called **before** `renew()` — so replayed dirty blocks are written to the data file before the old WAL is deleted. Without this, a kill -9 right after startup would lose every replayed operation (old WAL already gone, data only in memory). Verified: create → kill -9 → restart keeps data across two consecutive kill -9 rounds.
 - **Cluster mode**: requires `"role": "master"` or `"role": "worker"` in settings. Heartbeat every 5s by default. **Worker `node_id` 必须唯一**：多个 worker 必须使用不同的 node_id（源码生成 `worker@{bind_addr}`），否则 master 的 HashMap 中后注册者覆盖前者。
 - **Replay prevention**: 使用 `X-Request-Id` header + `INFLIGHT_REQUESTS` set + axum middleware + `tokio::task_local!` `IS_BROADCAST_REPLAY`。无需全局 `REPLAYING` 标志，并发安全。
 - **ClusterGateway**: 所有 handler 通过 `state.cluster_gateway().forward::<T>(&req)` 转发（Worker→Master），通过 `state.cluster_gateway().broadcast(&req)` 广播（Master→Workers）。读转发使用 `.forward_read::<T>()` 跳过 REPLAYING 检查。同时替代了旧的 `try_forward_json`、`try_forward_status`、`try_forward_read_json`、`broadcast_request_to_workers` 函数（已删除）。
@@ -574,6 +575,9 @@ Master handler (create_vertex, create_document 等)
 - [x] 6.3 持久化 FIFO 队列广播 — broadcast_queue.rs：写入侧满 1000 条滚动，消费侧实时投递逐文件删除，失败无限重试，重启 rebuild 遗留队列
 - [x] 6.3 广播目标改为所有已知 worker（含离线）— known_worker_targets，离线 worker 广播持续入队，恢复后补投
 - [x] 6.3 三用例实测：①kill worker2 重启补投一致 ②1200 条触发滚动后消费删文件 ③重启所有节点自动 replay
+- [x] 崩溃一致性修复 — Graph::open replay 后先 flush 脏块再 renew（修复 kill -9 丢数据）
+- [x] 崩溃一致性修复 — WAL rotation 同步 flush+删旧WAL（修复 fire-and-forget 后台线程崩溃窗口）
+- [x] 崩溃一致性实测 — 单节点 kill -9 两轮 8/8 保留；rotation 后 kill -9 99/99 保留；worker2 本地 WAL replay 8/8 保留
 - [x] InfoPanel saveEdit 的 setUpdateSuccess 作用域修复（顶层函数无法访问父组件 useState）
 - [x] onDataChange 改为 (items, msgId) 按消息ID直接定位，不再遍历匹配/去重合并
 - [x] formatGraphContext 增强：顶点含 id/name/labels/keywords/properties；边含 id/name/sourceName/targetName/sourceId/targetId/strength/labels/keywords/properties
