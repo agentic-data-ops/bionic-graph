@@ -19,5 +19,3 @@ examples/self_awareness/log/
 # Social activities example log output
 examples/social_activities/log/
 
-# Local runtime configs (may contain API keys)
-examples/config/
