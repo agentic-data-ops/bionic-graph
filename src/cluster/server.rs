@@ -302,15 +302,21 @@ async fn proxy_to_api(api_addr: &str, req: &ForwardedRequest, request_id: Option
         request
     };
 
-    // Forward the graph name header so the master's handler uses the correct graph.
-    let request = if let Some(ref graph) = req.graph {
-        request.header("X-Graph-Name", graph.as_str())
-    } else {
-        request
-    };
+    // Forward all original request headers (X-Graph-Name, X-Time-Travel, etc.)
+    // so the downstream handler receives the full original request context.
+    let mut request = request;
+    for (k, v) in &req.headers {
+        // Skip headers that proxy_to_api sets explicitly or would conflict.
+        if k.eq_ignore_ascii_case("host")
+            || k.eq_ignore_ascii_case("content-length")
+            || k.eq_ignore_ascii_case("content-type")
+        {
+            continue;
+        }
+        request = request.header(k.as_str(), v.as_str());
+    }
 
-    // Pass the broadcast request ID so downstream handlers can identify
-    // this request as a cluster replay without a global flag.
+    // Override X-Request-Id if one was provided (for replay detection).
     let request = if let Some(id) = request_id {
         request.header("X-Request-Id", id)
     } else {

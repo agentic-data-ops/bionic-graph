@@ -6,6 +6,8 @@
 //! operation, replicates the redo log entry to all workers, and returns
 //! the result to the worker, which proxies it back to the client.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -22,6 +24,11 @@ pub struct ForwardedRequest {
     pub body: Option<String>,
     /// Optional graph name.
     pub graph: Option<String>,
+    /// Original request headers (X-Graph-Name, X-Time-Travel, etc.).
+    /// Set by ClusterRequest::to_forwarded(); proxy_to_api iterates
+    /// these to faithfully reproduce the original request context.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
 }
 
 /// Response from the master after executing a forwarded write.
