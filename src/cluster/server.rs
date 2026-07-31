@@ -181,44 +181,10 @@ async fn handle_forward(
     }
 
     // Proxy the request to the master's main API server.
+    // Tokenizer ops (and all writes) are broadcast to workers by the REST
+    // API handler via ClusterGateway::broadcast → persistent FIFO queue,
+    // so no additional broadcast is needed here.
     let result = proxy_to_api(&state.api_addr, &req, None).await;
-
-    // Tokenizer operations: broadcast directly to workers' tokenizer-sync endpoint.
-    // Regular vertex/edge operations are already broadcast by the REST API
-    // handlers via ClusterGateway::broadcast, so skip them here.
-    if result.success && req.path == "/settings/tokenizer/words" {
-        let workers = state.registry.alive_workers();
-        let op = match req.method.to_uppercase().as_str() {
-            "POST" => "add",
-            "DELETE" => "remove",
-            _ => "",
-        };
-        if !op.is_empty() && !workers.is_empty() {
-            if let Some(ref req_body) = req.body {
-                let workers_for_broadcast = workers.clone();
-                let body_clone = req_body.clone();
-                let op_str = op.to_string();
-                tokio::spawn(async move {
-                    for worker in &workers_for_broadcast {
-                        let url = format!("http://{}/cluster/tokenizer-sync", worker.cluster_addr);
-                        let client = reqwest::Client::new();
-                        let sync_body = serde_json::json!({
-                            "operation": &op_str,
-                            "words": serde_json::from_str::<serde_json::Value>(&body_clone)
-                                .ok().and_then(|v| v.get("words").cloned())
-                                .unwrap_or(serde_json::Value::Null),
-                        });
-                        if let Err(e) = client.post(&url)
-                            .json(&sync_body)
-                            .send().await
-                        {
-                            log::warn!("Tokenizer sync to worker {} failed: {}", worker.node_id, e);
-                        }
-                    }
-                });
-            }
-        }
-    }
 
     Json(result)
 }

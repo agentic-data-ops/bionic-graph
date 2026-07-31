@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tokio::task::spawn_blocking;
 
+use crate::cluster::broadcast_queue::BroadcastQueue;
 use crate::cluster::node::NodeRegistry;
 
 use crate::config::Settings;
@@ -43,6 +44,9 @@ pub struct AppState {
     pub task_mgr: TaskManager,
     /// NodeRegistry for cluster-mode broadcasts (None in standalone).
     pub cluster_registry: Option<Arc<NodeRegistry>>,
+    /// Persistent FIFO broadcast queue for cluster-mode broadcasts
+    /// (None in standalone / worker).
+    pub broadcast_queue: Option<Arc<BroadcastQueue>>,
     /// Master's API address for worker→master forwarding (None on master / standalone).
     pub master_api_addr: Option<String>,
 }
@@ -63,6 +67,7 @@ impl AppState {
             is_worker,
             master_addr,
             self.cluster_registry.clone(),
+            self.broadcast_queue.clone(),
         )
     }
 }
@@ -77,6 +82,7 @@ pub fn build_router(
     settings: Settings,
     cluster_registry: Option<Arc<NodeRegistry>>,
     master_api_addr: Option<String>,
+    broadcast_queue: Option<Arc<BroadcastQueue>>,
 ) -> axum::Router {
     let doc_mgr = DocumentManager::new(&settings.graph.storage.data_dir);
     let state = AppState {
@@ -86,6 +92,7 @@ pub fn build_router(
         task_mgr: TaskManager::new(),
         cluster_registry,
         master_api_addr,
+        broadcast_queue,
     };
 
     use axum::routing::{delete, get, post, put};

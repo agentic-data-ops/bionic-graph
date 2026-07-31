@@ -246,6 +246,20 @@ async fn main() {
             None
         };
 
+    // Create the persistent broadcast queue (master only). Workers don't
+    // broadcast, so they get None.
+    let broadcast_queue: Option<Arc<bionic_graph::cluster::broadcast_queue::BroadcastQueue>> =
+        if settings.cluster.enabled && settings.cluster.role == NodeRole::Master {
+            Some(Arc::new(
+                bionic_graph::cluster::broadcast_queue::BroadcastQueue::new(
+                    &data_dir_path,
+                    bionic_graph::cluster::broadcast_queue::DEFAULT_MAX_PER_FILE,
+                ),
+            ))
+        } else {
+            None
+        };
+
     // ── Main API server ──────────────────────────────────────────────────────
     // Determine master address for worker→master write forwarding.
     // Workers forward writes to the master's cluster server (/cluster/forward).
@@ -259,7 +273,7 @@ async fn main() {
     } else {
         None
     };
-    let app = build_new_router(gm.clone(), settings.clone(), cluster_registry.clone(), master_api_addr);
+    let app = build_new_router(gm.clone(), settings.clone(), cluster_registry.clone(), master_api_addr, broadcast_queue.clone());
 
     let api_addr: SocketAddr = format!("{}:{}", settings.server.host, settings.server.port)
         .parse()
@@ -323,6 +337,13 @@ async fn main() {
                 &settings.cluster.bind_addr,
             );
             registry.set_master_info(master_info);
+
+            // Start the persistent broadcast queue consumer (6.3).
+            // Leftover queue files from a previous run are drained here,
+            // delivering any undelivered broadcasts before serving.
+            if let Some(ref queue) = broadcast_queue {
+                queue.start_consumer();
+            }
 
             // Load workers known from a previous run (nodes.json).
             let known = registry.load_known(&std::path::Path::new(&settings.graph.storage.data_dir));

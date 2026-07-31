@@ -28,6 +28,7 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use serde::de::DeserializeOwned;
 
+use crate::cluster::broadcast_queue::BroadcastQueue;
 use crate::cluster::forward::{forward_write, ForwardedResponse};
 use crate::cluster::node::NodeRegistry;
 use crate::cluster::request::ClusterRequest;
@@ -42,6 +43,8 @@ pub struct ClusterGateway {
     master_addr: Option<String>,
     /// Node registry for broadcasting to workers (None on worker/standalone).
     registry: Option<Arc<NodeRegistry>>,
+    /// Persistent FIFO broadcast queue (None on worker/standalone).
+    queue: Option<Arc<BroadcastQueue>>,
 }
 
 /// Internal result of a forward attempt.
@@ -58,11 +61,13 @@ impl ClusterGateway {
         is_worker: bool,
         master_addr: Option<String>,
         registry: Option<Arc<NodeRegistry>>,
+        queue: Option<Arc<BroadcastQueue>>,
     ) -> Self {
         Self {
             is_worker,
             master_addr,
             registry,
+            queue,
         }
     }
 
@@ -172,10 +177,13 @@ impl ClusterGateway {
 
     // ── Broadcasting ───────────────────────────────────────────────────────
 
-    /// Broadcast a request to all alive workers (fire-and-forget).
+    /// Broadcast a request to all alive workers via the **persistent FIFO
+    /// queue** (plan 6.3). The request is durably written to disk *before*
+    /// any HTTP attempt; an async consumer thread drains the queue and
+    /// retries forever on failure (at-least-once delivery).
     ///
-    /// Automatically routes tokenizer operations to `/cluster/tokenizer-sync`
-    /// instead of `/cluster/execute`.
+    /// Tokenizer operations are enqueued too — the consumer routes them to
+    /// `/cluster/tokenizer-sync` instead of `/cluster/execute`.
     ///
     /// **Skips** broadcasting during replay (prevent recursion).
     pub fn broadcast(&self, req: &ClusterRequest) {
@@ -187,75 +195,18 @@ impl ClusterGateway {
             log::warn!("broadcast: no registry available");
             return;
         };
+        let Some(ref queue) = self.queue else {
+            log::warn!("broadcast: no broadcast queue available");
+            return;
+        };
         let workers = registry.alive_workers();
         if workers.is_empty() {
             return;
         }
 
         let forwarded = req.to_forwarded();
-        let workers_for_broadcast: Vec<_> = workers
-            .into_iter()
-            .map(|w| (w.node_id.clone(), w.cluster_addr.clone()))
-            .collect();
-
-        // Tokenizer operations go to /cluster/tokenizer-sync (different body format).
-        if req.is_tokenizer_op() {
-            let op = match req.method.to_uppercase().as_str() {
-                "POST" => "add",
-                "DELETE" => "remove",
-                _ => return,
-            };
-            if let Some(ref req_body) = req.body {
-                let words: serde_json::Value = serde_json::from_str(req_body)
-                    .ok()
-                    .and_then(|v: serde_json::Value| v.get("words").cloned())
-                    .unwrap_or(serde_json::Value::Null);
-                tokio::spawn(async move {
-                    for (node_id, cluster_addr) in &workers_for_broadcast {
-                        let url = format!("http://{}/cluster/tokenizer-sync", cluster_addr);
-                        let client = reqwest::Client::new();
-                        let sync_body = serde_json::json!({
-                            "operation": op,
-                            "words": words,
-                        });
-                        if let Err(e) = client
-                            .post(&url)
-                            .json(&sync_body)
-                            .send()
-                            .await
-                        {
-                            log::warn!(
-                                "Tokenizer sync to worker {} failed: {}",
-                                node_id,
-                                e
-                            );
-                        }
-                    }
-                });
-            }
-            return;
+        for worker in workers {
+            queue.enqueue(&worker.node_id, &worker.cluster_addr, &forwarded);
         }
-
-        // Standard broadcast: POST to /cluster/execute
-        let payload_json = serde_json::to_string(&forwarded).unwrap_or_default();
-        tokio::spawn(async move {
-            for (node_id, cluster_addr) in &workers_for_broadcast {
-                let url = format!("http://{}/cluster/execute", cluster_addr);
-                let client = reqwest::Client::new();
-                if let Err(e) = client
-                    .post(&url)
-                    .header("Content-Type", "application/json")
-                    .body(payload_json.clone())
-                    .send()
-                    .await
-                {
-                    log::warn!(
-                        "Broadcast to worker {} failed: {}",
-                        node_id,
-                        e
-                    );
-                }
-            }
-        });
     }
 }
