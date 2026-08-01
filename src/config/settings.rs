@@ -68,8 +68,8 @@ impl Default for LlmConfig {
                 models: vec!["deepseek-v4-flash".to_string(), "deepseek-v4-pro".to_string()],
             }],
             default_model: "DeepSeek/deepseek-v4-flash".to_string(),
-            context_window: 65536,
-            max_output_tokens: 16384,
+            context_window: 1_000_000,
+            max_output_tokens: 384_000,
             max_retries: 3,
         }
     }
