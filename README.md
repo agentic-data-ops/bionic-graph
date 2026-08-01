@@ -120,6 +120,19 @@ Once the server is running:
 4. **Extract entities** from a document by clicking the extract button — this uses the LLM to parse entities and relations into the graph
 5. **Search** the graph using natural language in the chat input — the system performs full-text search and graph traversal, then uses the LLM to answer based on results
 
+### UI Screenshots
+
+| Screenshot | Description |
+|------------|-------------|
+| <img src="doc/01-ui-home.png" width="260" alt="Home"> | **Home** — main chat UI with sidebar (conversation list, knowledge base, graph library, settings) |
+| <img src="doc/02-ui-llm-chat.png" width="260" alt="LLM Chat"> | **LLM Chat** — chatting with the model through the OpenAI-compatible proxy |
+| <img src="doc/03-ui-knowledge-base-import.png" width="260" alt="Knowledge Base Import"> | **Knowledge Base Import** — upload/paste documents to import into the graph |
+| <img src="doc/04-ui-knoledge-base-extracted.png" width="260" alt="Knowledge Base Extracted"> | **Knowledge Base Extracted** — document after LLM extraction (entities + relations written to the graph) |
+| <img src="doc/05-ui-graph-search.png" width="260" alt="Graph Search"> | **Graph Search** — full-text search + graph traversal results rendered with vis-network |
+| <img src="doc/05-ui-graph-search-llm-summary.png" width="260" alt="Graph Search LLM Summary"> | **Graph Search + LLM Summary** — search results summarized by the LLM in chat |
+| <img src="doc/06-ui-graph-full-screen.png" width="260" alt="Graph Full Screen"> | **Graph Full Screen** — maximized interactive graph view |
+| <img src="doc/07-ui-web-search.png" width="260" alt="Web Search"> | **Web Search** — web search results via the configured provider |
+
 > **No Rust toolchain required** — the release binary is a self-contained executable.
 
 ### Quick start (cluster mode)

@@ -44,6 +44,7 @@ function SearchStep({ step }) {
 }
 
 function CopyButton({ text }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const timerRef = useRef(null);
 
@@ -56,7 +57,7 @@ function CopyButton({ text }) {
 
   return (
     <button className="w-7 h-7 rounded-lg hover:bg-[var(--bg-hover)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-all"
-      onClick={handleCopy} title="复制">
+      onClick={handleCopy} title={copied ? t('chat.copied') : t('chat.copy')}>
       {copied ? (
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M13.3 4.3L6 11.6L2.7 8.3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" fill="none"/>
@@ -81,7 +82,7 @@ function ChatMessage({ message, graphRef, onMaximizeRef, theme, onEdit, onSaveTo
           <div className="flex justify-end gap-0.5 mt-0.5 pr-1">
             <CopyButton text={message.content} />
             <button className="w-7 h-7 rounded-lg hover:bg-[var(--bg-hover)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-all"
-              onClick={() => onEdit?.(message.content)} title="修改">
+              onClick={() => onEdit?.(message.content)} title={t('chat.edit')}>
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <path d="M11.5 1.5L14.5 4.5L5.5 13.5L1.5 14.5L2.5 10.5L11.5 1.5Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" fill="none"/>
                 <path d="M9.5 3.5L12.5 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" fill="none"/>
@@ -106,7 +107,7 @@ function ChatMessage({ message, graphRef, onMaximizeRef, theme, onEdit, onSaveTo
             <div className="flex gap-0.5 mt-0.5 pl-1">
               <CopyButton text={message.content} />
               <button className="w-7 h-7 rounded-lg hover:bg-[var(--bg-hover)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-all"
-                onClick={() => onSaveToKB?.(message.content)} title="保存到知识库">
+                onClick={() => onSaveToKB?.(message.content)} title={t('chat.saveToKB')}>
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
                   <path d="M8 1V10M8 10L4 6M8 10L12 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
                   <path d="M1 11V13.5C1 14.3284 1.67157 15 2.5 15H13.5C14.3284 15 15 14.3284 15 13.5V11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
