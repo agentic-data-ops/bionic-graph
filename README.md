@@ -273,8 +273,8 @@ Auto-created at `~/.config/bionic-graph/settings.json` if not present. Example c
       "models": ["deepseek-v4-flash", "deepseek-v4-pro"]
     }],
     "default_model": "DeepSeek/deepseek-v4-flash",
-    "context_window": 65536,
-    "max_output_tokens": 16384,
+    "context_window": 1000000,
+    "max_output_tokens": 384000,
     "max_retries": 3
   },
   "cluster": {
