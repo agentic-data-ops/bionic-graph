@@ -124,14 +124,14 @@ Once the server is running:
 
 | Screenshot | Description |
 |------------|-------------|
-| <a href="doc/01-ui-home.png" target="_blank"><img src="doc/01-ui-home.png" width="260" alt="Home"></a> | **Home** — main chat UI with sidebar (conversation list, knowledge base, graph library, settings) |
-| <a href="doc/02-ui-llm-chat.png" target="_blank"><img src="doc/02-ui-llm-chat.png" width="260" alt="LLM Chat"></a> | **LLM Chat** — chatting with the model through the OpenAI-compatible proxy |
-| <a href="doc/03-ui-knowledge-base-import.png" target="_blank"><img src="doc/03-ui-knowledge-base-import.png" width="260" alt="Knowledge Base Import"></a> | **Knowledge Base Import** — upload/paste documents to import into the graph |
-| <a href="doc/04-ui-knoledge-base-extracted.png" target="_blank"><img src="doc/04-ui-knoledge-base-extracted.png" width="260" alt="Knowledge Base Extracted"></a> | **Knowledge Base Extracted** — document after LLM extraction (entities + relations written to the graph) |
-| <a href="doc/05-ui-graph-search.png" target="_blank"><img src="doc/05-ui-graph-search.png" width="260" alt="Graph Search"></a> | **Graph Search** — full-text search + graph traversal results rendered with vis-network |
-| <a href="doc/05-ui-graph-search-llm-summary.png" target="_blank"><img src="doc/05-ui-graph-search-llm-summary.png" width="260" alt="Graph Search LLM Summary"></a> | **Graph Search + LLM Summary** — search results summarized by the LLM in chat |
-| <a href="doc/06-ui-graph-full-screen.png" target="_blank"><img src="doc/06-ui-graph-full-screen.png" width="260" alt="Graph Full Screen"></a> | **Graph Full Screen** — maximized interactive graph view |
-| <a href="doc/07-ui-web-search.png" target="_blank"><img src="doc/07-ui-web-search.png" width="260" alt="Web Search"></a> | **Web Search** — web search results via the configured provider |
+| <img src="doc/01-ui-home.png" width="260" alt="Home"> | **Home** — main chat UI with sidebar (conversation list, knowledge base, graph library, settings) |
+| <img src="doc/02-ui-llm-chat.png" width="260" alt="LLM Chat"> | **LLM Chat** — chatting with the model through the OpenAI-compatible proxy |
+| <img src="doc/03-ui-knowledge-base-import.png" width="260" alt="Knowledge Base Import"> | **Knowledge Base Import** — upload/paste documents to import into the graph |
+| <img src="doc/04-ui-knoledge-base-extracted.png" width="260" alt="Knowledge Base Extracted"> | **Knowledge Base Extracted** — document after LLM extraction (entities + relations written to the graph) |
+| <img src="doc/05-ui-graph-search.png" width="260" alt="Graph Search"> | **Graph Search** — full-text search + graph traversal results rendered with vis-network |
+| <img src="doc/05-ui-graph-search-llm-summary.png" width="260" alt="Graph Search LLM Summary"> | **Graph Search + LLM Summary** — search results summarized by the LLM in chat |
+| <img src="doc/06-ui-graph-full-screen.png" width="260" alt="Graph Full Screen"> | **Graph Full Screen** — maximized interactive graph view |
+| <img src="doc/07-ui-web-search.png" width="260" alt="Web Search"> | **Web Search** — web search results via the configured provider |
 
 > **No Rust toolchain required** — the release binary is a self-contained executable.
 
