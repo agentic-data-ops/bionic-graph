@@ -32,7 +32,7 @@ Bionic-Graph is built from the ground up with Rust, organized in five layers fro
 │  /gremlin  |  /vertices  |  /edges  |  /search               │
 │  /proxy/openai/*  |  /proxy/web-search                       │
 │  /batch/*  |  /documents  |  /tasks                          │
-│  /settings/*  |  /graphs                                   │
+│  /settings/*  |  /graphs                                     │
 ├──────────────────────────────────────────────────────────────┤
 │            Graph Engine (token-indexed)                      │
 │  Gremlin (22 steps)  |  BFS+DFS Traversal                    │
@@ -44,7 +44,7 @@ Bionic-Graph is built from the ground up with Rust, organized in five layers fro
 │  RankIndex  |  AdjacencyIndex                                │
 ├──────────────────────────────────────────────────────────────┤
 │            Storage Engine (block-based, 16KB)                │
-│  DataFile + Bitmap  |  IndexFile (64B)                       │
+│  DataFile + Bitmap                                           │
 │  LRU BlockCache (64MB)  |  WAL Redo Log                      │
 │  LockManager (striped RwLock pools)                          │
 └──────────────────────────────────────────────────────────────┘
